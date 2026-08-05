@@ -363,7 +363,7 @@ tcod::TilesetPtr load_best_tileset(int tile_size) {
 int main(int argc, char* argv[]) {
   constexpr int SCREEN_WIDTH = 100;
   constexpr int SCREEN_HEIGHT = 32;
-  constexpr int MESSAGE_ROWS = 2;  // message wraps across this many rows instead of overflowing
+  constexpr int MESSAGE_ROWS = 3;  // how many of the most recent distinct log entries are shown at once
   constexpr int HUD_HEIGHT = 2 + MESSAGE_ROWS;  // stats, gear, then the message — not part of the map
   constexpr int MAP_WIDTH = SCREEN_WIDTH;
   constexpr int MAP_HEIGHT = SCREEN_HEIGHT - HUD_HEIGHT;
@@ -399,11 +399,19 @@ int main(int argc, char* argv[]) {
 
   std::vector<Weapon> inventory;
   std::vector<Armor> armor_inventory;
-  std::string message;
+  std::vector<std::string> message_log;  // full history; the HUD shows the last MESSAGE_ROWS entries
+  int log_scroll = 0;  // lines scrolled up from the bottom, while Mode::MessageLog
   std::string death_cause;  // name of whatever last killed the player, for the death screen
   int pending_attribute_points = 0;  // unspent level-up points forcing a Mode::LevelUp prompt
 
-  enum class Mode { Playing, WeaponMenu, ArmorMenu, Drop, Dead, LevelUp, SpellMenu, Targeting };
+  // Records a new, distinct message as its own log entry. Everything that happens
+  // becomes its own line, even multiple things on the same turn (e.g. an attack
+  // landing and the target retaliating) — nothing ever gets concatenated into one.
+  auto add_message = [&](const std::string& text) {
+    if (!text.empty()) message_log.push_back(text);
+  };
+
+  enum class Mode { Playing, WeaponMenu, ArmorMenu, Drop, Dead, LevelUp, SpellMenu, Targeting, MessageLog };
   int casting_spell_index = -1;  // which kSpellTable entry is being aimed, while Mode::Targeting
   int target_x = 0;              // targeting cursor position, while Mode::Targeting
   int target_y = 0;
@@ -442,7 +450,7 @@ int main(int argc, char* argv[]) {
         ++proj.path_index;
 
         if (!level.map.is_walkable(x, y)) {
-          message += " Your " + proj.name + " fizzles against a wall.";
+          add_message("Your " + proj.name + " fizzles against a wall.");
           consumed = true;
           break;
         }
@@ -459,12 +467,12 @@ int main(int argc, char* argv[]) {
           int damage = roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus;
           target.hp -= damage;
           if (!target.is_alive()) {
-            message += " Your " + proj.name + " kills the " + target.name + "!";
+            add_message("Your " + proj.name + " kills the " + target.name + "!");
             int xp_reward = target.xp_reward;  // read before erase invalidates `target`
             level.monsters.erase(level.monsters.begin() + target_index);
             grant_xp(xp_reward);
           } else {
-            message += " Your " + proj.name + " hits the " + target.name + " for " + std::to_string(damage) + ".";
+            add_message("Your " + proj.name + " hits the " + target.name + " for " + std::to_string(damage) + ".");
           }
           consumed = true;
         }
@@ -512,14 +520,14 @@ int main(int argc, char* argv[]) {
 
       if (adjacent) {
         if (random_int(1, 100) <= player.evasion) {
-          message += " You dodge the " + monster.name + "'s attack!";
+          add_message("You dodge the " + monster.name + "'s attack!");
           continue;
         }
 
         int raw_damage = roll_damage(monster.weapon);
         int damage = std::max(raw_damage - player.armor.defense, 0);
         player.hp -= damage;
-        message += " The " + monster.name + " hits you for " + std::to_string(damage) + ".";
+        add_message("The " + monster.name + " hits you for " + std::to_string(damage) + ".");
         if (!player.is_alive()) {
           death_cause = monster.name;
           mode = Mode::Dead;
@@ -578,7 +586,10 @@ int main(int argc, char* argv[]) {
     inventory.clear();
     armor_inventory.clear();
     pending_attribute_points = 0;
-    message = "Walk into an enemy to attack. hjkl/yubn or arrows to move, '.' wait, 'g' get, 'w' weapons, 'a' armor, 'd' drop, 'z' spells, '>'/'<' stairs, Esc to quit.";
+    message_log.clear();
+    add_message("Walk into an enemy to attack. hjkl/yubn or arrows to move, '.' wait, ']' log.");
+    add_message("'g' get, 'w' weapons, 'a' armor, 'd' drop, 'z' spells.");
+    add_message("'>'/'<' for stairs, Esc to quit.");
     mode = Mode::Playing;
   };
 
@@ -593,7 +604,7 @@ int main(int argc, char* argv[]) {
     player.x = level.entry_x;
     player.y = level.entry_y;
     level.map.update_fov(player.x, player.y, FOV_RADIUS);
-    message = "You descend the stairs.";
+    add_message("You descend the stairs.");
   };
 
   // Goes back up to the floor above, landing on the stairs down that was taken from it.
@@ -603,7 +614,7 @@ int main(int argc, char* argv[]) {
     player.x = level.stairs_down_x;
     player.y = level.stairs_down_y;
     level.map.update_fov(player.x, player.y, FOV_RADIUS);
-    message = "You ascend the stairs.";
+    add_message("You ascend the stairs.");
   };
 
   start_new_game();
@@ -702,12 +713,30 @@ int main(int argc, char* argv[]) {
                   std::nullopt);
       tcod::print(console, {0, 2}, "Press any key to start a new game, or Esc to quit.", tcod::ColorRGB{200, 200, 200},
                   std::nullopt);
+    } else if (mode == Mode::MessageLog) {
+      tcod::print(console, {0, 0}, "Message Log - j/k or arrows to scroll, ']' or Esc to close",
+                  tcod::ColorRGB{255, 255, 255}, std::nullopt);
+
+      int visible_rows = SCREEN_HEIGHT - 1;
+      int total = static_cast<int>(message_log.size());
+      int max_scroll = std::max(0, total - visible_rows);
+      log_scroll = std::min(log_scroll, max_scroll);  // clamp in case the log shrank (e.g. after a restart)
+
+      // Oldest at top, newest at bottom, like a terminal scrollback — log_scroll is how
+      // many lines scrolled up from the bottom (0 = showing the most recent messages).
+      int end_index = total - log_scroll;
+      int start_index = std::max(0, end_index - visible_rows);
+      for (int i = start_index; i < end_index; ++i) {
+        int row = 1 + (i - start_index);
+        tcod::print(console, {0, row}, message_log[static_cast<size_t>(i)], tcod::ColorRGB{200, 200, 200},
+                    std::nullopt);
+      }
     } else {
       update_monster_memory(level);
 
-      // Row 0: HP/level/floor. Row 1: attributes + gear. Row 2: the rolling event
-      // message (or the level-up/targeting prompt) — each on its own line so a long
-      // stats prefix can't crowd out the others.
+      // Row 0: HP/level/floor. Row 1: attributes + gear. Rows 2+: the last couple of
+      // distinct log messages (or the level-up/targeting prompt) — kept on their own
+      // lines so a long stats prefix can't crowd them out.
       std::string status_line = "HP:" + std::to_string(player.hp) + "/" + std::to_string(player.max_hp) +
                                  " Lvl:" + std::to_string(player.level) + " Floor:" + std::to_string(current_level + 1);
       tcod::print(console, {0, 0}, status_line, tcod::ColorRGB{255, 255, 255}, std::nullopt);
@@ -718,16 +747,25 @@ int main(int argc, char* argv[]) {
                                describe_armor(player.armor) + ")";
       tcod::print(console, {0, 1}, gear_line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
 
-      std::string message_line = message;
       if (mode == Mode::LevelUp) {
-        message_line = "*** LEVEL UP (now level " + std::to_string(player.level) +
-                        ")! Press Shift+S/D/I to raise Strength/Dexterity/Intelligence. ***";
+        std::string prompt = "*** LEVEL UP (now level " + std::to_string(player.level) +
+                              ")! Press Shift+S/D/I to raise Strength/Dexterity/Intelligence. ***";
+        tcod::print(console, {0, 2}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
       } else if (mode == Mode::Targeting) {
-        message_line =
-            "Casting " + kSpellTable[static_cast<size_t>(casting_spell_index)].name + " - move to target, Enter to fire, Esc to cancel.";
+        std::string prompt = "Casting " + kSpellTable[static_cast<size_t>(casting_spell_index)].name +
+                              " - move to target, Enter to fire, Esc to cancel.";
+        tcod::print(console, {0, 2}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
+      } else {
+        // Always exactly the last MESSAGE_ROWS distinct messages, oldest on top, one per line —
+        // never wrapped or combined, even if several things happened on the same turn.
+        int total = static_cast<int>(message_log.size());
+        for (int row = 0; row < MESSAGE_ROWS; ++row) {
+          int idx = total - MESSAGE_ROWS + row;
+          if (idx < 0) continue;
+          tcod::print(console, {0, 2 + row}, message_log[static_cast<size_t>(idx)], tcod::ColorRGB{255, 255, 100},
+                      std::nullopt);
+        }
       }
-      tcod::print_rect(console, {0, 2, SCREEN_WIDTH, MESSAGE_ROWS}, message_line, tcod::ColorRGB{255, 255, 100},
-                        std::nullopt);
 
       for (int y = 0; y < level.map.height(); ++y) {
         for (int x = 0; x < level.map.width(); ++x) {
@@ -854,6 +892,19 @@ int main(int argc, char* argv[]) {
         continue;
       }
 
+      if (mode == Mode::MessageLog) {
+        if (event.key.key == SDLK_ESCAPE || event.key.key == SDLK_RIGHTBRACKET) {
+          mode = Mode::Playing;
+        } else if (event.key.key == SDLK_K || event.key.key == SDLK_UP) {
+          int visible_rows = SCREEN_HEIGHT - 1;
+          int max_scroll = std::max(0, static_cast<int>(message_log.size()) - visible_rows);
+          log_scroll = std::min(log_scroll + 1, max_scroll);
+        } else if (event.key.key == SDLK_J || event.key.key == SDLK_DOWN) {
+          log_scroll = std::max(log_scroll - 1, 0);
+        }
+        continue;
+      }
+
       if (mode == Mode::LevelUp) {
         // No menu for this on purpose: just force S/D/I directly, one point at a time.
         // Requires actual Shift+S/D/I (not the bare lowercase letter) since 'd' and 'i'
@@ -867,21 +918,21 @@ int main(int argc, char* argv[]) {
           int new_max_hp = max_hp_for_strength(player.strength);
           player.hp += new_max_hp - player.max_hp;
           player.max_hp = new_max_hp;
-          message = "Strength increased to " + std::to_string(player.strength) + "!";
+          add_message("Strength increased to " + std::to_string(player.strength) + "!");
           pending_attribute_points -= 1;
         } else if (shift_held && event.key.key == SDLK_D) {
           player.dexterity += 1;
           player.evasion = evasion_for_dexterity(player.dexterity);
-          message = "Dexterity increased to " + std::to_string(player.dexterity) + "!";
+          add_message("Dexterity increased to " + std::to_string(player.dexterity) + "!");
           pending_attribute_points -= 1;
         } else if (shift_held && event.key.key == SDLK_I) {
           auto known_before = known_spell_indices(player.intelligence);
           player.intelligence += 1;
           auto known_after = known_spell_indices(player.intelligence);
-          message = "Intelligence increased to " + std::to_string(player.intelligence) + "!";
+          add_message("Intelligence increased to " + std::to_string(player.intelligence) + "!");
           for (int spell_idx : known_after) {
             bool already_known = std::find(known_before.begin(), known_before.end(), spell_idx) != known_before.end();
-            if (!already_known) message += " You can now cast " + kSpellTable[static_cast<size_t>(spell_idx)].name + "!";
+            if (!already_known) add_message("You can now cast " + kSpellTable[static_cast<size_t>(spell_idx)].name + "!");
           }
           pending_attribute_points -= 1;
         }
@@ -910,7 +961,7 @@ int main(int argc, char* argv[]) {
             // like bare fists, which isn't a real item.
             if (!player.weapon.is_intrinsic) inventory.push_back(player.weapon);
             player.weapon = chosen;
-            message = "You equip the " + chosen.name + ".";
+            add_message("You equip the " + chosen.name + ".");
             mode = Mode::Playing;
             end_turn();  // fiddling with gear takes time; adjacent monsters get a free hit
           }
@@ -937,7 +988,7 @@ int main(int argc, char* argv[]) {
           if (valid) {
             if (!player.armor.is_intrinsic) armor_inventory.push_back(player.armor);
             player.armor = chosen;
-            message = "You equip the " + chosen.name + ".";
+            add_message("You equip the " + chosen.name + ".");
             mode = Mode::Playing;
             end_turn();  // fiddling with gear takes time; adjacent monsters get a free hit
           }
@@ -982,7 +1033,7 @@ int main(int argc, char* argv[]) {
           proj.color = spell.color;
           level.projectiles.push_back(proj);
 
-          message = "You cast " + spell.name + ".";
+          add_message("You cast " + spell.name + ".");
           mode = Mode::Playing;
           end_turn();  // advance_projectiles() may resolve this immediately for fast spells
           continue;
@@ -1075,7 +1126,7 @@ int main(int argc, char* argv[]) {
               level.armor_items.push_back(GroundArmor{player.x, player.y, dropped});
               dropped_name = dropped.name;
             }
-            message = "You drop the " + dropped_name + ".";
+            add_message("You drop the " + dropped_name + ".");
             mode = Mode::Playing;
             end_turn();
           }
@@ -1103,34 +1154,41 @@ int main(int argc, char* argv[]) {
       }
       if (event.key.key == SDLK_G) {
         // Picks up whatever's on the player's current tile (no more auto-pickup on
-        // step). Picks up one weapon and one armor piece if both happen to be here.
-        std::string pickup_message;
+        // step). Picks up one weapon and one armor piece if both happen to be here,
+        // each as its own message rather than one combined line.
+        bool picked_up_anything = false;
         for (auto it = level.items.begin(); it != level.items.end(); ++it) {
           if (it->x == player.x && it->y == player.y) {
-            pickup_message += "You pick up a " + it->weapon.name + ". ";
+            add_message("You pick up a " + it->weapon.name + ". Press 'w' to equip.");
             inventory.push_back(it->weapon);
             level.items.erase(it);
+            picked_up_anything = true;
             break;
           }
         }
         for (auto it = level.armor_items.begin(); it != level.armor_items.end(); ++it) {
           if (it->x == player.x && it->y == player.y) {
-            pickup_message += "You pick up a " + it->armor.name + ". ";
+            add_message("You pick up a " + it->armor.name + ". Press 'a' to equip.");
             armor_inventory.push_back(it->armor);
             level.armor_items.erase(it);
+            picked_up_anything = true;
             break;
           }
         }
-        if (!pickup_message.empty()) {
-          message = pickup_message + "Press 'w'/'a' to equip.";
+        if (picked_up_anything) {
           end_turn();
         } else {
-          message = "There's nothing here to pick up.";
+          add_message("There's nothing here to pick up.");
         }
         continue;
       }
       if (event.key.key == SDLK_Z) {
         mode = Mode::SpellMenu;
+        continue;
+      }
+      if (event.key.key == SDLK_RIGHTBRACKET) {
+        mode = Mode::MessageLog;
+        log_scroll = 0;  // always open showing the most recent messages
         continue;
       }
       // SDL reports keycodes for the *unshifted* key on a US layout, so Shift+Period
@@ -1145,7 +1203,7 @@ int main(int argc, char* argv[]) {
         if (player.x == level.stairs_down_x && player.y == level.stairs_down_y) {
           descend();
         } else {
-          message = "There are no stairs down here.";
+          add_message("There are no stairs down here.");
         }
         continue;
       }
@@ -1153,14 +1211,14 @@ int main(int argc, char* argv[]) {
         if (level.has_stairs_up && player.x == level.entry_x && player.y == level.entry_y) {
           ascend();
         } else {
-          message = "There are no stairs up here.";
+          add_message("There are no stairs up here.");
         }
         continue;
       }
       // Plain '.' (no shift, which is claimed above for '>') passes the turn without
       // moving or attacking — handy for watching what monsters do on their own.
       if (event.key.key == SDLK_PERIOD && !(event.key.mod & SDL_KMOD_SHIFT)) {
-        message = "You wait.";
+        add_message("You wait.");
         end_turn();
         continue;
       }
@@ -1222,18 +1280,18 @@ int main(int argc, char* argv[]) {
         Actor& target = level.monsters[static_cast<size_t>(target_index)];
 
         if (random_int(1, 100) <= target.evasion) {
-          message = "The " + target.name + " dodges your attack!";
+          add_message("The " + target.name + " dodges your attack!");
         } else {
           int damage = roll_damage(player.weapon) + player.strength;
           target.hp -= damage;
 
           if (!target.is_alive()) {
-            message = "You slay the " + target.name + " with your " + player.weapon.name + "!";
+            add_message("You slay the " + target.name + " with your " + player.weapon.name + "!");
             int xp_reward = target.xp_reward;  // read before erase invalidates `target`
             level.monsters.erase(level.monsters.begin() + target_index);
             grant_xp(xp_reward);
           } else {
-            message = "You hit the " + target.name + " for " + std::to_string(damage) + ".";
+            add_message("You hit the " + target.name + " for " + std::to_string(damage) + ".");
           }
         }
         end_turn();  // any monster(s) still adjacent (including the one just hit) get to act

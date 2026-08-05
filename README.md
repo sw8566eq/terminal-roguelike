@@ -64,17 +64,35 @@ step 1.
 
 - Arrow keys, `h j k l`, or `y u b n` (vim-style, including diagonals) to move
 - Walk into an enemy to attack it
+- `.` to wait a turn
 - `>` / `<` to take stairs down/up (must be standing on them)
 - `g` to pick up whatever's on your tile (nothing is picked up automatically)
 - `w` to open the weapon menu and equip a carried weapon (or bare fists)
 - `a` to open the armor menu and equip a carried piece (or bare skin)
+- `q` to open the potion menu and drink one (heal, or a temporary stat boost —
+  see below)
 - `d` to drop your equipped weapon/armor or something from your pack
 - `z` to open your known spells and cast one (unlocked by Intelligence — see
   below); movement then aims a targeting cursor instead of moving you, with
   a preview line showing what the shot would hit, `Enter` fires, `Esc` cancels
 - On leveling up, `Shift+S` / `Shift+D` / `Shift+I` to put your point into
   Strength / Dexterity / Intelligence
+- `]` to open the full message log (scroll with `j`/`k` or arrows, `Esc` or
+  `]` to close); the HUD always shows the last few messages anyway
 - `Esc` to quit
+
+### Debug flags
+
+These are for development/testing, not normal play:
+
+- `--floor=N` — jump straight to floor N at startup instead of walking down
+  from floor 1
+- `--reveal` — show the entire current floor's terrain/monsters/items
+  regardless of exploration or line of sight (dimmed where not actually in
+  view), for eyeballing spawns without exploring first
+- `--dump-loot` — print every weapon/armor/potion/monster on the floor
+  reached via `--floor=N` to the console and exit immediately, without
+  opening a window
 
 ## Project layout
 
@@ -83,9 +101,9 @@ roguelike/
 ├── CMakeLists.txt      # build configuration
 ├── vcpkg.json          # dependency manifest (libtcod, sdl3)
 ├── src/
-│   ├── main.cpp         # entry point, game loop, rendering, input
+│   ├── main.cpp         # entry point, game loop, rendering, input, content tables
 │   ├── map.hpp/.cpp     # dungeon generation, FOV, fog of war
-│   ├── entity.hpp/.cpp  # Weapon/Armor/Actor types, damage rolls
+│   ├── entity.hpp/.cpp  # Weapon/Armor/Potion/Actor types, damage rolls
 │   └── rng.hpp/.cpp     # shared random-number and dice-rolling utility
 └── vcpkg/               # (created by you) vendored package manager
 ```
@@ -101,9 +119,25 @@ roguelike/
 - [x] Permadeath + restart flow
 - [x] Multi-level dungeon (stairs up/down, floors persist as you leave/return)
 - [x] Player attributes & leveling (Strength/Dexterity/Intelligence, XP)
-- [x] Armor & evasion (equippable armor, Dexterity-based dodge chance)
+- [x] Armor & evasion (equippable armor; dodge chance is a live Dexterity
+      contest between attacker and defender on both sides of a fight, not
+      just a flat player stat)
 - [x] Spells (Intelligence unlocks them; ranged, travel a fixed distance per
       turn rather than resolving instantly, with an aim-preview line) — only
       one spell (Magic Dart) so far, more planned
-- [ ] Monster AI (currently stationary; only fights back when attacked)
-- [ ] Multi-line message log (currently a single rolling line)
+- [x] Monster AI: chases when it can see you, keeps heading for the last
+      place it saw you after you break line of sight (until it gets there),
+      otherwise wanders idly — not real pathfinding yet, so it can still get
+      stuck on awkward corners
+- [x] Monster variety scales with depth (tougher monster types replace
+      weaker ones as you descend, plus more of them per floor)
+- [x] Potions: healing, and temporary (+5, 15-turn) Strength/Dexterity/
+      Intelligence boosts
+- [x] Weapon/armor/potion variety also scales with depth, mirroring monsters
+- [x] Passive HP regeneration (slow, scales with max HP)
+- [x] Multi-line message log with scrollback (`]`), repeat-message coalescing
+- [ ] More spells beyond Magic Dart
+- [ ] Distinct per-monster-type AI (currently all monsters share the same
+      wander/chase/remember behavior)
+- [ ] Real pathfinding for monster chase (currently a greedy step toward the
+      target tile)

@@ -449,29 +449,71 @@ int main(int argc, char* argv[]) {
     advance_projectiles();
 
     Level& level = levels[static_cast<size_t>(current_level)];
+
+    // Tries to step a monster by (step_dx, step_dy); does nothing and returns false if
+    // that tile is a wall or already has another living monster on it.
+    auto try_monster_step = [&](Actor& m, int step_dx, int step_dy) -> bool {
+      if (step_dx == 0 && step_dy == 0) return false;
+      int nx = m.x + step_dx;
+      int ny = m.y + step_dy;
+      if (!level.map.is_walkable(nx, ny)) return false;
+      for (const auto& other : level.monsters) {
+        if (&other != &m && other.is_alive() && other.x == nx && other.y == ny) return false;
+      }
+      m.x = nx;
+      m.y = ny;
+      return true;
+    };
+
     for (auto& monster : level.monsters) {
       if (mode == Mode::Dead) break;  // player already died to an earlier monster this turn
       if (!monster.is_alive()) continue;
 
-      int dx = monster.x - player.x;
-      int dy = monster.y - player.y;
-      if (dx < 0) dx = -dx;
-      if (dy < 0) dy = -dy;
-      bool adjacent = dx <= 1 && dy <= 1 && (dx != 0 || dy != 0);
-      if (!adjacent) continue;
+      int dx = player.x - monster.x;
+      int dy = player.y - monster.y;
+      int abs_dx = dx < 0 ? -dx : dx;
+      int abs_dy = dy < 0 ? -dy : dy;
+      bool adjacent = abs_dx <= 1 && abs_dy <= 1 && (dx != 0 || dy != 0);
 
-      if (random_int(1, 100) <= player.evasion) {
-        message += " You dodge the " + monster.name + "'s attack!";
+      if (adjacent) {
+        if (random_int(1, 100) <= player.evasion) {
+          message += " You dodge the " + monster.name + "'s attack!";
+          continue;
+        }
+
+        int raw_damage = roll_damage(monster.weapon);
+        int damage = std::max(raw_damage - player.armor.defense, 0);
+        player.hp -= damage;
+        message += " The " + monster.name + " hits you for " + std::to_string(damage) + ".";
+        if (!player.is_alive()) {
+          death_cause = monster.name;
+          mode = Mode::Dead;
+        }
         continue;
       }
 
-      int raw_damage = roll_damage(monster.weapon);
-      int damage = std::max(raw_damage - player.armor.defense, 0);
-      player.hp -= damage;
-      message += " The " + monster.name + " hits you for " + std::to_string(damage) + ".";
-      if (!player.is_alive()) {
-        death_cause = monster.name;
-        mode = Mode::Dead;
+      // Not adjacent: chase if the player would currently see this tile (shadowcasting
+      // FOV is reciprocal, so this doubles as "can the monster see the player" without
+      // computing a separate FOV per monster); otherwise wander idly. Movement is a
+      // simple greedy step toward the player, not real pathfinding — monsters can still
+      // get stuck on awkward corners, but that's a fine starting point.
+      int move_dx = 0;
+      int move_dy = 0;
+      if (level.map.is_in_fov(monster.x, monster.y)) {
+        move_dx = (dx > 0) - (dx < 0);  // sign(dx): one tile toward the player
+        move_dy = (dy > 0) - (dy < 0);
+      } else if (random_int(0, 1) == 0) {
+        // Wander: only a coin-flip chance to shuffle each turn, so it reads as idle
+        // rather than frantic.
+        move_dx = random_int(-1, 1);
+        move_dy = random_int(-1, 1);
+      }
+      if (move_dx == 0 && move_dy == 0) continue;
+
+      // Try the intended step, then fall back to a single-axis step if it's blocked
+      // (e.g. a diagonal clipped by a wall corner).
+      if (!try_monster_step(monster, move_dx, move_dy)) {
+        if (!try_monster_step(monster, move_dx, 0)) try_monster_step(monster, 0, move_dy);
       }
     }
   };
@@ -501,7 +543,7 @@ int main(int argc, char* argv[]) {
     inventory.clear();
     armor_inventory.clear();
     pending_attribute_points = 0;
-    message = "Walk into an enemy to attack. hjkl/yubn or arrows to move, 'g' get, 'w' weapons, 'a' armor, 'd' drop, 'z' spells, '>'/'<' stairs, Esc to quit.";
+    message = "Walk into an enemy to attack. hjkl/yubn or arrows to move, '.' wait, 'g' get, 'w' weapons, 'a' armor, 'd' drop, 'z' spells, '>'/'<' stairs, Esc to quit.";
     mode = Mode::Playing;
   };
 
@@ -1067,6 +1109,13 @@ int main(int argc, char* argv[]) {
         } else {
           message = "There are no stairs up here.";
         }
+        continue;
+      }
+      // Plain '.' (no shift, which is claimed above for '>') passes the turn without
+      // moving or attacking — handy for watching what monsters do on their own.
+      if (event.key.key == SDLK_PERIOD && !(event.key.mod & SDL_KMOD_SHIFT)) {
+        message = "You wait.";
+        end_turn();
         continue;
       }
 

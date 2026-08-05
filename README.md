@@ -65,8 +65,13 @@ step 1.
 - Arrow keys, `h j k l`, or `y u b n` (vim-style, including diagonals) to move
 - Walk into an enemy to attack it
 - `>` / `<` to take stairs down/up (must be standing on them)
-- `i` to open your inventory and equip a carried weapon (or bare fists)
-- `d` to drop your equipped weapon or something from your pack
+- `g` to pick up whatever's on your tile (nothing is picked up automatically)
+- `w` to open the weapon menu and equip a carried weapon (or bare fists)
+- `a` to open the armor menu and equip a carried piece (or bare skin)
+- `d` to drop your equipped weapon/armor or something from your pack
+- `z` to open your known spells and cast one (unlocked by Intelligence — see
+  below); movement then aims a targeting cursor instead of moving you, with
+  a preview line showing what the shot would hit, `Enter` fires, `Esc` cancels
 - On leveling up, `Shift+S` / `Shift+D` / `Shift+I` to put your point into
   Strength / Dexterity / Intelligence
 - `Esc` to quit
@@ -80,8 +85,8 @@ roguelike/
 ├── src/
 │   ├── main.cpp         # entry point, game loop, rendering, input
 │   ├── map.hpp/.cpp     # dungeon generation, FOV, fog of war
-│   ├── entity.hpp/.cpp  # Weapon/Actor types, damage rolls
-│   └── rng.hpp/.cpp     # shared random-number utility
+│   ├── entity.hpp/.cpp  # Weapon/Armor/Actor types, damage rolls
+│   └── rng.hpp/.cpp     # shared random-number and dice-rolling utility
 └── vcpkg/               # (created by you) vendored package manager
 ```
 
@@ -96,6 +101,9 @@ roguelike/
 - [x] Permadeath + restart flow
 - [x] Multi-level dungeon (stairs up/down, floors persist as you leave/return)
 - [x] Player attributes & leveling (Strength/Dexterity/Intelligence, XP)
-- [ ] Armor & evasion
+- [x] Armor & evasion (equippable armor, Dexterity-based dodge chance)
+- [x] Spells (Intelligence unlocks them; ranged, travel a fixed distance per
+      turn rather than resolving instantly, with an aim-preview line) — only
+      one spell (Magic Dart) so far, more planned
 - [ ] Monster AI (currently stationary; only fights back when attacked)
 - [ ] Multi-line message log (currently a single rolling line)

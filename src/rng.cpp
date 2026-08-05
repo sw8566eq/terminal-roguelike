@@ -15,3 +15,9 @@ int random_int(int lo, int hi) {
   std::uniform_int_distribution<int> dist(lo, hi);
   return dist(rng_engine());
 }
+
+int roll_dice(int count, int sides) {
+  int total = 0;
+  for (int i = 0; i < count; ++i) total += random_int(1, sides);
+  return total;
+}

@@ -6,3 +6,6 @@
 //
 // Returns an integer in [lo, hi], inclusive.
 int random_int(int lo, int hi);
+
+// Rolls `count` dice of `sides` each and sums them (e.g. roll_dice(2, 6) is 2d6).
+int roll_dice(int count, int sides);

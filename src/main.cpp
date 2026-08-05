@@ -14,6 +14,7 @@
 
 constexpr int NUM_MONSTERS = 5;  // per floor
 constexpr int NUM_ITEMS = 4;     // per floor
+constexpr int NUM_ARMOR = 3;     // per floor
 
 // Melee weapons that can be found lying on the floor.
 const std::vector<Weapon> kWeaponTable = {
@@ -23,6 +24,13 @@ const std::vector<Weapon> kWeaponTable = {
     {"Battle Axe", 2, 6, 0},
 };
 
+// Armor that can be found lying on the floor.
+const std::vector<Armor> kArmorTable = {
+    {"Leather Armor", 1},
+    {"Chainmail", 3},
+    {"Plate Armor", 5},
+};
+
 struct MonsterTemplate {
   std::string name;
   char glyph;
@@ -30,15 +38,20 @@ struct MonsterTemplate {
   int max_hp;
   Weapon weapon;
   int xp_reward;
+  int evasion;  // percent chance to dodge the player's attack; monsters wear no armor
 };
 
 const std::vector<MonsterTemplate> kMonsterTable = {
-    {"Rat", 'r', tcod::ColorRGB{150, 100, 60}, 4, Weapon{"Bite", 1, 3, 0}, /*xp_reward=*/5},
-    {"Goblin", 'g', tcod::ColorRGB{80, 180, 80}, 7, Weapon{"Claws", 1, 4, 0}, /*xp_reward=*/10},
+    {"Rat", 'r', tcod::ColorRGB{150, 100, 60}, 4, Weapon{"Bite", 1, 3, 0}, /*xp_reward=*/5, /*evasion=*/15},
+    {"Goblin", 'g', tcod::ColorRGB{80, 180, 80}, 7, Weapon{"Claws", 1, 4, 0}, /*xp_reward=*/10, /*evasion=*/5},
 };
 
 // Max HP scales with Strength, so there's no need for a separate Vitality stat.
 int max_hp_for_strength(int strength) { return 10 + strength * 5; }
+
+// Evasion (percent chance to dodge an attack entirely) scales with Dexterity, capped
+// so the player can never become effectively unhittable.
+int evasion_for_dexterity(int dexterity) { return std::min(dexterity * 3, 40); }
 
 // XP required to advance from the given level to the next one.
 int xp_needed_for_level(int level) { return level * 20; }
@@ -47,11 +60,84 @@ int xp_needed_for_level(int level) { return level * 20; }
 // never added to the ground or the inventory list.
 const Weapon kFists = Weapon{"Fists", 1, 2, 0, /*is_intrinsic=*/true};
 
+// The player's default, always-available "armor" (bare skin, no defense). Not a real
+// pickup, same idea as kFists.
+const Armor kNoArmor = Armor{"Nothing", 0, /*is_intrinsic=*/true};
+
+// A ranged spell: damage is dice_count dice of dice_sides each, plus floor(INT/3).
+// Known automatically once the player's Intelligence reaches unlock_int — nothing to
+// learn or pick up, it just unlocks. (Thresholds are placeholders until the rest of
+// the spell pool is designed; there's only one spell so far.)
+//
+// speed is tiles traveled per player turn, not real time — there's no animation.
+// "Instant" just means a speed high enough to always cross the whole map in one turn;
+// slower future spells would take multiple turns to reach a distant target.
+struct Spell {
+  std::string name;
+  int unlock_int;
+  int dice_count;
+  int dice_sides;
+  int speed;
+  int range;  // max cast distance from the caster, in tiles (straight-line)
+  char glyph;
+  tcod::ColorRGB color;
+};
+
+constexpr int kInstantSpellSpeed = 99;  // safely more tiles than this map's diagonal
+
+const std::vector<Spell> kSpellTable = {
+    // range happens to match the player's starting FOV radius today, but it's its own
+    // fixed number — it won't change if FOV radius ever does (e.g. a future perception
+    // mechanic).
+    {"Magic Dart", /*unlock_int=*/3, /*dice_count=*/1, /*dice_sides=*/2, kInstantSpellSpeed, /*range=*/8, '*',
+     tcod::ColorRGB{200, 100, 255}},
+};
+
+// Indices into kSpellTable of every spell the player currently knows, in display
+// order. Kept as one function so the spell-menu render and input code can't drift.
+std::vector<int> known_spell_indices(int intelligence) {
+  std::vector<int> indices;
+  for (size_t i = 0; i < kSpellTable.size(); ++i) {
+    if (intelligence >= kSpellTable[i].unlock_int) indices.push_back(static_cast<int>(i));
+  }
+  return indices;
+}
+
 // A weapon lying on the floor, waiting to be picked up.
 struct GroundItem {
   int x, y;
   Weapon weapon;
 };
+
+// A piece of armor lying on the floor, waiting to be picked up.
+struct GroundArmor {
+  int x, y;
+  Armor armor;
+};
+
+// A spell in flight: advances along a precomputed path by `speed` tiles every player
+// turn (see advance_projectiles), hitting the first wall or monster it reaches.
+struct Projectile {
+  std::vector<std::pair<int, int>> path;  // tiles from just past the caster through the target
+  size_t path_index = 0;                  // how many tiles of the path have been consumed so far
+  int speed = 1;
+  int dice_count = 1;
+  int dice_sides = 2;
+  int bonus = 0;  // locked in at cast time (e.g. floor(INT/3)), not re-read later
+  std::string name;
+  char glyph = '*';
+  tcod::ColorRGB color{255, 255, 255};
+};
+
+// Every tile from just past (from_x,from_y) through (to_x,to_y), via libtcod's
+// Bresenham line. Excludes the starting tile so a projectile doesn't "hit" its caster.
+std::vector<std::pair<int, int>> trace_path(int from_x, int from_y, int to_x, int to_y) {
+  std::vector<std::pair<int, int>> path;
+  for (auto [x, y] : tcod::BresenhamLine({from_x, from_y}, {to_x, to_y}).without_start()) {
+    path.push_back({x, y});
+  }
+  return path;
+}
 
 // A monster glyph remembered at a tile after it's no longer in view — fog-of-war
 // memory, but for monsters instead of terrain. Once monster AI can move them around,
@@ -95,16 +181,30 @@ std::pair<int, int> random_free_tile(const Map& map, const std::vector<std::pair
   }
 }
 
-// The items selectable in the "drop" screen, in display order: -1 means the currently
-// equipped weapon (omitted if it's fists/intrinsic), otherwise it's an index into
-// `inventory`. Kept as one function so the render and input-handling code that both
-// need this list can't drift apart.
-std::vector<int> droppable_slots(const Actor& player, const std::vector<Weapon>& inventory) {
-  std::vector<int> slots;
-  if (!player.weapon.is_intrinsic) slots.push_back(-1);
-  for (size_t i = 0; i < inventory.size(); ++i) slots.push_back(static_cast<int>(i));
+enum class ItemKind { Weapon, Armor };
+
+// One selectable row in the equip or drop screen. index == -1 means the intrinsic
+// default (Fists / Nothing) for Weapon/Armor respectively; otherwise it's an index
+// into `inventory` or `armor_inventory`.
+struct ItemSlot {
+  ItemKind kind;
+  int index;
+};
+
+// The droppable list: the currently equipped weapon/armor (omitted if intrinsic),
+// followed by everything carried of each kind.
+std::vector<ItemSlot> drop_slots(const Actor& player, const std::vector<Weapon>& inventory,
+                                  const std::vector<Armor>& armor_inventory) {
+  std::vector<ItemSlot> slots;
+  if (!player.weapon.is_intrinsic) slots.push_back({ItemKind::Weapon, -1});
+  for (size_t i = 0; i < inventory.size(); ++i) slots.push_back({ItemKind::Weapon, static_cast<int>(i)});
+  if (!player.armor.is_intrinsic) slots.push_back({ItemKind::Armor, -1});
+  for (size_t i = 0; i < armor_inventory.size(); ++i) slots.push_back({ItemKind::Armor, static_cast<int>(i)});
   return slots;
 }
+
+// Formats an armor piece as e.g. "+3", for the HUD/menus.
+std::string describe_armor(const Armor& armor) { return "+" + std::to_string(armor.defense); }
 
 // One dungeon floor: its own map, monsters, and items. Levels are generated once and
 // then kept around (not regenerated) so going back upstairs returns to how you left it.
@@ -112,7 +212,9 @@ struct Level {
   Map map;
   std::vector<Actor> monsters;
   std::vector<GroundItem> items;
+  std::vector<GroundArmor> armor_items;
   std::vector<RememberedMonster> remembered_monsters;  // last-seen monster sightings, may go stale
+  std::vector<Projectile> projectiles;  // spells currently in flight on this floor
   int entry_x = 0;           // where the player arrives on this floor
   int entry_y = 0;
   bool has_stairs_up = false;  // whether entry_x/y doubles as a stairs-up tile (false on floor 1)
@@ -152,7 +254,7 @@ void update_monster_memory(Level& level) {
 
 // Builds and populates a fresh floor.
 Level generate_level(int width, int height, bool has_stairs_up) {
-  Level level{Map(width, height), {}, {}, {}};
+  Level level{Map(width, height), {}, {}, {}, {}, {}};
   auto [entry_x, entry_y] = level.map.generate(/*max_rooms=*/12, /*room_min_size=*/4, /*room_max_size=*/8);
   level.entry_x = entry_x;
   level.entry_y = entry_y;
@@ -180,6 +282,7 @@ Level generate_level(int width, int height, bool has_stairs_up) {
     monster.name = tmpl.name;
     monster.weapon = tmpl.weapon;
     monster.xp_reward = tmpl.xp_reward;
+    monster.evasion = tmpl.evasion;
     level.monsters.push_back(monster);
   }
 
@@ -187,6 +290,12 @@ Level generate_level(int width, int height, bool has_stairs_up) {
     auto [ix, iy] = random_free_tile(level.map, occupied);
     occupied.push_back({ix, iy});
     level.items.push_back(GroundItem{ix, iy, kWeaponTable[random_int(0, static_cast<int>(kWeaponTable.size()) - 1)]});
+  }
+
+  for (int i = 0; i < NUM_ARMOR; ++i) {
+    auto [ax, ay] = random_free_tile(level.map, occupied);
+    occupied.push_back({ax, ay});
+    level.armor_items.push_back(GroundArmor{ax, ay, kArmorTable[random_int(0, static_cast<int>(kArmorTable.size()) - 1)]});
   }
 
   return level;
@@ -198,7 +307,7 @@ int main(int argc, char* argv[]) {
   constexpr int HUD_HEIGHT = 2;  // top rows reserved for stats + message, not part of the map
   constexpr int MAP_WIDTH = SCREEN_WIDTH;
   constexpr int MAP_HEIGHT = SCREEN_HEIGHT - HUD_HEIGHT;
-  constexpr int FOV_RADIUS = 8;
+  constexpr int FOV_RADIUS = 8;  // how far the player can see; unrelated to any spell's range
 
   auto console = tcod::Console{SCREEN_WIDTH, SCREEN_HEIGHT};  // Main console.
 
@@ -219,11 +328,15 @@ int main(int argc, char* argv[]) {
   player.name = "Player";
 
   std::vector<Weapon> inventory;
+  std::vector<Armor> armor_inventory;
   std::string message;
   std::string death_cause;  // name of whatever last killed the player, for the death screen
   int pending_attribute_points = 0;  // unspent level-up points forcing a Mode::LevelUp prompt
 
-  enum class Mode { Playing, Inventory, Drop, Dead, LevelUp };
+  enum class Mode { Playing, WeaponMenu, ArmorMenu, Drop, Dead, LevelUp, SpellMenu, Targeting };
+  int casting_spell_index = -1;  // which kSpellTable entry is being aimed, while Mode::Targeting
+  int target_x = 0;              // targeting cursor position, while Mode::Targeting
+  int target_y = 0;
   Mode mode = Mode::Playing;
 
   std::vector<Level> levels;
@@ -241,9 +354,65 @@ int main(int argc, char* argv[]) {
     if (pending_attribute_points > 0) mode = Mode::LevelUp;
   };
 
+  // Advances every in-flight projectile on the current floor by its speed (in tiles),
+  // checking each tile it passes through this turn for a wall or monster to hit.
+  // Called once per player turn, from end_turn().
+  auto advance_projectiles = [&]() {
+    Level& level = levels[static_cast<size_t>(current_level)];
+    for (size_t i = 0; i < level.projectiles.size();) {
+      Projectile& proj = level.projectiles[i];
+      bool consumed = false;
+
+      for (int step = 0; step < proj.speed && !consumed; ++step) {
+        if (proj.path_index >= proj.path.size()) {
+          consumed = true;  // reached the target tile with nothing there; the spell dissipates
+          break;
+        }
+        auto [x, y] = proj.path[proj.path_index];
+        ++proj.path_index;
+
+        if (!level.map.is_walkable(x, y)) {
+          message += " Your " + proj.name + " fizzles against a wall.";
+          consumed = true;
+          break;
+        }
+
+        int target_index = -1;
+        for (size_t m = 0; m < level.monsters.size(); ++m) {
+          if (level.monsters[m].x == x && level.monsters[m].y == y) {
+            target_index = static_cast<int>(m);
+            break;
+          }
+        }
+        if (target_index >= 0) {
+          Actor& target = level.monsters[static_cast<size_t>(target_index)];
+          int damage = roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus;
+          target.hp -= damage;
+          if (!target.is_alive()) {
+            message += " Your " + proj.name + " kills the " + target.name + "!";
+            int xp_reward = target.xp_reward;  // read before erase invalidates `target`
+            level.monsters.erase(level.monsters.begin() + target_index);
+            grant_xp(xp_reward);
+          } else {
+            message += " Your " + proj.name + " hits the " + target.name + " for " + std::to_string(damage) + ".";
+          }
+          consumed = true;
+        }
+      }
+
+      if (consumed) {
+        level.projectiles.erase(level.projectiles.begin() + static_cast<long>(i));
+      } else {
+        ++i;
+      }
+    }
+  };
+
   // Runs after the player's turn: every living monster still adjacent to the player
   // gets to attack. (Movement/chasing AI will plug into this same turn boundary later.)
   auto end_turn = [&]() {
+    advance_projectiles();
+
     Level& level = levels[static_cast<size_t>(current_level)];
     for (auto& monster : level.monsters) {
       if (mode == Mode::Dead) break;  // player already died to an earlier monster this turn
@@ -256,7 +425,13 @@ int main(int argc, char* argv[]) {
       bool adjacent = dx <= 1 && dy <= 1 && (dx != 0 || dy != 0);
       if (!adjacent) continue;
 
-      int damage = roll_damage(monster.weapon);
+      if (random_int(1, 100) <= player.evasion) {
+        message += " You dodge the " + monster.name + "'s attack!";
+        continue;
+      }
+
+      int raw_damage = roll_damage(monster.weapon);
+      int damage = std::max(raw_damage - player.armor.defense, 0);
       player.hp -= damage;
       message += " The " + monster.name + " hits you for " + std::to_string(damage) + ".";
       if (!player.is_alive()) {
@@ -283,12 +458,15 @@ int main(int argc, char* argv[]) {
     player.xp = 0;
     player.max_hp = max_hp_for_strength(player.strength);
     player.hp = player.max_hp;
+    player.evasion = evasion_for_dexterity(player.dexterity);
     player.weapon = kFists;
+    player.armor = kNoArmor;
     level.map.update_fov(player.x, player.y, FOV_RADIUS);
 
     inventory.clear();
+    armor_inventory.clear();
     pending_attribute_points = 0;
-    message = "Walk into an enemy to attack. hjkl/yubn or arrows to move, '>'/'<' for stairs, 'i' inventory, 'd' drop, Esc to quit.";
+    message = "Walk into an enemy to attack. hjkl/yubn or arrows to move, 'g' get, 'w' weapons, 'a' armor, 'd' drop, 'z' spells, '>'/'<' stairs, Esc to quit.";
     mode = Mode::Playing;
   };
 
@@ -326,14 +504,14 @@ int main(int argc, char* argv[]) {
     // --- Render ---
     console.clear();
 
-    if (mode == Mode::Inventory) {
-      tcod::print(console, {0, 0}, "Inventory - press a letter to equip, Esc to close",
-                  tcod::ColorRGB{255, 255, 255}, std::nullopt);
+    if (mode == Mode::WeaponMenu) {
+      tcod::print(console, {0, 0}, "Weapons - press a letter to equip, Esc to close", tcod::ColorRGB{255, 255, 255},
+                  std::nullopt);
       tcod::print(console, {0, 1}, "Equipped: " + player.weapon.name + " (" + describe_weapon(player.weapon) + ")",
                   tcod::ColorRGB{200, 200, 100}, std::nullopt);
 
-      // Fists are always slot 'a', so you can always bail back to unarmed; carried
-      // items fill 'b' onward.
+      // Fists is always slot 'a', so you can always bail back to unarmed; carried
+      // weapons fill 'b' onward.
       std::string fists_line = "a) Fists (" + describe_weapon(kFists) + ")";
       if (player.weapon.is_intrinsic) fists_line += " [equipped]";
       tcod::print(console, {0, 3}, fists_line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
@@ -343,18 +521,57 @@ int main(int argc, char* argv[]) {
                             describe_weapon(inventory[i]) + ")";
         tcod::print(console, {0, 4 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
       }
+    } else if (mode == Mode::ArmorMenu) {
+      tcod::print(console, {0, 0}, "Armor - press a letter to equip, Esc to close", tcod::ColorRGB{255, 255, 255},
+                  std::nullopt);
+      tcod::print(console, {0, 1}, "Equipped: " + player.armor.name + " (" + describe_armor(player.armor) + ")",
+                  tcod::ColorRGB{200, 200, 100}, std::nullopt);
+
+      // "Nothing" is always slot 'a', so you can always bail back to unarmored; carried
+      // armor fills 'b' onward.
+      std::string none_line = "a) " + kNoArmor.name + " (" + describe_armor(kNoArmor) + ")";
+      if (player.armor.is_intrinsic) none_line += " [equipped]";
+      tcod::print(console, {0, 3}, none_line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
+
+      for (size_t i = 0; i < armor_inventory.size(); ++i) {
+        std::string line = std::string(1, static_cast<char>('b' + i)) + ") " + armor_inventory[i].name + " (" +
+                            describe_armor(armor_inventory[i]) + ")";
+        tcod::print(console, {0, 4 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
+      }
+    } else if (mode == Mode::SpellMenu) {
+      tcod::print(console, {0, 0}, "Spells - press a letter to cast, Esc to close", tcod::ColorRGB{255, 255, 255},
+                  std::nullopt);
+
+      auto known = known_spell_indices(player.intelligence);
+      if (known.empty()) {
+        tcod::print(console, {0, 2}, "(no spells known yet)", tcod::ColorRGB{120, 120, 120}, std::nullopt);
+      }
+      for (size_t i = 0; i < known.size(); ++i) {
+        const Spell& s = kSpellTable[static_cast<size_t>(known[i])];
+        std::string line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (" +
+                            std::to_string(s.dice_count) + "d" + std::to_string(s.dice_sides) + "+INT/3)";
+        tcod::print(console, {0, 2 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
+      }
     } else if (mode == Mode::Drop) {
       tcod::print(console, {0, 0}, "Drop - press a letter to drop, Esc to cancel", tcod::ColorRGB{255, 255, 255},
                   std::nullopt);
 
-      auto slots = droppable_slots(player, inventory);
+      auto slots = drop_slots(player, inventory, armor_inventory);
       if (slots.empty()) {
         tcod::print(console, {0, 2}, "(nothing to drop)", tcod::ColorRGB{120, 120, 120}, std::nullopt);
       }
       for (size_t i = 0; i < slots.size(); ++i) {
-        const Weapon& w = (slots[i] == -1) ? player.weapon : inventory[static_cast<size_t>(slots[i])];
-        std::string line = std::string(1, static_cast<char>('a' + i)) + ") " + w.name + " (" + describe_weapon(w) + ")";
-        if (slots[i] == -1) line += " [equipped]";
+        char letter = static_cast<char>('a' + i);
+        std::string line;
+        if (slots[i].kind == ItemKind::Weapon) {
+          const Weapon& w = (slots[i].index == -1) ? player.weapon : inventory[static_cast<size_t>(slots[i].index)];
+          line = std::string(1, letter) + ") " + w.name + " (" + describe_weapon(w) + ")";
+          if (slots[i].index == -1) line += " [equipped]";
+        } else {
+          const Armor& a = (slots[i].index == -1) ? player.armor : armor_inventory[static_cast<size_t>(slots[i].index)];
+          line = std::string(1, letter) + ") " + a.name + " (" + describe_armor(a) + ")";
+          if (slots[i].index == -1) line += " [equipped]";
+        }
         tcod::print(console, {0, 2 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
       }
     } else if (mode == Mode::Dead) {
@@ -371,13 +588,17 @@ int main(int argc, char* argv[]) {
                                 std::to_string(player.level) + " STR:" + std::to_string(player.strength) +
                                 " DEX:" + std::to_string(player.dexterity) + " INT:" +
                                 std::to_string(player.intelligence) + " Floor:" + std::to_string(current_level + 1) +
-                                " Wpn:" + player.weapon.name + "(" + describe_weapon(player.weapon) + ")";
+                                " Wpn:" + player.weapon.name + "(" + describe_weapon(player.weapon) + ")" +
+                                " Arm:" + player.armor.name + "(" + describe_armor(player.armor) + ")";
       tcod::print(console, {0, 0}, stats_line, tcod::ColorRGB{255, 255, 255}, std::nullopt);
 
       std::string message_line = message;
       if (mode == Mode::LevelUp) {
         message_line = "*** LEVEL UP (now level " + std::to_string(player.level) +
                         ")! Press Shift+S/D/I to raise Strength/Dexterity/Intelligence. ***";
+      } else if (mode == Mode::Targeting) {
+        message_line =
+            "Casting " + kSpellTable[static_cast<size_t>(casting_spell_index)].name + " - move to target, Enter to fire, Esc to cancel.";
       }
       tcod::print(console, {0, 1}, message_line, tcod::ColorRGB{255, 255, 100}, std::nullopt);
 
@@ -433,6 +654,13 @@ int main(int argc, char* argv[]) {
         cell.fg = tcod::ColorRGB{200, 200, 255};
       }
 
+      for (const auto& armor_item : level.armor_items) {
+        if (!level.map.is_in_fov(armor_item.x, armor_item.y)) continue;
+        auto& cell = console.at(armor_item.x, armor_item.y + HUD_HEIGHT);
+        cell.ch = '[';
+        cell.fg = tcod::ColorRGB{180, 220, 200};
+      }
+
       for (const auto& monster : level.monsters) {
         if (!level.map.is_in_fov(monster.x, monster.y)) continue;
         auto& cell = console.at(monster.x, monster.y + HUD_HEIGHT);
@@ -440,8 +668,35 @@ int main(int argc, char* argv[]) {
         cell.fg = monster.color;
       }
 
+      // Spells currently in flight (only visible ones matter, same as monsters/items).
+      for (const auto& proj : level.projectiles) {
+        if (proj.path_index == 0 || proj.path_index > proj.path.size()) continue;
+        auto [px, py] = proj.path[proj.path_index - 1];
+        if (!level.map.is_in_fov(px, py)) continue;
+        auto& cell = console.at(px, py + HUD_HEIGHT);
+        cell.ch = proj.glyph;
+        cell.fg = proj.color;
+      }
+
       console.at(player.x, player.y + HUD_HEIGHT).ch = player.glyph;
       console.at(player.x, player.y + HUD_HEIGHT).fg = player.color;
+
+      if (mode == Mode::Targeting) {
+        // Preview the shot: trace the same path a cast would take, and stop drawing at
+        // the first tile that would actually stop it, so what you see is what you'd hit.
+        auto preview = trace_path(player.x, player.y, target_x, target_y);
+        for (size_t i = 0; i < preview.size(); ++i) {
+          auto [x, y] = preview[i];
+          bool blocked = !level.map.is_walkable(x, y);
+          bool has_monster = std::any_of(level.monsters.begin(), level.monsters.end(),
+                                          [&](const Actor& m) { return m.x == x && m.y == y; });
+          bool stops_here = blocked || has_monster || i + 1 == preview.size();
+          auto& cell = console.at(x, y + HUD_HEIGHT);
+          cell.ch = stops_here ? 'X' : '*';
+          cell.fg = stops_here ? tcod::ColorRGB{255, 60, 60} : tcod::ColorRGB{150, 60, 60};
+          if (blocked || has_monster) break;
+        }
+      }
     }
 
     context.present(console);
@@ -489,23 +744,30 @@ int main(int argc, char* argv[]) {
           pending_attribute_points -= 1;
         } else if (shift_held && event.key.key == SDLK_D) {
           player.dexterity += 1;
+          player.evasion = evasion_for_dexterity(player.dexterity);
           message = "Dexterity increased to " + std::to_string(player.dexterity) + "!";
           pending_attribute_points -= 1;
         } else if (shift_held && event.key.key == SDLK_I) {
+          auto known_before = known_spell_indices(player.intelligence);
           player.intelligence += 1;
+          auto known_after = known_spell_indices(player.intelligence);
           message = "Intelligence increased to " + std::to_string(player.intelligence) + "!";
+          for (int spell_idx : known_after) {
+            bool already_known = std::find(known_before.begin(), known_before.end(), spell_idx) != known_before.end();
+            if (!already_known) message += " You can now cast " + kSpellTable[static_cast<size_t>(spell_idx)].name + "!";
+          }
           pending_attribute_points -= 1;
         }
         if (pending_attribute_points <= 0) mode = Mode::Playing;
         continue;
       }
 
-      if (mode == Mode::Inventory) {
+      if (mode == Mode::WeaponMenu) {
         if (event.key.key == SDLK_ESCAPE) {
           mode = Mode::Playing;
         } else if (event.key.key >= SDLK_A && event.key.key <= SDLK_Z) {
           size_t idx = static_cast<size_t>(event.key.key - SDLK_A);
-          // Slot 'a' is always fists; carried items fill 'b' onward.
+          // Slot 'a' is always fists; carried weapons fill 'b' onward.
           Weapon chosen;
           bool valid = false;
           if (idx == 0) {
@@ -529,24 +791,164 @@ int main(int argc, char* argv[]) {
         continue;
       }
 
+      if (mode == Mode::ArmorMenu) {
+        if (event.key.key == SDLK_ESCAPE) {
+          mode = Mode::Playing;
+        } else if (event.key.key >= SDLK_A && event.key.key <= SDLK_Z) {
+          size_t idx = static_cast<size_t>(event.key.key - SDLK_A);
+          // Slot 'a' is always "Nothing"; carried armor fills 'b' onward.
+          Armor chosen;
+          bool valid = false;
+          if (idx == 0) {
+            chosen = kNoArmor;
+            valid = true;
+          } else if (idx - 1 < armor_inventory.size()) {
+            chosen = armor_inventory[idx - 1];
+            armor_inventory.erase(armor_inventory.begin() + static_cast<long>(idx - 1));
+            valid = true;
+          }
+          if (valid) {
+            if (!player.armor.is_intrinsic) armor_inventory.push_back(player.armor);
+            player.armor = chosen;
+            message = "You equip the " + chosen.name + ".";
+            mode = Mode::Playing;
+            end_turn();  // fiddling with gear takes time; adjacent monsters get a free hit
+          }
+        }
+        continue;
+      }
+
+      if (mode == Mode::SpellMenu) {
+        if (event.key.key == SDLK_ESCAPE) {
+          mode = Mode::Playing;
+        } else if (event.key.key >= SDLK_A && event.key.key <= SDLK_Z) {
+          auto known = known_spell_indices(player.intelligence);
+          size_t idx = static_cast<size_t>(event.key.key - SDLK_A);
+          if (idx < known.size()) {
+            casting_spell_index = known[idx];
+            target_x = player.x;
+            target_y = player.y;
+            mode = Mode::Targeting;
+          }
+        }
+        continue;
+      }
+
+      if (mode == Mode::Targeting) {
+        const Spell& spell = kSpellTable[static_cast<size_t>(casting_spell_index)];
+
+        if (event.key.key == SDLK_ESCAPE) {
+          mode = Mode::Playing;
+          continue;
+        }
+        if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER) {
+          // Any tile is a legal target now: the spell travels and resolves against
+          // whatever (if anything) it actually reaches, not necessarily the cursor tile.
+          Projectile proj;
+          proj.path = trace_path(player.x, player.y, target_x, target_y);
+          proj.speed = spell.speed;
+          proj.dice_count = spell.dice_count;
+          proj.dice_sides = spell.dice_sides;
+          proj.bonus = player.intelligence / 3;  // locked in now, not re-read when it lands
+          proj.name = spell.name;
+          proj.glyph = spell.glyph;
+          proj.color = spell.color;
+          level.projectiles.push_back(proj);
+
+          message = "You cast " + spell.name + ".";
+          mode = Mode::Playing;
+          end_turn();  // advance_projectiles() may resolve this immediately for fast spells
+          continue;
+        }
+
+        // Movement keys move the targeting cursor instead of the player.
+        int tdx = 0;
+        int tdy = 0;
+        switch (event.key.key) {
+          case SDLK_UP:
+          case SDLK_K:
+            tdy = -1;
+            break;
+          case SDLK_DOWN:
+          case SDLK_J:
+            tdy = 1;
+            break;
+          case SDLK_LEFT:
+          case SDLK_H:
+            tdx = -1;
+            break;
+          case SDLK_RIGHT:
+          case SDLK_L:
+            tdx = 1;
+            break;
+          case SDLK_Y:
+            tdx = -1;
+            tdy = -1;
+            break;
+          case SDLK_U:
+            tdx = 1;
+            tdy = -1;
+            break;
+          case SDLK_B:
+            tdx = -1;
+            tdy = 1;
+            break;
+          case SDLK_N:
+            tdx = 1;
+            tdy = 1;
+            break;
+          default:
+            break;
+        }
+        if (tdx != 0 || tdy != 0) {
+          int nx = target_x + tdx;
+          int ny = target_y + tdy;
+          int rdx = nx - player.x;
+          int rdy = ny - player.y;
+          bool in_range = rdx * rdx + rdy * rdy <= spell.range * spell.range;
+          if (level.map.in_bounds(nx, ny) && in_range) {
+            target_x = nx;
+            target_y = ny;
+          }
+        }
+        continue;
+      }
+
       if (mode == Mode::Drop) {
         if (event.key.key == SDLK_ESCAPE) {
           mode = Mode::Playing;
         } else if (event.key.key >= SDLK_A && event.key.key <= SDLK_Z) {
-          auto slots = droppable_slots(player, inventory);
+          auto slots = drop_slots(player, inventory, armor_inventory);
           size_t idx = static_cast<size_t>(event.key.key - SDLK_A);
           if (idx < slots.size()) {
-            Weapon dropped;
-            if (slots[idx] == -1) {
-              dropped = player.weapon;
-              player.weapon = kFists;
+            const ItemSlot& slot = slots[idx];
+            std::string dropped_name;
+            if (slot.kind == ItemKind::Weapon) {
+              Weapon dropped;
+              if (slot.index == -1) {
+                dropped = player.weapon;
+                player.weapon = kFists;
+              } else {
+                size_t inv_idx = static_cast<size_t>(slot.index);
+                dropped = inventory[inv_idx];
+                inventory.erase(inventory.begin() + static_cast<long>(inv_idx));
+              }
+              level.items.push_back(GroundItem{player.x, player.y, dropped});
+              dropped_name = dropped.name;
             } else {
-              size_t inv_idx = static_cast<size_t>(slots[idx]);
-              dropped = inventory[inv_idx];
-              inventory.erase(inventory.begin() + static_cast<long>(inv_idx));
+              Armor dropped;
+              if (slot.index == -1) {
+                dropped = player.armor;
+                player.armor = kNoArmor;
+              } else {
+                size_t inv_idx = static_cast<size_t>(slot.index);
+                dropped = armor_inventory[inv_idx];
+                armor_inventory.erase(armor_inventory.begin() + static_cast<long>(inv_idx));
+              }
+              level.armor_items.push_back(GroundArmor{player.x, player.y, dropped});
+              dropped_name = dropped.name;
             }
-            level.items.push_back(GroundItem{player.x, player.y, dropped});
-            message = "You drop the " + dropped.name + ".";
+            message = "You drop the " + dropped_name + ".";
             mode = Mode::Playing;
             end_turn();
           }
@@ -560,12 +962,48 @@ int main(int argc, char* argv[]) {
         continue;
       }
 
-      if (event.key.key == SDLK_I) {
-        mode = Mode::Inventory;
+      if (event.key.key == SDLK_W) {
+        mode = Mode::WeaponMenu;
+        continue;
+      }
+      if (event.key.key == SDLK_A) {
+        mode = Mode::ArmorMenu;
         continue;
       }
       if (event.key.key == SDLK_D) {
         mode = Mode::Drop;
+        continue;
+      }
+      if (event.key.key == SDLK_G) {
+        // Picks up whatever's on the player's current tile (no more auto-pickup on
+        // step). Picks up one weapon and one armor piece if both happen to be here.
+        std::string pickup_message;
+        for (auto it = level.items.begin(); it != level.items.end(); ++it) {
+          if (it->x == player.x && it->y == player.y) {
+            pickup_message += "You pick up a " + it->weapon.name + ". ";
+            inventory.push_back(it->weapon);
+            level.items.erase(it);
+            break;
+          }
+        }
+        for (auto it = level.armor_items.begin(); it != level.armor_items.end(); ++it) {
+          if (it->x == player.x && it->y == player.y) {
+            pickup_message += "You pick up a " + it->armor.name + ". ";
+            armor_inventory.push_back(it->armor);
+            level.armor_items.erase(it);
+            break;
+          }
+        }
+        if (!pickup_message.empty()) {
+          message = pickup_message + "Press 'w'/'a' to equip.";
+          end_turn();
+        } else {
+          message = "There's nothing here to pick up.";
+        }
+        continue;
+      }
+      if (event.key.key == SDLK_Z) {
+        mode = Mode::SpellMenu;
         continue;
       }
       // SDL reports keycodes for the *unshifted* key on a US layout, so Shift+Period
@@ -648,31 +1086,27 @@ int main(int argc, char* argv[]) {
       if (target_index >= 0) {
         // Bump attack: walking into a monster attacks it instead of moving.
         Actor& target = level.monsters[static_cast<size_t>(target_index)];
-        int damage = roll_damage(player.weapon) + player.strength;
-        target.hp -= damage;
 
-        if (!target.is_alive()) {
-          message = "You slay the " + target.name + " with your " + player.weapon.name + "!";
-          int xp_reward = target.xp_reward;  // read before erase invalidates `target`
-          level.monsters.erase(level.monsters.begin() + target_index);
-          grant_xp(xp_reward);
+        if (random_int(1, 100) <= target.evasion) {
+          message = "The " + target.name + " dodges your attack!";
         } else {
-          message = "You hit the " + target.name + " for " + std::to_string(damage) + ".";
+          int damage = roll_damage(player.weapon) + player.strength;
+          target.hp -= damage;
+
+          if (!target.is_alive()) {
+            message = "You slay the " + target.name + " with your " + player.weapon.name + "!";
+            int xp_reward = target.xp_reward;  // read before erase invalidates `target`
+            level.monsters.erase(level.monsters.begin() + target_index);
+            grant_xp(xp_reward);
+          } else {
+            message = "You hit the " + target.name + " for " + std::to_string(damage) + ".";
+          }
         }
         end_turn();  // any monster(s) still adjacent (including the one just hit) get to act
       } else if (level.map.is_walkable(new_x, new_y)) {
         player.x = new_x;
         player.y = new_y;
         level.map.update_fov(player.x, player.y, FOV_RADIUS);
-
-        for (auto it = level.items.begin(); it != level.items.end(); ++it) {
-          if (it->x == player.x && it->y == player.y) {
-            message = "You pick up a " + it->weapon.name + ". Press 'i' to equip it.";
-            inventory.push_back(it->weapon);
-            level.items.erase(it);
-            break;
-          }
-        }
         end_turn();
       }
     }

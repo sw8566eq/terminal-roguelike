@@ -522,7 +522,19 @@ int main(int argc, char* argv[]) {
     message_log.push_back(text);
   };
 
-  enum class Mode { Playing, WeaponMenu, ArmorMenu, PotionMenu, Drop, Dead, LevelUp, SpellMenu, Targeting, MessageLog };
+  enum class Mode {
+    Playing,
+    WeaponMenu,
+    ArmorMenu,
+    PotionMenu,
+    Drop,
+    Dead,
+    LevelUp,
+    SpellMenu,
+    Targeting,
+    MessageLog,
+    Help
+  };
   int casting_spell_index = -1;  // which kSpellTable entry is being aimed, while Mode::Targeting
   int target_x = 0;              // targeting cursor position, while Mode::Targeting
   int target_y = 0;
@@ -766,9 +778,7 @@ int main(int argc, char* argv[]) {
     potion_inventory.clear();
     pending_attribute_points = 0;
     message_log.clear();
-    add_message("Walk into an enemy to attack. hjkl/yubn or arrows to move, '.' wait, ']' log.");
-    add_message("'g' get, 'w' weapons, 'a' armor, 'q' potions, 'd' drop, 'z' spells.");
-    add_message("'>'/'<' for stairs, Esc to quit.");
+    add_message("Welcome to the dungeon. Press '?' for controls.");
     mode = Mode::Playing;
   };
 
@@ -965,6 +975,25 @@ int main(int argc, char* argv[]) {
         tcod::print(console, {0, row}, message_log[static_cast<size_t>(i)], tcod::ColorRGB{200, 200, 200},
                     std::nullopt);
       }
+    } else if (mode == Mode::Help) {
+      tcod::print(console, {0, 0}, "Controls - '?' or Esc to close", tcod::ColorRGB{255, 255, 255}, std::nullopt);
+      static const std::vector<std::string> kHelpLines = {
+          "",
+          "Arrows / hjkl / yubn (diagonals)  Move; walks into an enemy to attack",
+          ".                                 Wait a turn",
+          ">  <                              Stairs down/up (must be standing on them)",
+          "g                                 Pick up everything on your tile",
+          "w  a  q                           Weapon / Armor / Potion menu (equip or drink)",
+          "d                                 Drop a weapon, armor, or potion",
+          "z                                 Cast a known spell",
+          "]                                 Message log (full scrollback)",
+          "Shift+S  Shift+D  Shift+I         On level up: spend the point on STR/DEX/INT",
+          "Esc                               Quit (or close the current menu)",
+      };
+      for (size_t i = 0; i < kHelpLines.size(); ++i) {
+        tcod::print(console, {0, 1 + static_cast<int>(i)}, kHelpLines[i], tcod::ColorRGB{200, 200, 200},
+                    std::nullopt);
+      }
     } else {
       update_monster_memory(level);
 
@@ -1158,6 +1187,15 @@ int main(int argc, char* argv[]) {
         } else if (event.key.key == SDLK_J || event.key.key == SDLK_DOWN) {
           log_scroll = std::max(log_scroll - 1, 0);
         }
+        continue;
+      }
+
+      if (mode == Mode::Help) {
+        // Same unshifted-keycode-plus-modifier check the stairs keys use below, since
+        // '?' is Shift+/ on a US layout.
+        bool pressed_question =
+            event.key.key == SDLK_QUESTION || (event.key.key == SDLK_SLASH && (event.key.mod & SDL_KMOD_SHIFT));
+        if (event.key.key == SDLK_ESCAPE || pressed_question) mode = Mode::Playing;
         continue;
       }
 
@@ -1509,6 +1547,13 @@ int main(int argc, char* argv[]) {
       if (event.key.key == SDLK_RIGHTBRACKET) {
         mode = Mode::MessageLog;
         log_scroll = 0;  // always open showing the most recent messages
+        continue;
+      }
+      // '?' is Shift+/ on a US layout, so check both the dedicated keycode and the
+      // unshifted one with the modifier set — same pattern the stairs keys use below.
+      if (event.key.key == SDLK_QUESTION ||
+          (event.key.key == SDLK_SLASH && (event.key.mod & SDL_KMOD_SHIFT))) {
+        mode = Mode::Help;
         continue;
       }
       // SDL reports keycodes for the *unshifted* key on a US layout, so Shift+Period

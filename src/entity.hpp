@@ -61,10 +61,13 @@ struct Actor {
   Weapon weapon;
   Armor armor;
 
-  // Player-progression stats; monsters leave these at their defaults. Strength drives
-  // both max HP and melee damage (no separate Vitality stat). Dexterity drives
-  // evasion (see below). Intelligence is tracked now but doesn't affect anything
-  // mechanically yet — that's a follow-up system.
+  // Player-progression stats; monsters set dexterity from their template (see below)
+  // and leave strength/intelligence at their defaults. Strength drives both max HP and
+  // melee damage (no separate Vitality stat). Dexterity drives dodge chance on both
+  // sides of a fight (see dodge_chance_vs() in main.cpp) — on a monster it doubles as
+  // its "accuracy": a low-Dexterity monster is easy for the player to dodge, a
+  // high-Dexterity one much less so. Intelligence is tracked now but only affects spell
+  // unlocks/damage — no other effect yet.
   int strength = 1;
   int dexterity = 1;
   int intelligence = 1;
@@ -73,9 +76,11 @@ struct Actor {
 
   int xp_reward = 0;  // monsters only: XP granted to the player on kill
 
-  // Percent chance (0-100) to completely avoid an incoming attack. For the player this
-  // is recomputed from dexterity whenever it changes; monsters get a fixed value per
-  // template at spawn (monsters don't wear armor, so this is their only defense).
+  // Monsters only: fixed percent chance (0-100) to dodge the player's attack, set from
+  // its template at spawn (monsters don't wear armor, so this is their only defense).
+  // The player has no equivalent flat value — their dodge chance against an incoming
+  // attack is computed live from both sides' Dexterity (dodge_chance_vs()), since it
+  // depends on which monster is swinging, not just the player's own stats.
   int evasion = 0;
 
   // Player only: fractional HP banked toward the next point of passive regen (HP/turn

@@ -66,6 +66,7 @@ struct MonsterTemplate {
   Weapon weapon;
   int xp_reward;
   int evasion;    // percent chance to dodge the player's attack; monsters wear no armor
+  int accuracy;   // Dexterity-equivalent used against the player's own dodge chance (see dodge_chance_vs)
   int min_depth;  // first floor (1-indexed) this monster can spawn on
   int max_depth;  // last floor it can spawn on; -1 means no upper limit
 };
@@ -74,17 +75,20 @@ struct MonsterTemplate {
 // "tier" fully replaces the previous one at its cutover rather than overlapping: Rat
 // and Goblin stop past floor 4, and Skeleton/Orc pick up as the new baseline exactly
 // where they leave off, same idea Troll will hand off to whatever comes after it.
+// `accuracy` climbs with the same tiers as everything else, so a weak early monster is
+// genuinely easy to dodge (especially for a Dexterity-buffed player) and a deep one is
+// genuinely hard to.
 const std::vector<MonsterTemplate> kMonsterTable = {
     {"Rat", 'r', tcod::ColorRGB{150, 100, 60}, 4, Weapon{"Bite", 1, 3, 0}, /*xp_reward=*/5, /*evasion=*/15,
-     /*min_depth=*/1, /*max_depth=*/4},
+     /*accuracy=*/1, /*min_depth=*/1, /*max_depth=*/4},
     {"Goblin", 'g', tcod::ColorRGB{80, 180, 80}, 7, Weapon{"Claws", 1, 4, 0}, /*xp_reward=*/10, /*evasion=*/5,
-     /*min_depth=*/1, /*max_depth=*/4},
+     /*accuracy=*/2, /*min_depth=*/1, /*max_depth=*/4},
     {"Skeleton", 's', tcod::ColorRGB{220, 220, 200}, 10, Weapon{"Rusty Sword", 1, 6, 0}, /*xp_reward=*/15,
-     /*evasion=*/8, /*min_depth=*/5, /*max_depth=*/-1},
+     /*evasion=*/8, /*accuracy=*/3, /*min_depth=*/5, /*max_depth=*/-1},
     {"Orc", 'o', tcod::ColorRGB{60, 120, 60}, 14, Weapon{"Orc Axe", 1, 8, 0}, /*xp_reward=*/22, /*evasion=*/5,
-     /*min_depth=*/5, /*max_depth=*/-1},
+     /*accuracy=*/4, /*min_depth=*/5, /*max_depth=*/-1},
     {"Troll", 'T', tcod::ColorRGB{100, 110, 80}, 22, Weapon{"Massive Club", 2, 6, 0}, /*xp_reward=*/40,
-     /*evasion=*/2, /*min_depth=*/8, /*max_depth=*/-1},
+     /*evasion=*/2, /*accuracy=*/5, /*min_depth=*/8, /*max_depth=*/-1},
 };
 
 // Indices into kMonsterTable of every monster that can spawn at the given floor depth
@@ -108,9 +112,20 @@ int max_hp_for_strength(int strength) { return 10 + strength * 5; }
 // more HP per turn, but takes the same number of turns to fully recover.
 constexpr int kHpRegenTurns = 150;
 
-// Evasion (percent chance to dodge an attack entirely) scales with Dexterity, capped
-// so the player can never become effectively unhittable.
-int evasion_for_dexterity(int dexterity) { return std::min(dexterity * 3, 40); }
+// Percent chance to dodge an attack entirely, as a straight Dexterity contest between
+// defender and attacker (on a monster, its Dexterity doubles as "accuracy" — see
+// MonsterTemplate::accuracy). Every point of relative Dexterity is worth
+// kDodgePerDexPoint%, on top of kDodgeBaseline for an even match; the min/max keep
+// either side from ever hitting a guaranteed hit or a guaranteed miss, even against a
+// wildly mismatched Dexterity (e.g. a Dexterity-buffed player vs. a Rat).
+constexpr int kDodgePerDexPoint = 8;
+constexpr int kDodgeBaseline = 10;
+constexpr int kDodgeFloor = 5;
+constexpr int kDodgeCeiling = 85;
+int dodge_chance_vs(int defender_dex, int attacker_dex) {
+  int chance = (defender_dex - attacker_dex) * kDodgePerDexPoint + kDodgeBaseline;
+  return std::clamp(chance, kDodgeFloor, kDodgeCeiling);
+}
 
 // XP required to advance from the given level to the next one.
 int xp_needed_for_level(int level) { return level * 20; }
@@ -359,6 +374,7 @@ Level generate_level(int width, int height, bool has_stairs_up, int depth) {
     monster.weapon = tmpl.weapon;
     monster.xp_reward = tmpl.xp_reward;
     monster.evasion = tmpl.evasion;
+    monster.dexterity = tmpl.accuracy;  // read by dodge_chance_vs() when this monster attacks the player
     level.monsters.push_back(monster);
   }
 
@@ -590,7 +606,6 @@ int main(int argc, char* argv[]) {
       player.temp_dex_turns -= 1;
       if (player.temp_dex_turns == 0) {
         player.temp_dex_bonus = 0;
-        player.evasion = evasion_for_dexterity(player.dexterity);
         add_message("Your surge of agility fades.");
       }
     }
@@ -632,7 +647,8 @@ int main(int argc, char* argv[]) {
       bool adjacent = abs_dx <= 1 && abs_dy <= 1 && (dx != 0 || dy != 0);
 
       if (adjacent) {
-        if (random_int(1, 100) <= player.evasion) {
+        int player_dex = player.dexterity + player.temp_dex_bonus;
+        if (random_int(1, 100) <= dodge_chance_vs(player_dex, monster.dexterity)) {
           add_message("You dodge the " + monster.name + "'s attack!");
           continue;
         }
@@ -692,7 +708,6 @@ int main(int argc, char* argv[]) {
     player.max_hp = max_hp_for_strength(player.strength);
     player.hp = player.max_hp;
     player.hp_regen_accumulator = 0.0f;
-    player.evasion = evasion_for_dexterity(player.dexterity);
     player.weapon = kFists;
     player.armor = kNoArmor;
     player.temp_str_bonus = 0;
@@ -1090,7 +1105,6 @@ int main(int argc, char* argv[]) {
           pending_attribute_points -= 1;
         } else if (shift_held && event.key.key == SDLK_D) {
           player.dexterity += 1;
-          player.evasion = evasion_for_dexterity(player.dexterity);
           add_message("Dexterity increased to " + std::to_string(player.dexterity) + "!");
           pending_attribute_points -= 1;
         } else if (shift_held && event.key.key == SDLK_I) {
@@ -1188,10 +1202,7 @@ int main(int argc, char* argv[]) {
               add_message("You feel mighty! STR +" + std::to_string(chosen.buff_amount) + " for " +
                           std::to_string(chosen.buff_turns) + " turns.");
             } else if (chosen.buff_stat == StatKind::Dexterity) {
-              if (player.temp_dex_turns <= 0) {
-                player.temp_dex_bonus = chosen.buff_amount;
-                player.evasion = evasion_for_dexterity(player.dexterity + player.temp_dex_bonus);
-              }
+              if (player.temp_dex_turns <= 0) player.temp_dex_bonus = chosen.buff_amount;
               player.temp_dex_turns = chosen.buff_turns;
               add_message("You feel nimble! DEX +" + std::to_string(chosen.buff_amount) + " for " +
                           std::to_string(chosen.buff_turns) + " turns.");

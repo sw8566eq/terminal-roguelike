@@ -3,6 +3,7 @@
 #include <libtcod.hpp>
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -39,13 +40,40 @@ struct MonsterTemplate {
   int max_hp;
   Weapon weapon;
   int xp_reward;
-  int evasion;  // percent chance to dodge the player's attack; monsters wear no armor
+  int evasion;    // percent chance to dodge the player's attack; monsters wear no armor
+  int min_depth;  // first floor (1-indexed) this monster can spawn on
+  int max_depth;  // last floor it can spawn on; -1 means no upper limit
 };
 
+// Roughly increasing toughness/reward with min_depth, so descending gets harder. Each
+// "tier" fully replaces the previous one at its cutover rather than overlapping: Rat
+// and Goblin stop past floor 4, and Skeleton/Orc pick up as the new baseline exactly
+// where they leave off, same idea Troll will hand off to whatever comes after it.
 const std::vector<MonsterTemplate> kMonsterTable = {
-    {"Rat", 'r', tcod::ColorRGB{150, 100, 60}, 4, Weapon{"Bite", 1, 3, 0}, /*xp_reward=*/5, /*evasion=*/15},
-    {"Goblin", 'g', tcod::ColorRGB{80, 180, 80}, 7, Weapon{"Claws", 1, 4, 0}, /*xp_reward=*/10, /*evasion=*/5},
+    {"Rat", 'r', tcod::ColorRGB{150, 100, 60}, 4, Weapon{"Bite", 1, 3, 0}, /*xp_reward=*/5, /*evasion=*/15,
+     /*min_depth=*/1, /*max_depth=*/4},
+    {"Goblin", 'g', tcod::ColorRGB{80, 180, 80}, 7, Weapon{"Claws", 1, 4, 0}, /*xp_reward=*/10, /*evasion=*/5,
+     /*min_depth=*/1, /*max_depth=*/4},
+    {"Skeleton", 's', tcod::ColorRGB{220, 220, 200}, 10, Weapon{"Rusty Sword", 1, 6, 0}, /*xp_reward=*/15,
+     /*evasion=*/8, /*min_depth=*/5, /*max_depth=*/-1},
+    {"Orc", 'o', tcod::ColorRGB{60, 120, 60}, 14, Weapon{"Orc Axe", 1, 8, 0}, /*xp_reward=*/22, /*evasion=*/5,
+     /*min_depth=*/5, /*max_depth=*/-1},
+    {"Troll", 'T', tcod::ColorRGB{100, 110, 80}, 22, Weapon{"Massive Club", 2, 6, 0}, /*xp_reward=*/40,
+     /*evasion=*/2, /*min_depth=*/8, /*max_depth=*/-1},
 };
+
+// Indices into kMonsterTable of every monster that can spawn at the given floor depth
+// (1-indexed). Kept as one function, same pattern as known_spell_indices, so the spawn
+// logic can't drift from whatever the table actually says.
+std::vector<int> monsters_available_at_depth(int depth) {
+  std::vector<int> indices;
+  for (size_t i = 0; i < kMonsterTable.size(); ++i) {
+    const MonsterTemplate& tmpl = kMonsterTable[i];
+    bool below_max = tmpl.max_depth < 0 || depth <= tmpl.max_depth;
+    if (depth >= tmpl.min_depth && below_max) indices.push_back(static_cast<int>(i));
+  }
+  return indices;
+}
 
 // Max HP scales with Strength, so there's no need for a separate Vitality stat.
 int max_hp_for_strength(int strength) { return 10 + strength * 5; }
@@ -253,8 +281,12 @@ void update_monster_memory(Level& level) {
       level.remembered_monsters.end());
 }
 
-// Builds and populates a fresh floor.
-Level generate_level(int width, int height, bool has_stairs_up) {
+// Monster count grows gently with depth, capped so deep floors don't get absurd.
+int monster_count_for_depth(int depth) { return std::min(NUM_MONSTERS + (depth - 1) / 2, NUM_MONSTERS + 5); }
+
+// Builds and populates a fresh floor. depth is 1-indexed (matches the "Floor:N" HUD)
+// and gates which monsters can spawn here, plus how many.
+Level generate_level(int width, int height, bool has_stairs_up, int depth) {
   Level level{Map(width, height), {}, {}, {}, {}, {}};
   auto [entry_x, entry_y] = level.map.generate(/*max_rooms=*/12, /*room_min_size=*/4, /*room_max_size=*/8);
   level.entry_x = entry_x;
@@ -269,11 +301,14 @@ Level generate_level(int width, int height, bool has_stairs_up) {
   level.stairs_down_y = down_y;
   occupied.push_back({down_x, down_y});
 
-  for (int i = 0; i < NUM_MONSTERS; ++i) {
+  auto available_monsters = monsters_available_at_depth(depth);
+  int monster_count = monster_count_for_depth(depth);
+  for (int i = 0; i < monster_count; ++i) {
     auto [mx, my] = random_free_tile(level.map, occupied);
     occupied.push_back({mx, my});
 
-    const MonsterTemplate& tmpl = kMonsterTable[random_int(0, static_cast<int>(kMonsterTable.size()) - 1)];
+    int table_index = available_monsters[static_cast<size_t>(random_int(0, static_cast<int>(available_monsters.size()) - 1))];
+    const MonsterTemplate& tmpl = kMonsterTable[static_cast<size_t>(table_index)];
     Actor monster;
     monster.x = mx;
     monster.y = my;
@@ -522,7 +557,7 @@ int main(int argc, char* argv[]) {
   // restart after death.
   auto start_new_game = [&]() {
     levels.clear();
-    levels.push_back(generate_level(MAP_WIDTH, MAP_HEIGHT, /*has_stairs_up=*/false));
+    levels.push_back(generate_level(MAP_WIDTH, MAP_HEIGHT, /*has_stairs_up=*/false, /*depth=*/1));
     current_level = 0;
 
     Level& level = levels[static_cast<size_t>(current_level)];
@@ -552,7 +587,7 @@ int main(int argc, char* argv[]) {
   auto descend = [&]() {
     current_level += 1;
     if (static_cast<size_t>(current_level) >= levels.size()) {
-      levels.push_back(generate_level(MAP_WIDTH, MAP_HEIGHT, /*has_stairs_up=*/true));
+      levels.push_back(generate_level(MAP_WIDTH, MAP_HEIGHT, /*has_stairs_up=*/true, /*depth=*/current_level + 1));
     }
     Level& level = levels[static_cast<size_t>(current_level)];
     player.x = level.entry_x;
@@ -572,6 +607,17 @@ int main(int argc, char* argv[]) {
   };
 
   start_new_game();
+
+  // Debug convenience: `--floor=N` jumps straight to floor N at startup, so testing
+  // deep floors doesn't require a long walk down through every floor above it. Not
+  // meant for normal play; a missing/malformed value is just silently ignored.
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    const std::string prefix = "--floor=";
+    if (arg.rfind(prefix, 0) != 0) continue;
+    int target_floor = std::atoi(arg.c_str() + prefix.size());
+    for (int f = 1; f < target_floor; ++f) descend();
+  }
 
   bool running = true;
 

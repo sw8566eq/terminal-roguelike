@@ -5,13 +5,9 @@ modern C++17 using [libtcod](https://github.com/libtcod/libtcod).
 
 ## About this project
 
-This game is being built with [Claude Code](https://claude.com/claude-code) as
-an ongoing experiment in exploring what modern AI coding assistants are
-capable of — from initial project setup and dependency wrangling, through
-incrementally designing and implementing actual game systems (dungeon
-generation, FOV, combat, items, leveling, and more) via conversation. The
-`README.md` and code comments are also AI-written, kept up to date turn by
-turn as the game grows.
+This game is built with [Claude Code](https://claude.com/claude-code), an AI
+coding agent, as a test of its capabilities on a non-trivial C++ project. The
+README and code comments are also written by Claude Code.
 
 ## One-time setup (Linux)
 
@@ -89,7 +85,7 @@ roguelike/
 └── vcpkg/               # (created by you) vendored package manager
 ```
 
-## Where we are / what's next
+## Status
 
 - [x] Window opens, `@` renders, moves with arrow keys / hjkl / diagonals
 - [x] Map data structure (tiles: wall/floor)

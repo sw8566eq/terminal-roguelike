@@ -13,6 +13,11 @@ struct Weapon {
   // True for weapons that aren't real pickups (e.g. bare fists, monster bite/claws) —
   // these don't get returned to the player's inventory when swapped out.
   bool is_intrinsic = false;
+  // Which floors (1-indexed) this weapon can spawn on, same min/max_depth shape as
+  // MonsterTemplate — irrelevant once it's actually picked up (a floor-10 weapon in
+  // your pack doesn't vanish if you walk back to floor 1). max_depth -1 means no cap.
+  int min_depth = 1;
+  int max_depth = -1;
 };
 
 // Rolls this weapon's damage for one attack.
@@ -27,6 +32,9 @@ struct Armor {
   // True for armor that isn't a real pickup (bare skin) — doesn't get returned to the
   // player's inventory when swapped out.
   bool is_intrinsic = false;
+  // Which floors (1-indexed) this armor can spawn on; see Weapon::min_depth above.
+  int min_depth = 1;
+  int max_depth = -1;
 };
 
 // Which attribute a temporary-buff potion raises. None means the potion doesn't buff a
@@ -45,6 +53,9 @@ struct Potion {
   int buff_turns = 0;                   // how long, in turns, before it wears off
   char glyph = '!';
   tcod::ColorRGB color{255, 255, 255};
+  // Which floors (1-indexed) this potion can spawn on; see Weapon::min_depth above.
+  int min_depth = 1;
+  int max_depth = -1;
 };
 
 // A living thing on the map: the player or a monster. Combat is symmetric

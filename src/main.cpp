@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -19,25 +20,31 @@ constexpr int NUM_ITEMS = 4;     // per floor
 constexpr int NUM_ARMOR = 3;     // per floor
 constexpr int NUM_POTIONS = 2;   // per floor
 
-// Melee weapons that can be found lying on the floor.
+// Melee weapons that can be found lying on the floor. Depth-gated the same shape as
+// kMonsterTable: rough tiers, not a strict per-floor curve. Placeholder ranges — the
+// actual balance (exactly which floor a Mace should start showing up on, etc.) is a
+// follow-up pass; this just makes sure a Dagger stops being possible loot on floor 10.
 const std::vector<Weapon> kWeaponTable = {
-    {"Dagger", 1, 4, 0},
-    {"Short Sword", 1, 6, 0},
-    {"Mace", 1, 8, 0},
-    {"Battle Axe", 2, 6, 0},
+    {"Dagger", 1, 4, 0, /*is_intrinsic=*/false, /*min_depth=*/1, /*max_depth=*/3},
+    {"Short Sword", 1, 6, 0, /*is_intrinsic=*/false, /*min_depth=*/1, /*max_depth=*/6},
+    {"Mace", 1, 8, 0, /*is_intrinsic=*/false, /*min_depth=*/3, /*max_depth=*/-1},
+    {"Battle Axe", 2, 6, 0, /*is_intrinsic=*/false, /*min_depth=*/5, /*max_depth=*/-1},
 };
 
-// Armor that can be found lying on the floor.
+// Armor that can be found lying on the floor. Same depth-gating shape as kWeaponTable.
 const std::vector<Armor> kArmorTable = {
-    {"Leather Armor", 1},
-    {"Chainmail", 3},
-    {"Plate Armor", 5},
+    {"Leather Armor", 1, /*is_intrinsic=*/false, /*min_depth=*/1, /*max_depth=*/5},
+    {"Chainmail", 3, /*is_intrinsic=*/false, /*min_depth=*/3, /*max_depth=*/-1},
+    {"Plate Armor", 5, /*is_intrinsic=*/false, /*min_depth=*/6, /*max_depth=*/-1},
 };
 
 // Potions that can be found lying on the floor. Stat potions all use the same +5/15-turn
 // shape for now; only Strength has a described mechanical effect today (max HP, regen,
 // melee damage) — Dexterity (evasion) and Intelligence (spell damage) piggyback on the
-// same existing formulas that already read those stats.
+// same existing formulas that already read those stats. All four are left ungated
+// (default min_depth=1, max_depth=-1, same as Weapon/Armor) since there's no real tiering
+// rationale among them yet — unlike kWeaponTable/kArmorTable, this table doesn't
+// exercise the depth-filter below, but the fields are there once it needs to.
 const std::vector<Potion> kPotionTable = {
     {"Heal Potion", /*heal_percent=*/50, StatKind::None, 0, 0, '!', tcod::ColorRGB{255, 100, 150}},
     {"Potion of Strength", 0, StatKind::Strength, /*buff_amount=*/5, /*buff_turns=*/15, '!',
@@ -91,18 +98,25 @@ const std::vector<MonsterTemplate> kMonsterTable = {
      /*evasion=*/2, /*accuracy=*/5, /*min_depth=*/8, /*max_depth=*/-1},
 };
 
-// Indices into kMonsterTable of every monster that can spawn at the given floor depth
-// (1-indexed). Kept as one function, same pattern as known_spell_indices, so the spawn
-// logic can't drift from whatever the table actually says.
-std::vector<int> monsters_available_at_depth(int depth) {
+// Indices into `table` of every entry whose min_depth/max_depth range includes `depth`
+// (1-indexed; max_depth < 0 means no upper limit). Shared by monsters, weapons, armor,
+// and potions — every one of those tables uses this identical min/max_depth shape, so
+// the spawn logic for any of them can't drift from what its table actually says.
+template <typename T>
+std::vector<int> available_at_depth(const std::vector<T>& table, int depth) {
   std::vector<int> indices;
-  for (size_t i = 0; i < kMonsterTable.size(); ++i) {
-    const MonsterTemplate& tmpl = kMonsterTable[i];
-    bool below_max = tmpl.max_depth < 0 || depth <= tmpl.max_depth;
-    if (depth >= tmpl.min_depth && below_max) indices.push_back(static_cast<int>(i));
+  for (size_t i = 0; i < table.size(); ++i) {
+    const T& entry = table[i];
+    bool below_max = entry.max_depth < 0 || depth <= entry.max_depth;
+    if (depth >= entry.min_depth && below_max) indices.push_back(static_cast<int>(i));
   }
   return indices;
 }
+
+std::vector<int> monsters_available_at_depth(int depth) { return available_at_depth(kMonsterTable, depth); }
+std::vector<int> weapons_available_at_depth(int depth) { return available_at_depth(kWeaponTable, depth); }
+std::vector<int> armor_available_at_depth(int depth) { return available_at_depth(kArmorTable, depth); }
+std::vector<int> potions_available_at_depth(int depth) { return available_at_depth(kPotionTable, depth); }
 
 // Max HP scales with Strength, so there's no need for a separate Vitality stat.
 int max_hp_for_strength(int strength) { return 10 + strength * 5; }
@@ -378,22 +392,28 @@ Level generate_level(int width, int height, bool has_stairs_up, int depth) {
     level.monsters.push_back(monster);
   }
 
+  auto available_weapons = weapons_available_at_depth(depth);
   for (int i = 0; i < NUM_ITEMS; ++i) {
     auto [ix, iy] = random_free_tile(level.map, occupied);
     occupied.push_back({ix, iy});
-    level.items.push_back(GroundItem{ix, iy, kWeaponTable[random_int(0, static_cast<int>(kWeaponTable.size()) - 1)]});
+    int table_index = available_weapons[static_cast<size_t>(random_int(0, static_cast<int>(available_weapons.size()) - 1))];
+    level.items.push_back(GroundItem{ix, iy, kWeaponTable[static_cast<size_t>(table_index)]});
   }
 
+  auto available_armor = armor_available_at_depth(depth);
   for (int i = 0; i < NUM_ARMOR; ++i) {
     auto [ax, ay] = random_free_tile(level.map, occupied);
     occupied.push_back({ax, ay});
-    level.armor_items.push_back(GroundArmor{ax, ay, kArmorTable[random_int(0, static_cast<int>(kArmorTable.size()) - 1)]});
+    int table_index = available_armor[static_cast<size_t>(random_int(0, static_cast<int>(available_armor.size()) - 1))];
+    level.armor_items.push_back(GroundArmor{ax, ay, kArmorTable[static_cast<size_t>(table_index)]});
   }
 
+  auto available_potions = potions_available_at_depth(depth);
   for (int i = 0; i < NUM_POTIONS; ++i) {
     auto [px, py] = random_free_tile(level.map, occupied);
     occupied.push_back({px, py});
-    level.potions.push_back(GroundPotion{px, py, kPotionTable[random_int(0, static_cast<int>(kPotionTable.size()) - 1)]});
+    int table_index = available_potions[static_cast<size_t>(random_int(0, static_cast<int>(available_potions.size()) - 1))];
+    level.potions.push_back(GroundPotion{px, py, kPotionTable[static_cast<size_t>(table_index)]});
   }
 
   return level;
@@ -763,17 +783,47 @@ int main(int argc, char* argv[]) {
   // exploration or FOV (still dimmed if not actually in current sight, matching the
   // remembered-terrain/monster look) — for eyeballing spawns and loot without having
   // to walk the whole floor first. Also debug-only, off by default.
+  //
+  // `--dump-loot` prints every weapon/armor/potion/monster on the floor reached via
+  // --floor=N (floor 1 if that flag's absent) to stdout, then exits before the window
+  // ever opens — a scriptable alternative to eyeballing --reveal in the live window,
+  // for checking depth-gating (kWeaponTable etc.) actually filters as intended.
   bool reveal_mode = false;
+  bool dump_loot = false;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--reveal") {
       reveal_mode = true;
       continue;
     }
+    if (arg == "--dump-loot") {
+      dump_loot = true;
+      continue;
+    }
     const std::string prefix = "--floor=";
     if (arg.rfind(prefix, 0) != 0) continue;
     int target_floor = std::atoi(arg.c_str() + prefix.size());
     for (int f = 1; f < target_floor; ++f) descend();
+  }
+
+  if (dump_loot) {
+    Level& level = levels[static_cast<size_t>(current_level)];
+    std::cout << "Floor " << (current_level + 1) << " loot:\n";
+    for (const auto& item : level.items) {
+      std::cout << "  weapon: " << item.weapon.name << " (" << describe_weapon(item.weapon) << ")\n";
+    }
+    for (const auto& armor_item : level.armor_items) {
+      std::cout << "  armor: " << armor_item.armor.name << " (" << describe_armor(armor_item.armor) << ")\n";
+    }
+    for (const auto& ground_potion : level.potions) {
+      std::cout << "  potion: " << ground_potion.potion.name << " (" << describe_potion(ground_potion.potion)
+                 << ")\n";
+    }
+    std::cout << "Floor " << (current_level + 1) << " monsters:\n";
+    for (const auto& monster : level.monsters) {
+      std::cout << "  " << monster.name << "\n";
+    }
+    return 0;
   }
 
   bool running = true;

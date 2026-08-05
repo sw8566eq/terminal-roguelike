@@ -3,6 +3,16 @@
 A classic turn-based, permadeath, ASCII fantasy dungeon crawler, written in
 modern C++17 using [libtcod](https://github.com/libtcod/libtcod).
 
+## About this project
+
+This game is being built with [Claude Code](https://claude.com/claude-code) as
+an ongoing experiment in exploring what modern AI coding assistants are
+capable of — from initial project setup and dependency wrangling, through
+incrementally designing and implementing actual game systems (dungeon
+generation, FOV, combat, items, leveling, and more) via conversation. The
+`README.md` and code comments are also AI-written, kept up to date turn by
+turn as the game grows.
+
 ## One-time setup (Linux)
 
 You need `git`, `cmake`, a C++ compiler, and `ninja` (recommended, faster than

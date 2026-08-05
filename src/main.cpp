@@ -694,8 +694,18 @@ int main(int argc, char* argv[]) {
   // Debug convenience: `--floor=N` jumps straight to floor N at startup, so testing
   // deep floors doesn't require a long walk down through every floor above it. Not
   // meant for normal play; a missing/malformed value is just silently ignored.
+  //
+  // `--reveal` shows every tile/monster/item on the current floor regardless of
+  // exploration or FOV (still dimmed if not actually in current sight, matching the
+  // remembered-terrain/monster look) — for eyeballing spawns and loot without having
+  // to walk the whole floor first. Also debug-only, off by default.
+  bool reveal_mode = false;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
+    if (arg == "--reveal") {
+      reveal_mode = true;
+      continue;
+    }
     const std::string prefix = "--floor=";
     if (arg.rfind(prefix, 0) != 0) continue;
     int target_floor = std::atoi(arg.c_str() + prefix.size());
@@ -856,7 +866,8 @@ int main(int argc, char* argv[]) {
 
       for (int y = 0; y < level.map.height(); ++y) {
         for (int x = 0; x < level.map.width(); ++x) {
-          if (!level.map.is_explored(x, y)) continue;  // never seen: leave blank
+          // Never seen and not revealing: leave blank.
+          if (!level.map.is_explored(x, y) && !reveal_mode) continue;
 
           bool walkable = level.map.is_walkable(x, y);
           bool visible = level.map.is_in_fov(x, y);
@@ -898,33 +909,41 @@ int main(int argc, char* argv[]) {
         cell.fg = dim_color(remembered.color);
       }
 
-      // Items/monsters only show up while actually in view, unlike remembered terrain.
+      // Items/monsters only show up while actually in view, unlike remembered terrain
+      // — unless --reveal is forcing them on, in which case out-of-fov ones are drawn
+      // dimmed, same tier as remembered terrain/monsters.
       for (const auto& item : level.items) {
-        if (!level.map.is_in_fov(item.x, item.y)) continue;
+        bool visible = level.map.is_in_fov(item.x, item.y);
+        if (!visible && !reveal_mode) continue;
         auto& cell = console.at(item.x, item.y + HUD_HEIGHT);
         cell.ch = '/';
-        cell.fg = tcod::ColorRGB{200, 200, 255};
+        tcod::ColorRGB color{200, 200, 255};
+        cell.fg = visible ? color : dim_color(color);
       }
 
       for (const auto& armor_item : level.armor_items) {
-        if (!level.map.is_in_fov(armor_item.x, armor_item.y)) continue;
+        bool visible = level.map.is_in_fov(armor_item.x, armor_item.y);
+        if (!visible && !reveal_mode) continue;
         auto& cell = console.at(armor_item.x, armor_item.y + HUD_HEIGHT);
         cell.ch = '[';
-        cell.fg = tcod::ColorRGB{180, 220, 200};
+        tcod::ColorRGB color{180, 220, 200};
+        cell.fg = visible ? color : dim_color(color);
       }
 
       for (const auto& ground_potion : level.potions) {
-        if (!level.map.is_in_fov(ground_potion.x, ground_potion.y)) continue;
+        bool visible = level.map.is_in_fov(ground_potion.x, ground_potion.y);
+        if (!visible && !reveal_mode) continue;
         auto& cell = console.at(ground_potion.x, ground_potion.y + HUD_HEIGHT);
         cell.ch = ground_potion.potion.glyph;
-        cell.fg = ground_potion.potion.color;
+        cell.fg = visible ? ground_potion.potion.color : dim_color(ground_potion.potion.color);
       }
 
       for (const auto& monster : level.monsters) {
-        if (!level.map.is_in_fov(monster.x, monster.y)) continue;
+        bool visible = level.map.is_in_fov(monster.x, monster.y);
+        if (!visible && !reveal_mode) continue;
         auto& cell = console.at(monster.x, monster.y + HUD_HEIGHT);
         cell.ch = monster.glyph;
-        cell.fg = monster.color;
+        cell.fg = visible ? monster.color : dim_color(monster.color);
       }
 
       // Spells currently in flight (only visible ones matter, same as monsters/items).

@@ -686,17 +686,40 @@ int main(int argc, char* argv[]) {
 
       // Not adjacent: chase if the player would currently see this tile (shadowcasting
       // FOV is reciprocal, so this doubles as "can the monster see the player" without
-      // computing a separate FOV per monster); otherwise wander idly. Movement is a
-      // simple greedy step toward the player, not real pathfinding — monsters can still
-      // get stuck on awkward corners, but that's a fine starting point.
+      // computing a separate FOV per monster). Otherwise, if the monster still
+      // remembers where it last saw the player, head there instead of immediately
+      // giving up — once it arrives and the player isn't there, the memory clears and
+      // it falls back to idle wandering. Movement is a simple greedy step, not real
+      // pathfinding — monsters can still get stuck on awkward corners, but that's a
+      // fine starting point.
+      bool can_see_player = level.map.is_in_fov(monster.x, monster.y);
+      if (can_see_player) {
+        monster.last_seen_player_x = player.x;
+        monster.last_seen_player_y = player.y;
+      }
+
       int move_dx = 0;
       int move_dy = 0;
-      if (level.map.is_in_fov(monster.x, monster.y)) {
+      if (can_see_player) {
         move_dx = (dx > 0) - (dx < 0);  // sign(dx): one tile toward the player
         move_dy = (dy > 0) - (dy < 0);
-      } else if (random_int(0, 1) == 0) {
+      } else if (monster.last_seen_player_x >= 0) {
+        int memory_dx = monster.last_seen_player_x - monster.x;
+        int memory_dy = monster.last_seen_player_y - monster.y;
+        if (memory_dx == 0 && memory_dy == 0) {
+          // Arrived at the last-known spot and the player isn't here: give up the
+          // chase. Falls through to a wander roll below this turn, same as if there'd
+          // never been anything to chase.
+          monster.last_seen_player_x = -1;
+          monster.last_seen_player_y = -1;
+        } else {
+          move_dx = (memory_dx > 0) - (memory_dx < 0);
+          move_dy = (memory_dy > 0) - (memory_dy < 0);
+        }
+      }
+      if (move_dx == 0 && move_dy == 0 && monster.last_seen_player_x < 0 && random_int(0, 1) == 0) {
         // Wander: only a coin-flip chance to shuffle each turn, so it reads as idle
-        // rather than frantic.
+        // rather than frantic. Only reachable with no memory to chase — see above.
         move_dx = random_int(-1, 1);
         move_dy = random_int(-1, 1);
       }

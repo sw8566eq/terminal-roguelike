@@ -113,5 +113,13 @@ struct Actor {
   int temp_int_bonus = 0;
   int temp_int_turns = 0;
 
+  // Monsters only: the last tile this monster actually saw the player standing on,
+  // or (-1, -1) if it's never seen them (or already reached that tile without finding
+  // them there). Lets a monster keep heading for where the player was after losing
+  // line of sight, instead of immediately reverting to idle wandering — see the
+  // chase/investigate/wander logic in end_turn().
+  int last_seen_player_x = -1;
+  int last_seen_player_y = -1;
+
   bool is_alive() const { return hp > 0; }
 };

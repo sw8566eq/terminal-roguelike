@@ -34,13 +34,29 @@ const std::vector<Armor> kArmorTable = {
     {"Plate Armor", 5},
 };
 
-// Potions that can be found lying on the floor.
+// Potions that can be found lying on the floor. Stat potions all use the same +5/15-turn
+// shape for now; only Strength has a described mechanical effect today (max HP, regen,
+// melee damage) — Dexterity (evasion) and Intelligence (spell damage) piggyback on the
+// same existing formulas that already read those stats.
 const std::vector<Potion> kPotionTable = {
-    {"Heal Potion", /*heal_percent=*/50, '!', tcod::ColorRGB{255, 100, 150}},
+    {"Heal Potion", /*heal_percent=*/50, StatKind::None, 0, 0, '!', tcod::ColorRGB{255, 100, 150}},
+    {"Potion of Strength", 0, StatKind::Strength, /*buff_amount=*/5, /*buff_turns=*/15, '!',
+     tcod::ColorRGB{200, 60, 60}},
+    {"Potion of Dexterity", 0, StatKind::Dexterity, /*buff_amount=*/5, /*buff_turns=*/15, '!',
+     tcod::ColorRGB{60, 200, 120}},
+    {"Potion of Intelligence", 0, StatKind::Intelligence, /*buff_amount=*/5, /*buff_turns=*/15, '!',
+     tcod::ColorRGB{80, 120, 220}},
 };
 
-// Formats a potion as e.g. "+50% HP", for the HUD/menus.
-std::string describe_potion(const Potion& potion) { return "+" + std::to_string(potion.heal_percent) + "% HP"; }
+// Formats a potion as e.g. "+50% HP" or "+5 STR (15 turns)", for the HUD/menus.
+std::string describe_potion(const Potion& potion) {
+  if (potion.heal_percent > 0) return "+" + std::to_string(potion.heal_percent) + "% HP";
+  const char* stat_name = potion.buff_stat == StatKind::Strength
+                               ? "STR"
+                               : potion.buff_stat == StatKind::Dexterity ? "DEX" : "INT";
+  return "+" + std::to_string(potion.buff_amount) + " " + stat_name + " (" + std::to_string(potion.buff_turns) +
+         " turns)";
+}
 
 struct MonsterTemplate {
   std::string name;
@@ -559,6 +575,33 @@ int main(int argc, char* argv[]) {
       }
     }
 
+    // Temporary stat buffs (Potion of Strength/Dexterity/Intelligence) count down every
+    // turn and revert automatically the instant they expire.
+    if (player.temp_str_turns > 0) {
+      player.temp_str_turns -= 1;
+      if (player.temp_str_turns == 0) {
+        player.temp_str_bonus = 0;
+        player.max_hp = max_hp_for_strength(player.strength);
+        player.hp = std::min(player.hp, player.max_hp);  // clamp in case regen filled past the new, lower ceiling
+        add_message("Your surge of strength fades.");
+      }
+    }
+    if (player.temp_dex_turns > 0) {
+      player.temp_dex_turns -= 1;
+      if (player.temp_dex_turns == 0) {
+        player.temp_dex_bonus = 0;
+        player.evasion = evasion_for_dexterity(player.dexterity);
+        add_message("Your surge of agility fades.");
+      }
+    }
+    if (player.temp_int_turns > 0) {
+      player.temp_int_turns -= 1;
+      if (player.temp_int_turns == 0) {
+        player.temp_int_bonus = 0;
+        add_message("Your surge of insight fades.");
+      }
+    }
+
     advance_projectiles();
 
     Level& level = levels[static_cast<size_t>(current_level)];
@@ -652,6 +695,12 @@ int main(int argc, char* argv[]) {
     player.evasion = evasion_for_dexterity(player.dexterity);
     player.weapon = kFists;
     player.armor = kNoArmor;
+    player.temp_str_bonus = 0;
+    player.temp_str_turns = 0;
+    player.temp_dex_bonus = 0;
+    player.temp_dex_turns = 0;
+    player.temp_int_bonus = 0;
+    player.temp_int_turns = 0;
     level.map.update_fov(player.x, player.y, FOV_RADIUS);
 
     inventory.clear();
@@ -838,10 +887,16 @@ int main(int argc, char* argv[]) {
                                  " Lvl:" + std::to_string(player.level) + " Floor:" + std::to_string(current_level + 1);
       tcod::print(console, {0, 0}, status_line, tcod::ColorRGB{255, 255, 255}, std::nullopt);
 
-      std::string gear_line = "STR:" + std::to_string(player.strength) + " DEX:" + std::to_string(player.dexterity) +
-                               " INT:" + std::to_string(player.intelligence) + " Wpn:" + player.weapon.name + "(" +
-                               describe_weapon(player.weapon) + ") Arm:" + player.armor.name + "(" +
-                               describe_armor(player.armor) + ")";
+      // Appends "+N" to a stat only while its temp buff is active, so the HUD reflects
+      // Potion of Strength/Dexterity/Intelligence without a separate buff tracker.
+      auto stat_str = [](int base, int bonus) {
+        return std::to_string(base) + (bonus > 0 ? "+" + std::to_string(bonus) : "");
+      };
+      std::string gear_line = "STR:" + stat_str(player.strength, player.temp_str_bonus) +
+                               " DEX:" + stat_str(player.dexterity, player.temp_dex_bonus) +
+                               " INT:" + stat_str(player.intelligence, player.temp_int_bonus) +
+                               " Wpn:" + player.weapon.name + "(" + describe_weapon(player.weapon) +
+                               ") Arm:" + player.armor.name + "(" + describe_armor(player.armor) + ")";
       tcod::print(console, {0, 1}, gear_line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
 
       if (mode == Mode::LevelUp) {
@@ -1117,9 +1172,37 @@ int main(int argc, char* argv[]) {
           if (idx < potion_inventory.size()) {
             Potion chosen = potion_inventory[idx];
             potion_inventory.erase(potion_inventory.begin() + static_cast<long>(idx));
-            int heal_amount = player.max_hp * chosen.heal_percent / 100;
-            player.hp = std::min(player.hp + heal_amount, player.max_hp);
-            add_message("You drink the " + chosen.name + " and recover " + std::to_string(heal_amount) + " HP.");
+            if (chosen.heal_percent > 0) {
+              int heal_amount = player.max_hp * chosen.heal_percent / 100;
+              player.hp = std::min(player.hp + heal_amount, player.max_hp);
+              add_message("You drink the " + chosen.name + " and recover " + std::to_string(heal_amount) + " HP.");
+            } else if (chosen.buff_stat == StatKind::Strength) {
+              // Re-drinking while already buffed just refreshes the timer, rather than
+              // stacking the bonus indefinitely.
+              if (player.temp_str_turns <= 0) {
+                player.temp_str_bonus = chosen.buff_amount;
+                player.max_hp = max_hp_for_strength(player.strength + player.temp_str_bonus);
+                // Ceiling only, unlike leveling up: current HP doesn't jump with it.
+              }
+              player.temp_str_turns = chosen.buff_turns;
+              add_message("You feel mighty! STR +" + std::to_string(chosen.buff_amount) + " for " +
+                          std::to_string(chosen.buff_turns) + " turns.");
+            } else if (chosen.buff_stat == StatKind::Dexterity) {
+              if (player.temp_dex_turns <= 0) {
+                player.temp_dex_bonus = chosen.buff_amount;
+                player.evasion = evasion_for_dexterity(player.dexterity + player.temp_dex_bonus);
+              }
+              player.temp_dex_turns = chosen.buff_turns;
+              add_message("You feel nimble! DEX +" + std::to_string(chosen.buff_amount) + " for " +
+                          std::to_string(chosen.buff_turns) + " turns.");
+            } else if (chosen.buff_stat == StatKind::Intelligence) {
+              if (player.temp_int_turns <= 0) {
+                player.temp_int_bonus = chosen.buff_amount;
+              }
+              player.temp_int_turns = chosen.buff_turns;
+              add_message("You feel sharp! INT +" + std::to_string(chosen.buff_amount) + " for " +
+                          std::to_string(chosen.buff_turns) + " turns.");
+            }
             mode = Mode::Playing;
             end_turn();  // drinking takes a moment; adjacent monsters get a free hit
           }
@@ -1158,7 +1241,10 @@ int main(int argc, char* argv[]) {
           proj.speed = spell.speed;
           proj.dice_count = spell.dice_count;
           proj.dice_sides = spell.dice_sides;
-          proj.bonus = player.intelligence / 3;  // locked in now, not re-read when it lands
+          // Locked in now, not re-read when it lands. Temporary INT (from a Potion of
+          // Intelligence) boosts this the same as permanent INT would — only spell
+          // *unlocking* (known_spell_indices, above) ignores the temporary bonus.
+          proj.bonus = (player.intelligence + player.temp_int_bonus) / 3;
           proj.name = spell.name;
           proj.glyph = spell.glyph;
           proj.color = spell.color;
@@ -1432,7 +1518,7 @@ int main(int argc, char* argv[]) {
         if (random_int(1, 100) <= target.evasion) {
           add_message("The " + target.name + " dodges your attack!");
         } else {
-          int damage = roll_damage(player.weapon) + player.strength;
+          int damage = roll_damage(player.weapon) + player.strength + player.temp_str_bonus;
           target.hp -= damage;
 
           if (!target.is_alive()) {

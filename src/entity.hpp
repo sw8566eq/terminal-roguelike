@@ -29,11 +29,20 @@ struct Armor {
   bool is_intrinsic = false;
 };
 
+// Which attribute a temporary-buff potion raises. None means the potion doesn't buff a
+// stat at all (e.g. Heal Potion).
+enum class StatKind { None, Strength, Dexterity, Intelligence };
+
 // A consumable potion: drinking it applies its effect immediately and uses it up —
-// unlike Weapon/Armor, there's nothing to equip or swap back out.
+// unlike Weapon/Armor, there's nothing to equip or swap back out. A potion is either a
+// heal (heal_percent > 0) or a temporary stat buff (buff_stat != StatKind::None); the
+// table never mixes both on one entry.
 struct Potion {
   std::string name;
   int heal_percent = 0;  // percent of max HP restored, instantly, when drunk
+  StatKind buff_stat = StatKind::None;  // which stat this potion temporarily raises
+  int buff_amount = 0;                  // how much (e.g. +5)
+  int buff_turns = 0;                   // how long, in turns, before it wears off
   char glyph = '!';
   tcod::ColorRGB color{255, 255, 255};
 };
@@ -72,6 +81,21 @@ struct Actor {
   // Player only: fractional HP banked toward the next point of passive regen (HP/turn
   // is usually not a whole number, so this carries the remainder between turns).
   float hp_regen_accumulator = 0.0f;
+
+  // Player only: temporary stat bonuses from stat potions (Potion of Strength/
+  // Dexterity/Intelligence), and turns remaining before each reverts. Ticked down once
+  // per turn in end_turn(); drinking another potion of the same stat while one is
+  // already active just refreshes the timer rather than stacking the bonus. Strength's
+  // bonus feeds max_hp_for_strength() and melee damage the same as the permanent stat —
+  // but unlike leveling up, gaining or losing it never changes current HP, only the
+  // ceiling. Intelligence's bonus feeds spell damage, but deliberately NOT
+  // known_spell_indices() — only permanent, unmodified intelligence unlocks new spells.
+  int temp_str_bonus = 0;
+  int temp_str_turns = 0;
+  int temp_dex_bonus = 0;
+  int temp_dex_turns = 0;
+  int temp_int_bonus = 0;
+  int temp_int_turns = 0;
 
   bool is_alive() const { return hp > 0; }
 };

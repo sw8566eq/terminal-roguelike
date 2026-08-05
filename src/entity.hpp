@@ -60,5 +60,9 @@ struct Actor {
   // template at spawn (monsters don't wear armor, so this is their only defense).
   int evasion = 0;
 
+  // Player only: fractional HP banked toward the next point of passive regen (HP/turn
+  // is usually not a whole number, so this carries the remainder between turns).
+  float hp_regen_accumulator = 0.0f;
+
   bool is_alive() const { return hp > 0; }
 };

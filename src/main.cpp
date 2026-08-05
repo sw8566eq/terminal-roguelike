@@ -78,6 +78,11 @@ std::vector<int> monsters_available_at_depth(int depth) {
 // Max HP scales with Strength, so there's no need for a separate Vitality stat.
 int max_hp_for_strength(int strength) { return 10 + strength * 5; }
 
+// Turns for passive HP regen to heal from 0 to full. Regen scales with max HP (see
+// end_turn()) so this stays constant regardless of build — a tankier character heals
+// more HP per turn, but takes the same number of turns to fully recover.
+constexpr int kHpRegenTurns = 150;
+
 // Evasion (percent chance to dodge an attack entirely) scales with Dexterity, capped
 // so the player can never become effectively unhittable.
 int evasion_for_dexterity(int dexterity) { return std::min(dexterity * 3, 40); }
@@ -407,8 +412,36 @@ int main(int argc, char* argv[]) {
   // Records a new, distinct message as its own log entry. Everything that happens
   // becomes its own line, even multiple things on the same turn (e.g. an attack
   // landing and the target retaliating) — nothing ever gets concatenated into one.
+  // Exception: if this is the exact same text as the last entry (e.g. waiting several
+  // turns in a row), it's coalesced into that entry with a "xN" counter instead of
+  // spamming a new identical line every time.
   auto add_message = [&](const std::string& text) {
-    if (!text.empty()) message_log.push_back(text);
+    if (text.empty()) return;
+    if (!message_log.empty()) {
+      std::string& last = message_log.back();
+      std::string last_base = last;
+      int count = 1;
+      size_t suffix_pos = last.rfind(" x");
+      if (suffix_pos != std::string::npos) {
+        std::string suffix = last.substr(suffix_pos + 2);
+        bool all_digits = !suffix.empty();
+        for (char c : suffix) {
+          if (c < '0' || c > '9') {
+            all_digits = false;
+            break;
+          }
+        }
+        if (all_digits) {
+          last_base = last.substr(0, suffix_pos);
+          count = std::stoi(suffix);
+        }
+      }
+      if (last_base == text) {
+        last = text + " x" + std::to_string(count + 1);
+        return;
+      }
+    }
+    message_log.push_back(text);
   };
 
   enum class Mode { Playing, WeaponMenu, ArmorMenu, Drop, Dead, LevelUp, SpellMenu, Targeting, MessageLog };
@@ -489,6 +522,17 @@ int main(int argc, char* argv[]) {
   // Runs after the player's turn: every living monster still adjacent to the player
   // gets to attack. (Movement/chasing AI will plug into this same turn boundary later.)
   auto end_turn = [&]() {
+    // Passive HP regen: scales with max HP (see kHpRegenTurns) so a full heal takes
+    // roughly the same number of turns regardless of build. Silent — no log message —
+    // since it ticks often enough that logging it would just spam the message log.
+    if (player.is_alive() && player.hp < player.max_hp) {
+      player.hp_regen_accumulator += static_cast<float>(player.max_hp) / static_cast<float>(kHpRegenTurns);
+      while (player.hp_regen_accumulator >= 1.0f && player.hp < player.max_hp) {
+        player.hp_regen_accumulator -= 1.0f;
+        player.hp += 1;
+      }
+    }
+
     advance_projectiles();
 
     Level& level = levels[static_cast<size_t>(current_level)];
@@ -578,6 +622,7 @@ int main(int argc, char* argv[]) {
     player.xp = 0;
     player.max_hp = max_hp_for_strength(player.strength);
     player.hp = player.max_hp;
+    player.hp_regen_accumulator = 0.0f;
     player.evasion = evasion_for_dexterity(player.dexterity);
     player.weapon = kFists;
     player.armor = kNoArmor;

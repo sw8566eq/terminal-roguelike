@@ -29,6 +29,15 @@ struct Armor {
   bool is_intrinsic = false;
 };
 
+// A consumable potion: drinking it applies its effect immediately and uses it up —
+// unlike Weapon/Armor, there's nothing to equip or swap back out.
+struct Potion {
+  std::string name;
+  int heal_percent = 0;  // percent of max HP restored, instantly, when drunk
+  char glyph = '!';
+  tcod::ColorRGB color{255, 255, 255};
+};
+
 // A living thing on the map: the player or a monster. Combat is symmetric
 // (same stats, same roll_damage call on both sides), so both share this one
 // representation for now rather than separate Player/Monster types.

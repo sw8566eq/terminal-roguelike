@@ -17,6 +17,7 @@
 constexpr int NUM_MONSTERS = 5;  // per floor
 constexpr int NUM_ITEMS = 4;     // per floor
 constexpr int NUM_ARMOR = 3;     // per floor
+constexpr int NUM_POTIONS = 2;   // per floor
 
 // Melee weapons that can be found lying on the floor.
 const std::vector<Weapon> kWeaponTable = {
@@ -32,6 +33,14 @@ const std::vector<Armor> kArmorTable = {
     {"Chainmail", 3},
     {"Plate Armor", 5},
 };
+
+// Potions that can be found lying on the floor.
+const std::vector<Potion> kPotionTable = {
+    {"Heal Potion", /*heal_percent=*/50, '!', tcod::ColorRGB{255, 100, 150}},
+};
+
+// Formats a potion as e.g. "+50% HP", for the HUD/menus.
+std::string describe_potion(const Potion& potion) { return "+" + std::to_string(potion.heal_percent) + "% HP"; }
 
 struct MonsterTemplate {
   std::string name;
@@ -149,6 +158,12 @@ struct GroundArmor {
   Armor armor;
 };
 
+// A potion lying on the floor, waiting to be picked up.
+struct GroundPotion {
+  int x, y;
+  Potion potion;
+};
+
 // A spell in flight: advances along a precomputed path by `speed` tiles every player
 // turn (see advance_projectiles), hitting the first wall or monster it reaches.
 struct Projectile {
@@ -215,25 +230,28 @@ std::pair<int, int> random_free_tile(const Map& map, const std::vector<std::pair
   }
 }
 
-enum class ItemKind { Weapon, Armor };
+enum class ItemKind { Weapon, Armor, Potion };
 
 // One selectable row in the equip or drop screen. index == -1 means the intrinsic
 // default (Fists / Nothing) for Weapon/Armor respectively; otherwise it's an index
-// into `inventory` or `armor_inventory`.
+// into `inventory`, `armor_inventory`, or `potion_inventory`. Potions have no
+// intrinsic/equipped state, so -1 never appears for ItemKind::Potion.
 struct ItemSlot {
   ItemKind kind;
   int index;
 };
 
 // The droppable list: the currently equipped weapon/armor (omitted if intrinsic),
-// followed by everything carried of each kind.
+// followed by everything carried of each kind, including potions.
 std::vector<ItemSlot> drop_slots(const Actor& player, const std::vector<Weapon>& inventory,
-                                  const std::vector<Armor>& armor_inventory) {
+                                  const std::vector<Armor>& armor_inventory,
+                                  const std::vector<Potion>& potion_inventory) {
   std::vector<ItemSlot> slots;
   if (!player.weapon.is_intrinsic) slots.push_back({ItemKind::Weapon, -1});
   for (size_t i = 0; i < inventory.size(); ++i) slots.push_back({ItemKind::Weapon, static_cast<int>(i)});
   if (!player.armor.is_intrinsic) slots.push_back({ItemKind::Armor, -1});
   for (size_t i = 0; i < armor_inventory.size(); ++i) slots.push_back({ItemKind::Armor, static_cast<int>(i)});
+  for (size_t i = 0; i < potion_inventory.size(); ++i) slots.push_back({ItemKind::Potion, static_cast<int>(i)});
   return slots;
 }
 
@@ -247,6 +265,7 @@ struct Level {
   std::vector<Actor> monsters;
   std::vector<GroundItem> items;
   std::vector<GroundArmor> armor_items;
+  std::vector<GroundPotion> potions;
   std::vector<RememberedMonster> remembered_monsters;  // last-seen monster sightings, may go stale
   std::vector<Projectile> projectiles;  // spells currently in flight on this floor
   int entry_x = 0;           // where the player arrives on this floor
@@ -292,7 +311,7 @@ int monster_count_for_depth(int depth) { return std::min(NUM_MONSTERS + (depth -
 // Builds and populates a fresh floor. depth is 1-indexed (matches the "Floor:N" HUD)
 // and gates which monsters can spawn here, plus how many.
 Level generate_level(int width, int height, bool has_stairs_up, int depth) {
-  Level level{Map(width, height), {}, {}, {}, {}, {}};
+  Level level{Map(width, height), {}, {}, {}, {}, {}, {}};
   auto [entry_x, entry_y] = level.map.generate(/*max_rooms=*/12, /*room_min_size=*/4, /*room_max_size=*/8);
   level.entry_x = entry_x;
   level.entry_y = entry_y;
@@ -337,6 +356,12 @@ Level generate_level(int width, int height, bool has_stairs_up, int depth) {
     auto [ax, ay] = random_free_tile(level.map, occupied);
     occupied.push_back({ax, ay});
     level.armor_items.push_back(GroundArmor{ax, ay, kArmorTable[random_int(0, static_cast<int>(kArmorTable.size()) - 1)]});
+  }
+
+  for (int i = 0; i < NUM_POTIONS; ++i) {
+    auto [px, py] = random_free_tile(level.map, occupied);
+    occupied.push_back({px, py});
+    level.potions.push_back(GroundPotion{px, py, kPotionTable[random_int(0, static_cast<int>(kPotionTable.size()) - 1)]});
   }
 
   return level;
@@ -404,6 +429,7 @@ int main(int argc, char* argv[]) {
 
   std::vector<Weapon> inventory;
   std::vector<Armor> armor_inventory;
+  std::vector<Potion> potion_inventory;
   std::vector<std::string> message_log;  // full history; the HUD shows the last MESSAGE_ROWS entries
   int log_scroll = 0;  // lines scrolled up from the bottom, while Mode::MessageLog
   std::string death_cause;  // name of whatever last killed the player, for the death screen
@@ -444,7 +470,7 @@ int main(int argc, char* argv[]) {
     message_log.push_back(text);
   };
 
-  enum class Mode { Playing, WeaponMenu, ArmorMenu, Drop, Dead, LevelUp, SpellMenu, Targeting, MessageLog };
+  enum class Mode { Playing, WeaponMenu, ArmorMenu, PotionMenu, Drop, Dead, LevelUp, SpellMenu, Targeting, MessageLog };
   int casting_spell_index = -1;  // which kSpellTable entry is being aimed, while Mode::Targeting
   int target_x = 0;              // targeting cursor position, while Mode::Targeting
   int target_y = 0;
@@ -630,10 +656,11 @@ int main(int argc, char* argv[]) {
 
     inventory.clear();
     armor_inventory.clear();
+    potion_inventory.clear();
     pending_attribute_points = 0;
     message_log.clear();
     add_message("Walk into an enemy to attack. hjkl/yubn or arrows to move, '.' wait, ']' log.");
-    add_message("'g' get, 'w' weapons, 'a' armor, 'd' drop, 'z' spells.");
+    add_message("'g' get, 'w' weapons, 'a' armor, 'q' potions, 'd' drop, 'z' spells.");
     add_message("'>'/'<' for stairs, Esc to quit.");
     mode = Mode::Playing;
   };
@@ -717,6 +744,18 @@ int main(int argc, char* argv[]) {
                             describe_armor(armor_inventory[i]) + ")";
         tcod::print(console, {0, 4 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
       }
+    } else if (mode == Mode::PotionMenu) {
+      tcod::print(console, {0, 0}, "Potions - press a letter to drink, Esc to close", tcod::ColorRGB{255, 255, 255},
+                  std::nullopt);
+
+      if (potion_inventory.empty()) {
+        tcod::print(console, {0, 2}, "(no potions carried)", tcod::ColorRGB{120, 120, 120}, std::nullopt);
+      }
+      for (size_t i = 0; i < potion_inventory.size(); ++i) {
+        std::string line = std::string(1, static_cast<char>('a' + i)) + ") " + potion_inventory[i].name + " (" +
+                            describe_potion(potion_inventory[i]) + ")";
+        tcod::print(console, {0, 2 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
+      }
     } else if (mode == Mode::SpellMenu) {
       tcod::print(console, {0, 0}, "Spells - press a letter to cast, Esc to close", tcod::ColorRGB{255, 255, 255},
                   std::nullopt);
@@ -735,7 +774,7 @@ int main(int argc, char* argv[]) {
       tcod::print(console, {0, 0}, "Drop - press a letter to drop, Esc to cancel", tcod::ColorRGB{255, 255, 255},
                   std::nullopt);
 
-      auto slots = drop_slots(player, inventory, armor_inventory);
+      auto slots = drop_slots(player, inventory, armor_inventory, potion_inventory);
       if (slots.empty()) {
         tcod::print(console, {0, 2}, "(nothing to drop)", tcod::ColorRGB{120, 120, 120}, std::nullopt);
       }
@@ -746,10 +785,13 @@ int main(int argc, char* argv[]) {
           const Weapon& w = (slots[i].index == -1) ? player.weapon : inventory[static_cast<size_t>(slots[i].index)];
           line = std::string(1, letter) + ") " + w.name + " (" + describe_weapon(w) + ")";
           if (slots[i].index == -1) line += " [equipped]";
-        } else {
+        } else if (slots[i].kind == ItemKind::Armor) {
           const Armor& a = (slots[i].index == -1) ? player.armor : armor_inventory[static_cast<size_t>(slots[i].index)];
           line = std::string(1, letter) + ") " + a.name + " (" + describe_armor(a) + ")";
           if (slots[i].index == -1) line += " [equipped]";
+        } else {
+          const Potion& p = potion_inventory[static_cast<size_t>(slots[i].index)];
+          line = std::string(1, letter) + ") " + p.name + " (" + describe_potion(p) + ")";
         }
         tcod::print(console, {0, 2 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
       }
@@ -869,6 +911,13 @@ int main(int argc, char* argv[]) {
         auto& cell = console.at(armor_item.x, armor_item.y + HUD_HEIGHT);
         cell.ch = '[';
         cell.fg = tcod::ColorRGB{180, 220, 200};
+      }
+
+      for (const auto& ground_potion : level.potions) {
+        if (!level.map.is_in_fov(ground_potion.x, ground_potion.y)) continue;
+        auto& cell = console.at(ground_potion.x, ground_potion.y + HUD_HEIGHT);
+        cell.ch = ground_potion.potion.glyph;
+        cell.fg = ground_potion.potion.color;
       }
 
       for (const auto& monster : level.monsters) {
@@ -1041,6 +1090,24 @@ int main(int argc, char* argv[]) {
         continue;
       }
 
+      if (mode == Mode::PotionMenu) {
+        if (event.key.key == SDLK_ESCAPE) {
+          mode = Mode::Playing;
+        } else if (event.key.key >= SDLK_A && event.key.key <= SDLK_Z) {
+          size_t idx = static_cast<size_t>(event.key.key - SDLK_A);
+          if (idx < potion_inventory.size()) {
+            Potion chosen = potion_inventory[idx];
+            potion_inventory.erase(potion_inventory.begin() + static_cast<long>(idx));
+            int heal_amount = player.max_hp * chosen.heal_percent / 100;
+            player.hp = std::min(player.hp + heal_amount, player.max_hp);
+            add_message("You drink the " + chosen.name + " and recover " + std::to_string(heal_amount) + " HP.");
+            mode = Mode::Playing;
+            end_turn();  // drinking takes a moment; adjacent monsters get a free hit
+          }
+        }
+        continue;
+      }
+
       if (mode == Mode::SpellMenu) {
         if (event.key.key == SDLK_ESCAPE) {
           mode = Mode::Playing;
@@ -1141,7 +1208,7 @@ int main(int argc, char* argv[]) {
         if (event.key.key == SDLK_ESCAPE) {
           mode = Mode::Playing;
         } else if (event.key.key >= SDLK_A && event.key.key <= SDLK_Z) {
-          auto slots = drop_slots(player, inventory, armor_inventory);
+          auto slots = drop_slots(player, inventory, armor_inventory, potion_inventory);
           size_t idx = static_cast<size_t>(event.key.key - SDLK_A);
           if (idx < slots.size()) {
             const ItemSlot& slot = slots[idx];
@@ -1158,7 +1225,7 @@ int main(int argc, char* argv[]) {
               }
               level.items.push_back(GroundItem{player.x, player.y, dropped});
               dropped_name = dropped.name;
-            } else {
+            } else if (slot.kind == ItemKind::Armor) {
               Armor dropped;
               if (slot.index == -1) {
                 dropped = player.armor;
@@ -1169,6 +1236,12 @@ int main(int argc, char* argv[]) {
                 armor_inventory.erase(armor_inventory.begin() + static_cast<long>(inv_idx));
               }
               level.armor_items.push_back(GroundArmor{player.x, player.y, dropped});
+              dropped_name = dropped.name;
+            } else {
+              size_t inv_idx = static_cast<size_t>(slot.index);
+              Potion dropped = potion_inventory[inv_idx];
+              potion_inventory.erase(potion_inventory.begin() + static_cast<long>(inv_idx));
+              level.potions.push_back(GroundPotion{player.x, player.y, dropped});
               dropped_name = dropped.name;
             }
             add_message("You drop the " + dropped_name + ".");
@@ -1197,10 +1270,14 @@ int main(int argc, char* argv[]) {
         mode = Mode::Drop;
         continue;
       }
+      if (event.key.key == SDLK_Q) {
+        mode = Mode::PotionMenu;
+        continue;
+      }
       if (event.key.key == SDLK_G) {
         // Picks up whatever's on the player's current tile (no more auto-pickup on
-        // step). Picks up one weapon and one armor piece if both happen to be here,
-        // each as its own message rather than one combined line.
+        // step). Picks up one of each kind if several happen to be here, each as its
+        // own message rather than one combined line.
         bool picked_up_anything = false;
         for (auto it = level.items.begin(); it != level.items.end(); ++it) {
           if (it->x == player.x && it->y == player.y) {
@@ -1216,6 +1293,15 @@ int main(int argc, char* argv[]) {
             add_message("You pick up a " + it->armor.name + ". Press 'a' to equip.");
             armor_inventory.push_back(it->armor);
             level.armor_items.erase(it);
+            picked_up_anything = true;
+            break;
+          }
+        }
+        for (auto it = level.potions.begin(); it != level.potions.end(); ++it) {
+          if (it->x == player.x && it->y == player.y) {
+            add_message("You pick up a " + it->potion.name + ". Press 'q' to drink.");
+            potion_inventory.push_back(it->potion);
+            level.potions.erase(it);
             picked_up_anything = true;
             break;
           }

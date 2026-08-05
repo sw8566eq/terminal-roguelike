@@ -3,6 +3,7 @@
 #include <libtcod.hpp>
 
 #include <algorithm>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -301,19 +302,53 @@ Level generate_level(int width, int height, bool has_stairs_up) {
   return level;
 }
 
+// Common monospace font paths, one per Linux distro this project's README documents
+// setup for. Tried in order; the first one found is used. This approximates "use the
+// font your terminal uses" without a fontconfig dependency or bundling a font file:
+// on an unconfigured terminal (no custom font override), these paths ARE what
+// fontconfig's "monospace" alias resolves to on each respective distro.
+const std::vector<std::string> kPreferredFontPaths = {
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",         // Debian/Ubuntu
+    "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",  // Fedora
+    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",                     // Arch
+};
+
+// Loads the first font from kPreferredFontPaths that exists on disk, rendered at
+// tile_size x tile_size pixels per cell. Falls back to libtcod's built-in font (same
+// one used before this project had any font-selection logic) if none of them exist.
+tcod::TilesetPtr load_best_tileset(int tile_size) {
+  for (const auto& path : kPreferredFontPaths) {
+    if (!std::filesystem::exists(path)) continue;
+    tcod::TilesetPtr tileset{TCOD_load_truetype_font_(path.c_str(), tile_size, tile_size)};
+    if (tileset) return tileset;
+  }
+  return tcod::tileset::new_fallback_tileset({tile_size, tile_size});
+}
+
 int main(int argc, char* argv[]) {
-  constexpr int SCREEN_WIDTH = 80;
-  constexpr int SCREEN_HEIGHT = 25;
-  constexpr int HUD_HEIGHT = 2;  // top rows reserved for stats + message, not part of the map
+  constexpr int SCREEN_WIDTH = 100;
+  constexpr int SCREEN_HEIGHT = 32;
+  constexpr int MESSAGE_ROWS = 2;  // message wraps across this many rows instead of overflowing
+  constexpr int HUD_HEIGHT = 2 + MESSAGE_ROWS;  // stats, gear, then the message — not part of the map
   constexpr int MAP_WIDTH = SCREEN_WIDTH;
   constexpr int MAP_HEIGHT = SCREEN_HEIGHT - HUD_HEIGHT;
   constexpr int FOV_RADIUS = 8;  // how far the player can see; unrelated to any spell's range
+  constexpr int TILE_SIZE = 18;  // pixels per cell; square, so tiles aren't stretched
 
   auto console = tcod::Console{SCREEN_WIDTH, SCREEN_HEIGHT};  // Main console.
+
+  // Explicitly pick a font instead of leaving tileset null: with none set, libtcod
+  // tries to load a "terminal.png" from disk (which this project doesn't ship, hence
+  // the "Error loading font image" warning at startup), then silently falls back to
+  // its built-in font anyway, but at whatever tiny default size it picks. Doing it
+  // ourselves skips the failed disk lookup, lets us pick a real size, and tries to
+  // match the font your terminal would normally show text in.
+  auto tileset = load_best_tileset(TILE_SIZE);
 
   // Configure the context.
   auto params = TCOD_ContextParams{};
   params.console = console.get();  // Derive the window size from the console size.
+  params.tileset = tileset.get();
   params.window_title = "Terminal Roguelike";
   params.sdl_window_flags = SDL_WINDOW_RESIZABLE;
   params.vsync = true;
@@ -582,15 +617,18 @@ int main(int argc, char* argv[]) {
     } else {
       update_monster_memory(level);
 
-      // Row 0: persistent stats. Row 1: the rolling event message (or the level-up
-      // prompt) — kept on its own line so a long stats prefix can't crowd it out.
-      std::string stats_line = "HP:" + std::to_string(player.hp) + "/" + std::to_string(player.max_hp) + " Lvl:" +
-                                std::to_string(player.level) + " STR:" + std::to_string(player.strength) +
-                                " DEX:" + std::to_string(player.dexterity) + " INT:" +
-                                std::to_string(player.intelligence) + " Floor:" + std::to_string(current_level + 1) +
-                                " Wpn:" + player.weapon.name + "(" + describe_weapon(player.weapon) + ")" +
-                                " Arm:" + player.armor.name + "(" + describe_armor(player.armor) + ")";
-      tcod::print(console, {0, 0}, stats_line, tcod::ColorRGB{255, 255, 255}, std::nullopt);
+      // Row 0: HP/level/floor. Row 1: attributes + gear. Row 2: the rolling event
+      // message (or the level-up/targeting prompt) — each on its own line so a long
+      // stats prefix can't crowd out the others.
+      std::string status_line = "HP:" + std::to_string(player.hp) + "/" + std::to_string(player.max_hp) +
+                                 " Lvl:" + std::to_string(player.level) + " Floor:" + std::to_string(current_level + 1);
+      tcod::print(console, {0, 0}, status_line, tcod::ColorRGB{255, 255, 255}, std::nullopt);
+
+      std::string gear_line = "STR:" + std::to_string(player.strength) + " DEX:" + std::to_string(player.dexterity) +
+                               " INT:" + std::to_string(player.intelligence) + " Wpn:" + player.weapon.name + "(" +
+                               describe_weapon(player.weapon) + ") Arm:" + player.armor.name + "(" +
+                               describe_armor(player.armor) + ")";
+      tcod::print(console, {0, 1}, gear_line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
 
       std::string message_line = message;
       if (mode == Mode::LevelUp) {
@@ -600,7 +638,8 @@ int main(int argc, char* argv[]) {
         message_line =
             "Casting " + kSpellTable[static_cast<size_t>(casting_spell_index)].name + " - move to target, Enter to fire, Esc to cancel.";
       }
-      tcod::print(console, {0, 1}, message_line, tcod::ColorRGB{255, 255, 100}, std::nullopt);
+      tcod::print_rect(console, {0, 2, SCREEN_WIDTH, MESSAGE_ROWS}, message_line, tcod::ColorRGB{255, 255, 100},
+                        std::nullopt);
 
       for (int y = 0; y < level.map.height(); ++y) {
         for (int x = 0; x < level.map.width(); ++x) {

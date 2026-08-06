@@ -175,7 +175,17 @@ const Armor kNoArmor = Armor{"Nothing", 0, /*is_intrinsic=*/true};
 // with (Magic Dart). A positive radius means it explodes on impact into a square blast
 // of that Chebyshev radius (1 = 3x3) centered on wherever it stopped, damaging every
 // monster caught inside — see advance_projectiles() for how "wherever it stopped" is
-// determined (wall/monster/max-range all count).
+// determined (wall/monster/max-range all count). For a toggle spell (below), aoe_radius
+// instead sizes the aura around the player — radius R covers a (2R+1)x(2R+1) box —
+// recentered every turn.
+//
+// is_toggle marks a persistent aura spell (e.g. Sandstorm) instead of a fired
+// Projectile: selecting it in the spell menu turns it on/off directly, no Targeting
+// step (it's always centered on the player). dice_count/dice_sides/speed/range/glyph/
+// color are unused for these — mana_cost instead becomes the flat one-time cost to
+// turn it on (see the SpellMenu toggle handler), and tick_damage/tick_mana_cost are the
+// flat (no dice, no INT bonus) per-turn cost/effect while it stays active, applied in
+// end_turn(). See known_spell_indices below for what "known" means either way.
 struct Spell {
   std::string name;
   int unlock_int;
@@ -185,6 +195,9 @@ struct Spell {
   int range;  // max cast distance from the caster, in tiles (straight-line)
   int mana_cost;
   int aoe_radius = 0;
+  bool is_toggle = false;
+  int tick_damage = 0;     // toggle spells only: flat damage/turn to everything in range
+  int tick_mana_cost = 0;  // toggle spells only: flat mana drained/turn while active
   char glyph;
   tcod::ColorRGB color;
 };
@@ -196,11 +209,21 @@ const std::vector<Spell> kSpellTable = {
     // fixed number — it won't change if FOV radius ever does (e.g. a future perception
     // mechanic).
     {"Magic Dart", /*unlock_int=*/3, /*dice_count=*/1, /*dice_sides=*/2, kInstantSpellSpeed, /*range=*/8,
-     /*mana_cost=*/1, /*aoe_radius=*/0, '*', tcod::ColorRGB{200, 100, 255}},
+     /*mana_cost=*/1, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0, '*',
+     tcod::ColorRGB{200, 100, 255}},
     // Slow-moving orb (visibly crosses several turns instead of resolving instantly) that
     // explodes into a 3x3 blast wherever it stops, rather than just hitting one target.
     {"Fireball", /*unlock_int=*/6, /*dice_count=*/1, /*dice_sides=*/6, /*speed=*/2, /*range=*/8,
-     /*mana_cost=*/3, /*aoe_radius=*/1, 'o', tcod::ColorRGB{255, 120, 40}},
+     /*mana_cost=*/3, /*aoe_radius=*/1, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0, 'o',
+     tcod::ColorRGB{255, 120, 40}},
+    // Toggled aura, not a fired spell: 7x7 around the player (aoe_radius=3), 2 flat
+    // damage/turn to every monster caught in it, drains 2 mana/turn while active.
+    // Turning it on costs a flat 3 mana for that turn instead of the per-turn drain
+    // (see the SpellMenu toggle handler) — steep enough that flicking it on and off
+    // every turn to save mana isn't actually cheaper than just leaving it running.
+    {"Sandstorm", /*unlock_int=*/9, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/0,
+     /*mana_cost=*/3, /*aoe_radius=*/3, /*is_toggle=*/true, /*tick_damage=*/2, /*tick_mana_cost=*/2, 's',
+     tcod::ColorRGB{230, 190, 90}},
 };
 
 // Indices into kSpellTable of every spell the player currently knows, in display
@@ -592,6 +615,10 @@ int main(int argc, char* argv[]) {
   int casting_spell_index = -1;  // which kSpellTable entry is being aimed, while Mode::Targeting
   int target_x = 0;              // targeting cursor position, while Mode::Targeting
   int target_y = 0;
+  // Index into kSpellTable of the currently-running toggle spell (e.g. Sandstorm), or
+  // -1 if none is active. Only one toggle spell can run at a time — simple on purpose,
+  // since there's only one so far; a second would need its own slot or a small vector.
+  int active_toggle_spell = -1;
   Mode mode = Mode::Playing;
 
   std::vector<Level> levels;
@@ -786,6 +813,41 @@ int main(int argc, char* argv[]) {
 
     Level& level = levels[static_cast<size_t>(current_level)];
 
+    // Toggled aura spells (e.g. Sandstorm): while active, drains tick_mana_cost every
+    // turn and deals tick_damage to every monster within aoe_radius tiles (Chebyshev
+    // distance) of the player's *current* position — recentered each turn, since the
+    // aura follows the player rather than sitting where it was cast. Flat damage, no
+    // dice roll or INT bonus, unlike the Projectile spells above. Shuts itself off if
+    // the player can no longer afford the drain. The turn a storm is first turned on
+    // pays a flat activation cost instead of this tick — active_toggle_spell isn't set
+    // until after that turn's end_turn() call (see the SpellMenu toggle handler), so
+    // this only starts draining/damaging on the turn after.
+    if (active_toggle_spell >= 0) {
+      const Spell& storm = kSpellTable[static_cast<size_t>(active_toggle_spell)];
+      if (player.mana < storm.tick_mana_cost) {
+        add_message("Your " + storm.name + " dies down - out of mana.");
+        active_toggle_spell = -1;
+      } else {
+        player.mana -= storm.tick_mana_cost;
+        for (size_t m = 0; m < level.monsters.size();) {
+          Actor& target = level.monsters[m];
+          if (std::abs(target.x - player.x) <= storm.aoe_radius && std::abs(target.y - player.y) <= storm.aoe_radius) {
+            target.hp -= storm.tick_damage;
+            if (!target.is_alive()) {
+              add_message("Your " + storm.name + " kills the " + target.name + "!");
+              int xp_reward = target.xp_reward;  // read before erase invalidates `target`
+              level.monsters.erase(level.monsters.begin() + static_cast<long>(m));
+              grant_xp(xp_reward);
+              continue;  // next monster has shifted down into slot m; don't advance past it
+            }
+            add_message("Your " + storm.name + " hits the " + target.name + " for " +
+                        std::to_string(storm.tick_damage) + ".");
+          }
+          ++m;
+        }
+      }
+    }
+
     // Tries to step a monster by (step_dx, step_dy); does nothing and returns false if
     // that tile is a wall or already has another living monster on it.
     auto try_monster_step = [&](Actor& m, int step_dx, int step_dy) -> bool {
@@ -913,6 +975,7 @@ int main(int argc, char* argv[]) {
     armor_inventory.clear();
     potion_inventory.clear();
     pending_attribute_points = 0;
+    active_toggle_spell = -1;
     message_log.clear();
     add_message("Welcome to the dungeon. Press '?' for controls.");
     mode = Mode::Playing;
@@ -1075,11 +1138,21 @@ int main(int argc, char* argv[]) {
       }
       for (size_t i = 0; i < known.size(); ++i) {
         const Spell& s = kSpellTable[static_cast<size_t>(known[i])];
-        std::string line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (" +
-                            std::to_string(s.dice_count) + "d" + std::to_string(s.dice_sides) + "+INT/3) - " +
-                            std::to_string(s.mana_cost) + " MP";
-        // Dimmed red instead of the usual grey once you can't actually afford it.
-        bool affordable = player.mana >= s.mana_cost;
+        bool is_active = active_toggle_spell == known[i];
+        std::string line;
+        if (s.is_toggle) {
+          line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (" +
+                 std::to_string(s.tick_damage) + " dmg/turn in " + std::to_string(2 * s.aoe_radius + 1) + "x" +
+                 std::to_string(2 * s.aoe_radius + 1) + ", " + std::to_string(s.tick_mana_cost) + " MP/turn) - " +
+                 std::to_string(s.mana_cost) + " MP to toggle" + (is_active ? " [ACTIVE]" : "");
+        } else {
+          line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (" + std::to_string(s.dice_count) +
+                 "d" + std::to_string(s.dice_sides) + "+INT/3) - " + std::to_string(s.mana_cost) + " MP";
+        }
+        // Dimmed red instead of the usual grey once you can't actually afford it — a
+        // currently-active toggle is always "affordable" to select again (turning it
+        // off is always free) so it doesn't get the red treatment.
+        bool affordable = is_active || player.mana >= s.mana_cost;
         tcod::print(console, {0, 2 + static_cast<int>(i)}, line,
                     affordable ? tcod::ColorRGB{200, 200, 200} : tcod::ColorRGB{150, 80, 80}, std::nullopt);
       }
@@ -1159,6 +1232,11 @@ int main(int argc, char* argv[]) {
       std::string status_line = "HP:" + std::to_string(player.hp) + "/" + std::to_string(player.max_hp) +
                                  " MP:" + std::to_string(player.mana) + "/" + std::to_string(player.max_mana) +
                                  " Lvl:" + std::to_string(player.level) + " Floor:" + std::to_string(current_level + 1);
+      // A running toggle spell (e.g. Sandstorm) has no other on-screen presence — no
+      // aura tile overlay — so this is the only indicator it's still active and draining.
+      if (active_toggle_spell >= 0) {
+        status_line += " [" + kSpellTable[static_cast<size_t>(active_toggle_spell)].name + "]";
+      }
       tcod::print(console, {0, 0}, status_line, tcod::ColorRGB{255, 255, 255}, std::nullopt);
 
       // Appends "+N" to a stat only while its temp buff is active, so the HUD reflects
@@ -1288,6 +1366,25 @@ int main(int argc, char* argv[]) {
 
       console.at(player.x, player.y + HUD_HEIGHT).ch = player.glyph;
       console.at(player.x, player.y + HUD_HEIGHT).fg = player.color;
+
+      // A running toggle spell (e.g. Sandstorm) gets a persistent highlight around the
+      // player showing its current radius, recentered every frame since the aura
+      // follows the player rather than sitting still — same recolor-not-overwrite
+      // treatment as the AoE targeting preview below, so monsters/terrain inside it
+      // stay visible. Uses the spell's own color so different toggle spells (if more
+      // are ever added) read as visually distinct auras.
+      if (active_toggle_spell >= 0) {
+        const Spell& storm = kSpellTable[static_cast<size_t>(active_toggle_spell)];
+        for (int by = player.y - storm.aoe_radius; by <= player.y + storm.aoe_radius; ++by) {
+          for (int bx = player.x - storm.aoe_radius; bx <= player.x + storm.aoe_radius; ++bx) {
+            if (bx < 0 || by < 0 || bx >= level.map.width() || by >= level.map.height()) continue;
+            if (!level.map.is_explored(bx, by) && !reveal_mode) continue;
+            console.at(bx, by + HUD_HEIGHT).fg = storm.color;
+          }
+        }
+        // Re-mark the player's own tile on top so they stay visible inside the tint.
+        console.at(player.x, player.y + HUD_HEIGHT).fg = player.color;
+      }
 
       if (mode == Mode::Targeting) {
         // Preview the shot: trace the same path a cast would take, and stop drawing at
@@ -1524,10 +1621,33 @@ int main(int argc, char* argv[]) {
           auto known = known_spell_indices(player.intelligence);
           size_t idx = static_cast<size_t>(event.key.key - SDLK_A);
           if (idx < known.size()) {
-            casting_spell_index = known[idx];
-            target_x = player.x;
-            target_y = player.y;
-            mode = Mode::Targeting;
+            int spell_idx = known[idx];
+            const Spell& spell = kSpellTable[static_cast<size_t>(spell_idx)];
+            if (spell.is_toggle) {
+              if (active_toggle_spell == spell_idx) {
+                // Turning off is always free — no mana cost, but still takes the turn,
+                // same as every other spell-menu action.
+                active_toggle_spell = -1;
+                add_message("Your " + spell.name + " dissipates.");
+                mode = Mode::Playing;
+                end_turn();
+              } else if (player.mana < spell.mana_cost) {
+                add_message("Not enough mana to cast " + spell.name + ".");
+                mode = Mode::Playing;  // free cancel, no turn spent
+              } else {
+                player.mana -= spell.mana_cost;
+                add_message("You summon a " + spell.name + " around yourself!");
+                mode = Mode::Playing;
+                end_turn();  // this turn only pays the flat activation cost above
+                active_toggle_spell = spell_idx;  // set after end_turn(), so the
+                                                   // per-turn tick starts next turn
+              }
+            } else {
+              casting_spell_index = spell_idx;
+              target_x = player.x;
+              target_y = player.y;
+              mode = Mode::Targeting;
+            }
           }
         }
         continue;

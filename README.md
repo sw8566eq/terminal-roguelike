@@ -125,9 +125,13 @@ roguelike/
 - [x] Armor & evasion (equippable armor; dodge chance is a live Dexterity
       contest between attacker and defender on both sides of a fight, not
       just a flat player stat)
-- [x] Spells (Intelligence unlocks them; ranged, travel a fixed distance per
-      turn rather than resolving instantly, with an aim-preview line) — only
-      one spell (Magic Dart) so far, more planned
+- [x] Spells (Intelligence unlocks them): Magic Dart (single-target),
+      Fireball (slow-moving orb, explodes into a 3x3 blast on impact —
+      including on the caster, if cast too close), and Sandstorm (a
+      toggled aura that follows the player around instead of being aimed,
+      damaging everything in a 7x7 zone every turn while it drains mana)
+- [x] Mana: spells cost mana to cast (or, for Sandstorm, to keep running),
+      regenerating passively the same way HP does
 - [x] Monster AI: chases when it can see you, keeps heading for the last
       place it saw you after you break line of sight (until it gets there),
       otherwise wanders idly — not real pathfinding yet, so it can still get
@@ -139,9 +143,6 @@ roguelike/
 - [x] Weapon/armor/potion variety also scales with depth, mirroring monsters
 - [x] Passive HP regeneration (slow, scales with max HP)
 - [x] Multi-line message log with scrollback (`]`), repeat-message coalescing
-- [ ] More spells beyond Magic Dart
-- [ ] Sandstorm spell idea: an AoE centered on the player that follows them
-      around, rather than a fired projectile
 - [ ] Distinct per-monster-type AI (currently all monsters share the same
       wander/chase/remember behavior)
 - [ ] Real pathfinding for monster chase (currently a greedy step toward the

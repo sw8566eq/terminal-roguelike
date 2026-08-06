@@ -122,9 +122,11 @@ roguelike/
 - [x] Permadeath + restart flow
 - [x] Multi-level dungeon (stairs up/down, floors persist as you leave/return)
 - [x] Player attributes & leveling (Strength/Dexterity/Intelligence, XP)
-- [x] Armor & evasion (equippable armor; dodge chance is a live Dexterity
-      contest between attacker and defender on both sides of a fight, not
-      just a flat player stat)
+- [x] Armor & evasion: monster attacks against the player are a live Dexterity
+      contest (attacker vs. defender); the player's own weapons and spells
+      against monsters instead roll their own accuracy ("hit-dice") against
+      the target's flat evasion, so a fast dagger or a wide-area Fireball are
+      harder to dodge than a heavy axe or a precise Magic Dart
 - [x] Spells (Intelligence unlocks them): Magic Dart (single-target),
       Fireball (slow-moving orb, explodes into a 3x3 blast on impact —
       including on the caster, if cast too close), and Sandstorm (a
@@ -143,7 +145,9 @@ roguelike/
 - [x] Weapon/armor/potion variety also scales with depth, mirroring monsters
 - [x] Passive HP regeneration (slow, scales with max HP)
 - [x] Multi-line message log with scrollback (`]`), repeat-message coalescing
-- [ ] Distinct per-monster-type AI (currently all monsters share the same
-      wander/chase/remember behavior)
+- [x] First distinct monster AI: Goblin Slinger snipes from range without
+      approaching, but permanently switches to a melee dagger and starts
+      chasing like an ordinary monster the moment it's touched once — every
+      other monster still shares the plain wander/chase/remember behavior
 - [ ] Real pathfinding for monster chase (currently a greedy step toward the
       target tile)

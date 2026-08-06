@@ -52,9 +52,9 @@ struct Armor {
 enum class StatKind { None, Strength, Dexterity, Intelligence };
 
 // A consumable potion: drinking it applies its effect immediately and uses it up —
-// unlike Weapon/Armor, there's nothing to equip or swap back out. A potion is either a
-// heal (heal_percent > 0) or a temporary stat buff (buff_stat != StatKind::None); the
-// table never mixes both on one entry.
+// unlike Weapon/Armor, there's nothing to equip or swap back out. A potion is a heal
+// (heal_percent > 0), a temporary stat buff (buff_stat != StatKind::None), or a
+// teleport (teleports); the table never mixes more than one of these on one entry.
 struct Potion {
   std::string name;
   int heal_percent = 0;  // percent of max HP restored, instantly, when drunk
@@ -66,6 +66,9 @@ struct Potion {
   // Which floors (1-indexed) this potion can spawn on; see Weapon::min_depth above.
   int min_depth = 1;
   int max_depth = -1;
+  // Drinking it moves the player to a random walkable tile on the current floor
+  // instead of healing/buffing — see the Mode::PotionMenu drink handler in main.cpp.
+  bool teleports = false;
 };
 
 // A living thing on the map: the player or a monster. Combat is symmetric

@@ -50,7 +50,7 @@ const std::vector<Armor> kArmorTable = {
 // Potions that can be found lying on the floor. Stat potions all use the same +5/15-turn
 // shape for now; only Strength has a described mechanical effect today (max HP, regen,
 // melee damage) — Dexterity (evasion) and Intelligence (spell damage) piggyback on the
-// same existing formulas that already read those stats. All four are left ungated
+// same existing formulas that already read those stats. All are left ungated
 // (default min_depth=1, max_depth=-1, same as Weapon/Armor) since there's no real tiering
 // rationale among them yet — unlike kWeaponTable/kArmorTable, this table doesn't
 // exercise the depth-filter below, but the fields are there once it needs to.
@@ -62,10 +62,13 @@ const std::vector<Potion> kPotionTable = {
      tcod::ColorRGB{60, 200, 120}},
     {"Potion of Intelligence", 0, StatKind::Intelligence, /*buff_amount=*/5, /*buff_turns=*/15, '!',
      tcod::ColorRGB{80, 120, 220}},
+    {"Potion of Teleportation", 0, StatKind::None, 0, 0, '!', tcod::ColorRGB{180, 80, 220}, /*min_depth=*/1,
+     /*max_depth=*/-1, /*teleports=*/true},
 };
 
 // Formats a potion as e.g. "+50% HP" or "+5 STR (15 turns)", for the HUD/menus.
 std::string describe_potion(const Potion& potion) {
+  if (potion.teleports) return "Random teleport";
   if (potion.heal_percent > 0) return "+" + std::to_string(potion.heal_percent) + "% HP";
   const char* stat_name = potion.buff_stat == StatKind::Strength
                                ? "STR"
@@ -607,6 +610,36 @@ tcod::TilesetPtr load_best_tileset(int tile_size) {
     if (tileset) return tileset;
   }
   return tcod::tileset::new_fallback_tileset({tile_size, tile_size});
+}
+
+// Debug convenience for the --give= startup flag (see main()): looks up `name` across
+// the weapon/armor/potion content tables, in that order (no name collisions exist
+// across the three today), and pushes a copy onto whichever inventory it matched.
+// Returns whether anything matched, so the caller can flag a typo instead of silently
+// doing nothing — unlike the other debug flags, a silent no-op here would be
+// confusing for the one thing this flag exists to do (set up a specific test
+// scenario).
+bool give_starting_item(const std::string& name, std::vector<Weapon>& inventory, std::vector<Armor>& armor_inventory,
+                         std::vector<Potion>& potion_inventory) {
+  for (const auto& w : kWeaponTable) {
+    if (w.name == name) {
+      inventory.push_back(w);
+      return true;
+    }
+  }
+  for (const auto& a : kArmorTable) {
+    if (a.name == name) {
+      armor_inventory.push_back(a);
+      return true;
+    }
+  }
+  for (const auto& p : kPotionTable) {
+    if (p.name == name) {
+      potion_inventory.push_back(p);
+      return true;
+    }
+  }
+  return false;
 }
 
 int main(int argc, char* argv[]) {
@@ -1159,6 +1192,12 @@ int main(int argc, char* argv[]) {
   // --floor=N (floor 1 if that flag's absent) to stdout, then exits before the window
   // ever opens — a scriptable alternative to eyeballing --reveal in the live window,
   // for checking depth-gating (kWeaponTable etc.) actually filters as intended.
+  //
+  // `--give=<name>[,<name>...]` adds items straight to the carried inventory at
+  // startup (not auto-equipped — same "found it, now equip it" flow as picking one up,
+  // just skipping the walk), for testing a specific item without grinding to find one.
+  // Comma-separated, e.g. --give="Dagger,Potion of Teleportation"; see
+  // give_starting_item() above.
   bool reveal_mode = false;
   bool dump_loot = false;
   for (int i = 1; i < argc; ++i) {
@@ -1181,6 +1220,25 @@ int main(int argc, char* argv[]) {
     if (arg.rfind(level_prefix, 0) == 0) {
       int target_level = std::atoi(arg.c_str() + level_prefix.size());
       for (int lv = player.level; lv < target_level; ++lv) level_up_once();
+      continue;
+    }
+    const std::string give_prefix = "--give=";
+    if (arg.rfind(give_prefix, 0) == 0) {
+      std::string names = arg.substr(give_prefix.size());
+      size_t pos = 0;
+      while (pos <= names.size()) {
+        size_t comma = names.find(',', pos);
+        std::string name = names.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+        if (!name.empty()) {
+          if (give_starting_item(name, inventory, armor_inventory, potion_inventory)) {
+            add_message("Debug: added " + name + " to inventory.");
+          } else {
+            add_message("Debug: no item named \"" + name + "\" found.");
+          }
+        }
+        if (comma == std::string::npos) break;
+        pos = comma + 1;
+      }
       continue;
     }
   }
@@ -1739,6 +1797,16 @@ int main(int argc, char* argv[]) {
               player.temp_int_turns = chosen.buff_turns;
               add_message("You feel sharp! INT +" + std::to_string(chosen.buff_amount) + " for " +
                           std::to_string(chosen.buff_turns) + " turns.");
+            } else if (chosen.teleports) {
+              std::vector<std::pair<int, int>> occupied;
+              for (const auto& m : level.monsters) occupied.push_back({m.x, m.y});
+              auto [tx, ty] = random_free_tile(level.map, occupied);
+              player.x = tx;
+              player.y = ty;
+              // Not an incremental step, so (unlike normal movement) FOV needs an
+              // explicit recompute — same as descend()/ascend() after a floor change.
+              level.map.update_fov(player.x, player.y, FOV_RADIUS);
+              add_message("You vanish and reappear elsewhere!");
             }
             mode = Mode::Playing;
             end_turn();  // drinking takes a moment; adjacent monsters get a free hit

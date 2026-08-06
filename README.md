@@ -76,7 +76,13 @@ step 1.
   below); for an aimed spell, movement then steers a targeting cursor instead
   of moving you, with a preview line (and a highlighted blast radius for an
   AoE spell) showing what the shot would hit, `Enter` fires, `Esc` cancels; a
-  toggled spell (like Sandstorm) instead turns on/off immediately, no aiming
+  toggled spell (like Sandstorm) instead turns on/off immediately, no aiming;
+  a summon spell raises a minion next to you immediately, no aiming either
+- `m` to command your minions, if you have any: **Follow** (return to your
+  side, defending themselves if attacked) or **Attack...** (pick a monster
+  with a cursor — every minion switches to hunting it, reverting to Follow
+  once it dies); walking into your own minion swaps places with it instead
+  of attacking
 - On leveling up, `Shift+S` / `Shift+D` / `Shift+I` to put your point into
   Strength / Dexterity / Intelligence
 - `]` to open the full message log (scroll with `j`/`k` or arrows, `Esc` or
@@ -158,3 +164,15 @@ roguelike/
       chasing like an ordinary monster the moment they're touched once —
       every other monster still shares the plain wander/chase/remember
       behavior
+- [x] Summoner playstyle, phase 1: a spell raises a temporary minion that
+      fights at your side; command the whole pack with `m` (Follow or
+      Attack a chosen monster); hostile monsters can target minions
+      instead of always going after you, so they're real meat-shields;
+      minions are immune to your own spells, swap places instead of being
+      attacked if you walk into them, and follow you through stairs
+- [ ] Summoner playstyle, phase 2: direct per-minion control (an "X-COM
+      mode" cycling focus between individual minions) as an alternative to
+      pack-wide orders, and raising the minion cap toward a 1-7 range
+- [ ] Summoner playstyle, phase 3: true necromancy — reanimating the
+      specific monster you just killed (not just conjuring a generic
+      minion), via a corpse left on the ground and a spell that targets one

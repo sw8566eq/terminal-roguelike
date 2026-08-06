@@ -53,6 +53,13 @@ class Map {
   bool is_explored(int x, int y) const;
   bool is_in_room(int x, int y) const;  // false for corridor tiles and walls
 
+  // A* path from (from_x,from_y) to (to_x,to_y) over this map's walkability (the same
+  // TCODMap already kept in sync for FOV — see sync_fov_map()). Returns the tiles from
+  // just past the start through the destination, in order; empty if no path exists or
+  // start == destination. Used by monster chase AI so they route around obstacles
+  // instead of a naive greedy step toward the target.
+  std::vector<std::pair<int, int>> find_path(int from_x, int from_y, int to_x, int to_y) const;
+
  private:
   void dig_room(const Rect& room);
   void dig_corridor_h(int x1, int x2, int y);

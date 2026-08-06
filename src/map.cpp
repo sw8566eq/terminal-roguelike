@@ -19,6 +19,17 @@ bool Map::is_explored(int x, int y) const { return in_bounds(x, y) && tiles_[y *
 
 bool Map::is_in_room(int x, int y) const { return in_bounds(x, y) && tiles_[y * width_ + x].in_room; }
 
+std::vector<std::pair<int, int>> Map::find_path(int from_x, int from_y, int to_x, int to_y) const {
+  std::vector<std::pair<int, int>> result;
+  TCODPath path(&fov_map_);
+  if (!path.compute(from_x, from_y, to_x, to_y)) return result;
+  int x, y;
+  while (path.walk(&x, &y, false)) {
+    result.push_back({x, y});
+  }
+  return result;
+}
+
 void Map::sync_fov_map() {
   for (int y = 0; y < height_; ++y) {
     for (int x = 0; x < width_; ++x) {

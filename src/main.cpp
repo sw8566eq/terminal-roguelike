@@ -1062,9 +1062,10 @@ int main(int argc, char* argv[]) {
       // computing a separate FOV per monster). Otherwise, if the monster still
       // remembers where it last saw the player, head there instead of immediately
       // giving up — once it arrives and the player isn't there, the memory clears and
-      // it falls back to idle wandering. Movement is a simple greedy step, not real
-      // pathfinding — monsters can still get stuck on awkward corners, but that's a
-      // fine starting point.
+      // it falls back to idle wandering. Movement follows a real A* path
+      // (Map::find_path(), libtcod's TCODPath) recomputed fresh every turn — cheap
+      // enough at this map size that there's no need to cache it turn-to-turn — so a
+      // monster routes around a wall segment instead of pacing against it.
       bool can_see_player = level.map.is_in_fov(monster.x, monster.y);
       if (can_see_player) {
         monster.last_seen_player_x = player.x;
@@ -1073,21 +1074,25 @@ int main(int argc, char* argv[]) {
 
       int move_dx = 0;
       int move_dy = 0;
-      if (can_see_player) {
-        move_dx = (dx > 0) - (dx < 0);  // sign(dx): one tile toward the player
-        move_dy = (dy > 0) - (dy < 0);
-      } else if (monster.last_seen_player_x >= 0) {
-        int memory_dx = monster.last_seen_player_x - monster.x;
-        int memory_dy = monster.last_seen_player_y - monster.y;
-        if (memory_dx == 0 && memory_dy == 0) {
+      bool has_chase_target = can_see_player || monster.last_seen_player_x >= 0;
+      if (has_chase_target) {
+        int target_x = can_see_player ? player.x : monster.last_seen_player_x;
+        int target_y = can_see_player ? player.y : monster.last_seen_player_y;
+        if (target_x == monster.x && target_y == monster.y) {
           // Arrived at the last-known spot and the player isn't here: give up the
           // chase. Falls through to a wander roll below this turn, same as if there'd
           // never been anything to chase.
           monster.last_seen_player_x = -1;
           monster.last_seen_player_y = -1;
         } else {
-          move_dx = (memory_dx > 0) - (memory_dx < 0);
-          move_dy = (memory_dy > 0) - (memory_dy < 0);
+          auto path = level.map.find_path(monster.x, monster.y, target_x, target_y);
+          // Empty means no route exists at all — falls through to the wander roll
+          // below, same shape as today's "stuck" case, just genuinely no path instead
+          // of one greedy step happening to be blocked.
+          if (!path.empty()) {
+            move_dx = path[0].first - monster.x;
+            move_dy = path[0].second - monster.y;
+          }
         }
       }
       if (move_dx == 0 && move_dy == 0 && monster.last_seen_player_x < 0 && random_int(0, 1) == 0) {

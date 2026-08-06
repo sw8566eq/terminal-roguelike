@@ -25,11 +25,19 @@ constexpr int NUM_POTIONS = 2;   // per floor
 // kMonsterTable: rough tiers, not a strict per-floor curve. Placeholder ranges — the
 // actual balance (exactly which floor a Mace should start showing up on, etc.) is a
 // follow-up pass; this just makes sure a Dagger stops being possible loot on floor 10.
+//
+// hit_dice trails off as the weapons get heavier: a fast/light Dagger is hardest to
+// dodge, a massive Battle Axe easiest — a tradeoff against the heavier weapons' bigger
+// damage dice, not a strict upgrade path (see monster_dodge_chance()).
 const std::vector<Weapon> kWeaponTable = {
-    {"Dagger", 1, 4, 0, /*is_intrinsic=*/false, /*min_depth=*/1, /*max_depth=*/3},
-    {"Short Sword", 1, 6, 0, /*is_intrinsic=*/false, /*min_depth=*/1, /*max_depth=*/6},
-    {"Mace", 1, 8, 0, /*is_intrinsic=*/false, /*min_depth=*/3, /*max_depth=*/-1},
-    {"Battle Axe", 2, 6, 0, /*is_intrinsic=*/false, /*min_depth=*/5, /*max_depth=*/-1},
+    {"Dagger", 1, 4, 0, /*is_intrinsic=*/false, /*min_depth=*/1, /*max_depth=*/3,
+     /*hit_dice_count=*/3, /*hit_dice_sides=*/4},
+    {"Short Sword", 1, 6, 0, /*is_intrinsic=*/false, /*min_depth=*/1, /*max_depth=*/6,
+     /*hit_dice_count=*/2, /*hit_dice_sides=*/4},
+    {"Mace", 1, 8, 0, /*is_intrinsic=*/false, /*min_depth=*/3, /*max_depth=*/-1,
+     /*hit_dice_count=*/1, /*hit_dice_sides=*/4},
+    {"Battle Axe", 2, 6, 0, /*is_intrinsic=*/false, /*min_depth=*/5, /*max_depth=*/-1,
+     /*hit_dice_count=*/1, /*hit_dice_sides=*/3},
 };
 
 // Armor that can be found lying on the floor. Same depth-gating shape as kWeaponTable.
@@ -77,6 +85,13 @@ struct MonsterTemplate {
   int accuracy;   // Dexterity-equivalent used against the player's own dodge chance (see dodge_chance_vs)
   int min_depth;  // first floor (1-indexed) this monster can spawn on
   int max_depth;  // last floor it can spawn on; -1 means no upper limit
+  // How many tiles away (Chebyshev distance) this monster can attack from — see the
+  // in_range/can_attack check in end_turn(). 1 means adjacency-only (melee), same as
+  // every monster before this field existed; a bigger value plus a real weapon lets a
+  // monster attack from a distance (e.g. Goblin Slinger) using the exact same
+  // dodge_chance_vs()/roll_damage() combat code melee already uses, just from farther
+  // away — still blocked by walls (line_clear()).
+  int attack_range;
 };
 
 // Roughly increasing toughness/reward with min_depth, so descending gets harder. Each
@@ -88,15 +103,21 @@ struct MonsterTemplate {
 // genuinely hard to.
 const std::vector<MonsterTemplate> kMonsterTable = {
     {"Rat", 'r', tcod::ColorRGB{150, 100, 60}, 4, Weapon{"Bite", 1, 3, 0}, /*xp_reward=*/5, /*evasion=*/15,
-     /*accuracy=*/1, /*min_depth=*/1, /*max_depth=*/4},
+     /*accuracy=*/1, /*min_depth=*/1, /*max_depth=*/4, /*attack_range=*/1},
     {"Goblin", 'g', tcod::ColorRGB{80, 180, 80}, 7, Weapon{"Claws", 1, 4, 0}, /*xp_reward=*/10, /*evasion=*/5,
-     /*accuracy=*/2, /*min_depth=*/1, /*max_depth=*/4},
+     /*accuracy=*/2, /*min_depth=*/1, /*max_depth=*/4, /*attack_range=*/1},
+    // A squishier, ranged relative of the melee Goblin above — glass cannon: less HP,
+    // same damage tier, but can fight from range instead of closing to melee. Reuses
+    // the exact same attack code as every other monster, just with attack_range=5
+    // instead of 1 (see the MonsterTemplate::attack_range comment).
+    {"Goblin Slinger", 'G', tcod::ColorRGB{150, 150, 70}, 5, Weapon{"Sling", 1, 4, 0}, /*xp_reward=*/8,
+     /*evasion=*/8, /*accuracy=*/2, /*min_depth=*/1, /*max_depth=*/4, /*attack_range=*/5},
     {"Skeleton", 's', tcod::ColorRGB{220, 220, 200}, 10, Weapon{"Rusty Sword", 1, 6, 0}, /*xp_reward=*/15,
-     /*evasion=*/8, /*accuracy=*/3, /*min_depth=*/5, /*max_depth=*/-1},
+     /*evasion=*/8, /*accuracy=*/3, /*min_depth=*/5, /*max_depth=*/-1, /*attack_range=*/1},
     {"Orc", 'o', tcod::ColorRGB{60, 120, 60}, 14, Weapon{"Orc Axe", 1, 8, 0}, /*xp_reward=*/22, /*evasion=*/5,
-     /*accuracy=*/4, /*min_depth=*/5, /*max_depth=*/-1},
+     /*accuracy=*/4, /*min_depth=*/5, /*max_depth=*/-1, /*attack_range=*/1},
     {"Troll", 'T', tcod::ColorRGB{100, 110, 80}, 22, Weapon{"Massive Club", 2, 6, 0}, /*xp_reward=*/40,
-     /*evasion=*/2, /*accuracy=*/5, /*min_depth=*/8, /*max_depth=*/-1},
+     /*evasion=*/2, /*accuracy=*/5, /*min_depth=*/8, /*max_depth=*/-1, /*attack_range=*/1},
 };
 
 // Indices into `table` of every entry whose min_depth/max_depth range includes `depth`
@@ -151,12 +172,28 @@ int dodge_chance_vs(int defender_dex, int attacker_dex) {
   return std::clamp(chance, kDodgeFloor, kDodgeCeiling);
 }
 
+// The player-attacks-monster equivalent of dodge_chance_vs() above, for the other
+// direction of combat: the player has no symmetric "evasion" stat of their own to
+// contest against (monsters wear no armor, so their flat evasion is their only
+// defense), so instead of a live Dexterity contest, the attack's own accuracy —
+// hit-dice, on Weapon/Spell — is rolled and subtracted from the target's evasion. A
+// bigger roll (a more accurate weapon/spell — a fast dagger, an AoE Fireball) cuts
+// further into evasion, making the attack harder to dodge. Reuses the same
+// kDodgeFloor/kDodgeCeiling clamp as dodge_chance_vs since "always some chance, never
+// a certainty" is a property of any dodge roll in this game, not just the Dexterity
+// contest.
+int monster_dodge_chance(int target_evasion, int hit_dice_count, int hit_dice_sides) {
+  int chance = target_evasion - roll_dice(hit_dice_count, hit_dice_sides);
+  return std::clamp(chance, kDodgeFloor, kDodgeCeiling);
+}
+
 // XP required to advance from the given level to the next one.
 int xp_needed_for_level(int level) { return level * 20; }
 
 // The player's default, always-available unarmed attack. Not a real pickup, so it's
 // never added to the ground or the inventory list.
-const Weapon kFists = Weapon{"Fists", 1, 2, 0, /*is_intrinsic=*/true};
+const Weapon kFists = Weapon{"Fists",       1,  2,  0, /*is_intrinsic=*/true, /*min_depth=*/1, /*max_depth=*/-1,
+                              /*hit_dice_count=*/2, /*hit_dice_sides=*/4};
 
 // The player's default, always-available "armor" (bare skin, no defense). Not a real
 // pickup, same idea as kFists.
@@ -186,6 +223,12 @@ const Armor kNoArmor = Armor{"Nothing", 0, /*is_intrinsic=*/true};
 // turn it on (see the SpellMenu toggle handler), and tick_damage/tick_mana_cost are the
 // flat (no dice, no INT bonus) per-turn cost/effect while it stays active, applied in
 // end_turn(). See known_spell_indices below for what "known" means either way.
+//
+// hit_dice: this spell's accuracy against a monster's evasion, same shape and same
+// monster_dodge_chance() formula as Weapon::hit_dice_count/sides — a bigger roll is
+// harder to dodge. An AoE spell should generally roll much higher than a precise
+// single-target one (see kSpellTable below): "wide" is its own kind of hard-to-dodge,
+// same as "fast" is for a weapon.
 struct Spell {
   std::string name;
   int unlock_int;
@@ -198,6 +241,8 @@ struct Spell {
   bool is_toggle = false;
   int tick_damage = 0;     // toggle spells only: flat damage/turn to everything in range
   int tick_mana_cost = 0;  // toggle spells only: flat mana drained/turn while active
+  int hit_dice_count;
+  int hit_dice_sides;
   char glyph;
   tcod::ColorRGB color;
 };
@@ -209,21 +254,22 @@ const std::vector<Spell> kSpellTable = {
     // fixed number — it won't change if FOV radius ever does (e.g. a future perception
     // mechanic).
     {"Magic Dart", /*unlock_int=*/3, /*dice_count=*/1, /*dice_sides=*/2, kInstantSpellSpeed, /*range=*/8,
-     /*mana_cost=*/1, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0, '*',
-     tcod::ColorRGB{200, 100, 255}},
+     /*mana_cost=*/1, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
+     /*hit_dice_count=*/1, /*hit_dice_sides=*/4, '*', tcod::ColorRGB{200, 100, 255}},
     // Slow-moving orb (visibly crosses several turns instead of resolving instantly) that
     // explodes into a 3x3 blast wherever it stops, rather than just hitting one target.
+    // Its high hit-dice (vs. Magic Dart's low one) is the AoE-is-hard-to-dodge case.
     {"Fireball", /*unlock_int=*/6, /*dice_count=*/1, /*dice_sides=*/6, /*speed=*/2, /*range=*/8,
-     /*mana_cost=*/3, /*aoe_radius=*/1, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0, 'o',
-     tcod::ColorRGB{255, 120, 40}},
+     /*mana_cost=*/3, /*aoe_radius=*/1, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
+     /*hit_dice_count=*/3, /*hit_dice_sides=*/6, 'o', tcod::ColorRGB{255, 120, 40}},
     // Toggled aura, not a fired spell: 7x7 around the player (aoe_radius=3), 2 flat
     // damage/turn to every monster caught in it, drains 2 mana/turn while active.
     // Turning it on costs a flat 3 mana for that turn instead of the per-turn drain
     // (see the SpellMenu toggle handler) — steep enough that flicking it on and off
     // every turn to save mana isn't actually cheaper than just leaving it running.
     {"Sandstorm", /*unlock_int=*/9, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/0,
-     /*mana_cost=*/3, /*aoe_radius=*/3, /*is_toggle=*/true, /*tick_damage=*/2, /*tick_mana_cost=*/2, 's',
-     tcod::ColorRGB{230, 190, 90}},
+     /*mana_cost=*/3, /*aoe_radius=*/3, /*is_toggle=*/true, /*tick_damage=*/2, /*tick_mana_cost=*/2,
+     /*hit_dice_count=*/2, /*hit_dice_sides=*/6, 's', tcod::ColorRGB{230, 190, 90}},
 };
 
 // Indices into kSpellTable of every spell the player currently knows, in display
@@ -263,6 +309,8 @@ struct Projectile {
   int dice_count = 1;
   int dice_sides = 2;
   int bonus = 0;  // locked in at cast time (e.g. floor(INT/3)), not re-read later
+  int hit_dice_count = 1;  // locked in from the spell at cast time, see monster_dodge_chance()
+  int hit_dice_sides = 4;
   int aoe_radius = 0;  // 0 = single-target hit only; >0 = explode in a square blast on impact
   int prev_x = 0;  // last tile actually entered so far (seeded at the caster's tile at cast
   int prev_y = 0;  // time) — where an aoe_radius>0 spell explodes if the next tile is a wall
@@ -308,6 +356,21 @@ std::pair<int, int> find_impact(const std::vector<std::pair<int, int>>& path, in
     prev_y = y;
   }
   return {prev_x, prev_y};  // reached the end of the path with nothing there
+}
+
+// Whether a straight line from (fx,fy) to (tx,ty) is unobstructed by walls — used to
+// let a ranged monster's attack_range (see MonsterTemplate) be blocked by terrain
+// instead of firing straight through it. Checks every tile the path crosses *except
+// the last* (the target's own tile doesn't need to be walkable from the shooter's
+// perspective — the target is standing on it). For adjacent tiles trace_path()'s
+// result is just the single target tile, so the loop below never runs and this is
+// trivially true — melee (attack_range=1) is completely unaffected by this check.
+bool line_clear(int fx, int fy, int tx, int ty, const Map& map) {
+  auto path = trace_path(fx, fy, tx, ty);
+  for (size_t i = 0; i + 1 < path.size(); ++i) {
+    if (!map.is_walkable(path[i].first, path[i].second)) return false;
+  }
+  return true;
 }
 
 // A monster glyph remembered at a tile after it's no longer in view — fog-of-war
@@ -466,6 +529,7 @@ Level generate_level(int width, int height, bool has_stairs_up, int depth) {
     monster.xp_reward = tmpl.xp_reward;
     monster.evasion = tmpl.evasion;
     monster.dexterity = tmpl.accuracy;  // read by dodge_chance_vs() when this monster attacks the player
+    monster.attack_range = tmpl.attack_range;
     level.monsters.push_back(monster);
   }
 
@@ -671,6 +735,12 @@ int main(int argc, char* argv[]) {
       for (size_t m = 0; m < level.monsters.size();) {
         Actor& target = level.monsters[m];
         if (std::abs(target.x - cx) <= proj.aoe_radius && std::abs(target.y - cy) <= proj.aoe_radius) {
+          int dodge_chance = monster_dodge_chance(target.evasion, proj.hit_dice_count, proj.hit_dice_sides);
+          if (random_int(1, 100) <= dodge_chance) {
+            add_message("The " + target.name + " dodges the blast!");
+            ++m;
+            continue;
+          }
           int damage = roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus;
           target.hp -= damage;
           if (!target.is_alive()) {
@@ -729,15 +799,20 @@ int main(int argc, char* argv[]) {
             explode(proj, x, y);  // the monster's own tile is a valid, walkable center
           } else {
             Actor& target = level.monsters[static_cast<size_t>(target_index)];
-            int damage = roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus;
-            target.hp -= damage;
-            if (!target.is_alive()) {
-              add_message("Your " + proj.name + " kills the " + target.name + "!");
-              int xp_reward = target.xp_reward;  // read before erase invalidates `target`
-              level.monsters.erase(level.monsters.begin() + target_index);
-              grant_xp(xp_reward);
+            int dodge_chance = monster_dodge_chance(target.evasion, proj.hit_dice_count, proj.hit_dice_sides);
+            if (random_int(1, 100) <= dodge_chance) {
+              add_message("The " + target.name + " dodges your " + proj.name + "!");
             } else {
-              add_message("Your " + proj.name + " hits the " + target.name + " for " + std::to_string(damage) + ".");
+              int damage = roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus;
+              target.hp -= damage;
+              if (!target.is_alive()) {
+                add_message("Your " + proj.name + " kills the " + target.name + "!");
+                int xp_reward = target.xp_reward;  // read before erase invalidates `target`
+                level.monsters.erase(level.monsters.begin() + target_index);
+                grant_xp(xp_reward);
+              } else {
+                add_message("Your " + proj.name + " hits the " + target.name + " for " + std::to_string(damage) + ".");
+              }
             }
           }
           consumed = true;
@@ -832,6 +907,12 @@ int main(int argc, char* argv[]) {
         for (size_t m = 0; m < level.monsters.size();) {
           Actor& target = level.monsters[m];
           if (std::abs(target.x - player.x) <= storm.aoe_radius && std::abs(target.y - player.y) <= storm.aoe_radius) {
+            int dodge_chance = monster_dodge_chance(target.evasion, storm.hit_dice_count, storm.hit_dice_sides);
+            if (random_int(1, 100) <= dodge_chance) {
+              add_message("The " + target.name + " dodges the " + storm.name + "!");
+              ++m;
+              continue;
+            }
             target.hp -= storm.tick_damage;
             if (!target.is_alive()) {
               add_message("Your " + storm.name + " kills the " + target.name + "!");
@@ -871,9 +952,15 @@ int main(int argc, char* argv[]) {
       int dy = player.y - monster.y;
       int abs_dx = dx < 0 ? -dx : dx;
       int abs_dy = dy < 0 ? -dy : dy;
-      bool adjacent = abs_dx <= 1 && abs_dy <= 1 && (dx != 0 || dy != 0);
+      // Generalizes "adjacent" (melee) into "within this monster's attack_range" —
+      // attack_range=1 (every monster before ranged attackers existed) makes this
+      // exactly today's adjacency check. A wall between the two still blocks it
+      // (line_clear()), which for attack_range=1 is always trivially true (see its
+      // comment) — melee behavior is completely unchanged.
+      bool in_range = std::max(abs_dx, abs_dy) <= monster.attack_range && (dx != 0 || dy != 0);
+      bool can_attack = in_range && line_clear(monster.x, monster.y, player.x, player.y, level.map);
 
-      if (adjacent) {
+      if (can_attack) {
         int player_dex = player.dexterity + player.temp_dex_bonus;
         if (random_int(1, 100) <= dodge_chance_vs(player_dex, monster.dexterity)) {
           add_message("You dodge the " + monster.name + "'s attack!");
@@ -891,7 +978,7 @@ int main(int argc, char* argv[]) {
         continue;
       }
 
-      // Not adjacent: chase if the player would currently see this tile (shadowcasting
+      // Out of range (or no line of sight): chase if the player would currently see this tile (shadowcasting
       // FOV is reciprocal, so this doubles as "can the monster see the player" without
       // computing a separate FOV per monster). Otherwise, if the monster still
       // remembers where it last saw the player, head there instead of immediately
@@ -1674,6 +1761,8 @@ int main(int argc, char* argv[]) {
           proj.speed = spell.speed;
           proj.dice_count = spell.dice_count;
           proj.dice_sides = spell.dice_sides;
+          proj.hit_dice_count = spell.hit_dice_count;
+          proj.hit_dice_sides = spell.hit_dice_sides;
           proj.aoe_radius = spell.aoe_radius;
           proj.prev_x = player.x;  // seeds the "last open tile" for an immediate wall hit
           proj.prev_y = player.y;
@@ -1959,7 +2048,8 @@ int main(int argc, char* argv[]) {
         // Bump attack: walking into a monster attacks it instead of moving.
         Actor& target = level.monsters[static_cast<size_t>(target_index)];
 
-        if (random_int(1, 100) <= target.evasion) {
+        int dodge_chance = monster_dodge_chance(target.evasion, player.weapon.hit_dice_count, player.weapon.hit_dice_sides);
+        if (random_int(1, 100) <= dodge_chance) {
           add_message("The " + target.name + " dodges your attack!");
         } else {
           int damage = roll_damage(player.weapon) + player.strength + player.temp_str_bonus;

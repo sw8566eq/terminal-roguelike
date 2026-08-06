@@ -18,6 +18,16 @@ struct Weapon {
   // your pack doesn't vanish if you walk back to floor 1). max_depth -1 means no cap.
   int min_depth = 1;
   int max_depth = -1;
+  // This weapon's accuracy against a monster's evasion (see monster_dodge_chance() in
+  // main.cpp) — rolled and subtracted from the target's evasion, so a bigger hit-dice
+  // roll makes the attack harder to dodge. Only meaningful for the player's own
+  // weapon; monster weapons (Bite, Claws, ...) don't use this — monster attacks
+  // against the player go through the unrelated dodge_chance_vs() Dexterity contest —
+  // so they're left at these defaults rather than given real values. Trailing fields
+  // with defaults so existing positional literals (monster weapons, kFists) that don't
+  // mention them keep compiling unchanged.
+  int hit_dice_count = 1;
+  int hit_dice_sides = 4;
 };
 
 // Rolls this weapon's damage for one attack.
@@ -93,6 +103,12 @@ struct Actor {
   // attack is computed live from both sides' Dexterity (dodge_chance_vs()), since it
   // depends on which monster is swinging, not just the player's own stats.
   int evasion = 0;
+
+  // Monsters only: how many tiles away (Chebyshev distance) this monster can attack
+  // from, set from its template at spawn. 1 = adjacency-only (melee), same as every
+  // monster before ranged attackers existed. See MonsterTemplate::attack_range and the
+  // in_range/can_attack check in end_turn() (main.cpp).
+  int attack_range = 1;
 
   // Player only: fractional HP banked toward the next point of passive regen (HP/turn
   // is usually not a whole number, so this carries the remainder between turns).

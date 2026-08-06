@@ -110,6 +110,22 @@ struct Actor {
   // in_range/can_attack check in end_turn() (main.cpp).
   int attack_range = 1;
 
+  // Monsters only: optional fallback weapon+accuracy used instead of weapon/dexterity
+  // once this monster is actually adjacent to the player, set from
+  // MonsterTemplate::melee_weapon/melee_accuracy at spawn. Empty name (the default) =
+  // no separate melee weapon, just always use weapon/dexterity as normal.
+  Weapon melee_weapon;
+  int melee_dexterity = 0;
+
+  // Monsters only: one-way flip, set the first time this monster ever lands (or takes
+  // its turn) adjacent to the player while it has a melee_weapon. A ranged monster
+  // (e.g. Goblin Slinger) snipes from attack_range tiles away and never has to
+  // approach — right up until the player actually reaches it, at which point it
+  // commits to melee for good: from then on it behaves exactly like an ordinary
+  // melee-only monster (chasing when not adjacent, attacking with melee_weapon when it
+  // is), never going back to sniping. See the in_range/can_attack check in end_turn().
+  bool melee_engaged = false;
+
   // Player only: fractional HP banked toward the next point of passive regen (HP/turn
   // is usually not a whole number, so this carries the remainder between turns).
   float hp_regen_accumulator = 0.0f;

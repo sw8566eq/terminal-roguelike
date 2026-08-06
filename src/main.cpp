@@ -92,6 +92,14 @@ struct MonsterTemplate {
   // dodge_chance_vs()/roll_damage() combat code melee already uses, just from farther
   // away — still blocked by walls (line_clear()).
   int attack_range;
+  // Optional fallback weapon+accuracy used instead of weapon/accuracy above whenever
+  // this monster is actually adjacent to the player, regardless of attack_range — e.g.
+  // Goblin Slinger closes to a more-accurate Dagger instead of its Rock once you're
+  // right next to it. Left at these defaults (empty name = "no separate melee
+  // weapon") for every monster that doesn't need the distinction, which just always
+  // uses weapon/accuracy the way every monster did before this field existed.
+  Weapon melee_weapon = Weapon{};
+  int melee_accuracy = 0;
 };
 
 // Roughly increasing toughness/reward with min_depth, so descending gets harder. Each
@@ -108,10 +116,19 @@ const std::vector<MonsterTemplate> kMonsterTable = {
      /*accuracy=*/2, /*min_depth=*/1, /*max_depth=*/4, /*attack_range=*/1},
     // A squishier, ranged relative of the melee Goblin above — glass cannon: less HP,
     // same damage tier, but can fight from range instead of closing to melee. Reuses
-    // the exact same attack code as every other monster, just with attack_range=5
-    // instead of 1 (see the MonsterTemplate::attack_range comment).
-    {"Goblin Slinger", 'G', tcod::ColorRGB{150, 150, 70}, 5, Weapon{"Sling", 1, 4, 0}, /*xp_reward=*/8,
-     /*evasion=*/8, /*accuracy=*/2, /*min_depth=*/1, /*max_depth=*/4, /*attack_range=*/5},
+    // the exact same attack code as every other monster (see the
+    // MonsterTemplate::attack_range comment). accuracy=1 (down from an initial 2)
+    // since getting pelted for real damage this early stung more than intended.
+    // attack_range=5 so it snipes with its Rock from well across a room without
+    // needing to approach at all — but only until the player actually reaches it: the
+    // first time it's adjacent it draws its more-accurate Dagger (melee_weapon/
+    // melee_accuracy) and permanently commits to melee from then on
+    // (Actor::melee_engaged), behaving exactly like an ordinary chasing Goblin for the
+    // rest of the fight rather than backing off to snipe again. The hit message names
+    // whichever weapon actually landed.
+    {"Goblin Slinger", 'G', tcod::ColorRGB{150, 150, 70}, 5, Weapon{"Rock", 1, 4, 0}, /*xp_reward=*/8,
+     /*evasion=*/8, /*accuracy=*/1, /*min_depth=*/1, /*max_depth=*/4, /*attack_range=*/5,
+     /*melee_weapon=*/Weapon{"Dagger", 1, 4, 0}, /*melee_accuracy=*/3},
     {"Skeleton", 's', tcod::ColorRGB{220, 220, 200}, 10, Weapon{"Rusty Sword", 1, 6, 0}, /*xp_reward=*/15,
      /*evasion=*/8, /*accuracy=*/3, /*min_depth=*/5, /*max_depth=*/-1, /*attack_range=*/1},
     {"Orc", 'o', tcod::ColorRGB{60, 120, 60}, 14, Weapon{"Orc Axe", 1, 8, 0}, /*xp_reward=*/22, /*evasion=*/5,
@@ -530,6 +547,8 @@ Level generate_level(int width, int height, bool has_stairs_up, int depth) {
     monster.evasion = tmpl.evasion;
     monster.dexterity = tmpl.accuracy;  // read by dodge_chance_vs() when this monster attacks the player
     monster.attack_range = tmpl.attack_range;
+    monster.melee_weapon = tmpl.melee_weapon;
+    monster.melee_dexterity = tmpl.melee_accuracy;
     level.monsters.push_back(monster);
   }
 
@@ -957,20 +976,40 @@ int main(int argc, char* argv[]) {
       // exactly today's adjacency check. A wall between the two still blocks it
       // (line_clear()), which for attack_range=1 is always trivially true (see its
       // comment) — melee behavior is completely unchanged.
-      bool in_range = std::max(abs_dx, abs_dy) <= monster.attack_range && (dx != 0 || dy != 0);
+      //
+      // Once melee_engaged (see Actor::melee_engaged), a ranged monster permanently
+      // stops using its full attack_range and behaves as if it were 1 — it snipes from
+      // range right up until the player reaches it, and from then on it's just a
+      // melee-only monster (chasing when out of reach, same as any other), never going
+      // back to sniping.
+      int effective_range = monster.melee_engaged ? 1 : monster.attack_range;
+      bool in_range = std::max(abs_dx, abs_dy) <= effective_range && (dx != 0 || dy != 0);
       bool can_attack = in_range && line_clear(monster.x, monster.y, player.x, player.y, level.map);
 
       if (can_attack) {
+        // Some monsters (e.g. Goblin Slinger) fall back to a separate, more accurate
+        // melee weapon once you're actually adjacent, rather than using their ranged
+        // one at point-blank range — see MonsterTemplate::melee_weapon. Every other
+        // monster's melee_weapon is left empty, so this is always false for them and
+        // they just always use weapon/dexterity, same as before this existed. This is
+        // also the trigger that flips melee_engaged for good, above.
+        bool in_melee = abs_dx <= 1 && abs_dy <= 1;
+        bool use_melee_weapon = in_melee && !monster.melee_weapon.name.empty();
+        if (use_melee_weapon) monster.melee_engaged = true;
+        const Weapon& weapon_used = use_melee_weapon ? monster.melee_weapon : monster.weapon;
+        int attacker_dex = use_melee_weapon ? monster.melee_dexterity : monster.dexterity;
+
         int player_dex = player.dexterity + player.temp_dex_bonus;
-        if (random_int(1, 100) <= dodge_chance_vs(player_dex, monster.dexterity)) {
+        if (random_int(1, 100) <= dodge_chance_vs(player_dex, attacker_dex)) {
           add_message("You dodge the " + monster.name + "'s attack!");
           continue;
         }
 
-        int raw_damage = roll_damage(monster.weapon);
+        int raw_damage = roll_damage(weapon_used);
         int damage = std::max(raw_damage - player.armor.defense, 0);
         player.hp -= damage;
-        add_message("The " + monster.name + " hits you for " + std::to_string(damage) + ".");
+        add_message("The " + monster.name + " hits you with its " + weapon_used.name + " for " +
+                    std::to_string(damage) + ".");
         if (!player.is_alive()) {
           death_cause = monster.name;
           mode = Mode::Dead;

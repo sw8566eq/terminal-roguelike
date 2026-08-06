@@ -96,6 +96,10 @@ These are for development/testing, not normal play:
 - `--dump-loot` — print every weapon/armor/potion/monster on the floor
   reached via `--floor=N` to the console and exit immediately, without
   opening a window
+- `--give=<name>[,<name>...]` — add items straight to your carried
+  inventory at startup (not equipped), by exact name across weapons,
+  armor, and potions, e.g. `--give="Dagger,Potion of Teleportation"`;
+  combinable with the other flags above
 
 ## Project layout
 
@@ -140,8 +144,8 @@ roguelike/
       stuck on awkward corners
 - [x] Monster variety scales with depth (tougher monster types replace
       weaker ones as you descend, plus more of them per floor)
-- [x] Potions: healing, and temporary (+5, 15-turn) Strength/Dexterity/
-      Intelligence boosts
+- [x] Potions: healing, temporary (+5, 15-turn) Strength/Dexterity/
+      Intelligence boosts, and teleportation (random spot on the current floor)
 - [x] Weapon/armor/potion variety also scales with depth, mirroring monsters
 - [x] Passive HP regeneration (slow, scales with max HP)
 - [x] Multi-line message log with scrollback (`]`), repeat-message coalescing

@@ -143,8 +143,8 @@ roguelike/
       regenerating passively the same way HP does
 - [x] Monster AI: chases when it can see you, keeps heading for the last
       place it saw you after you break line of sight (until it gets there),
-      otherwise wanders idly — not real pathfinding yet, so it can still get
-      stuck on awkward corners
+      otherwise wanders idly — real A* pathfinding (libtcod's `TCODPath`), so
+      it routes around walls instead of getting stuck on corners
 - [x] Monster variety scales with depth (tougher monster types replace
       weaker ones as you descend, plus more of them per floor)
 - [x] Potions: healing, temporary (+5, 15-turn) Strength/Dexterity/
@@ -158,5 +158,3 @@ roguelike/
       chasing like an ordinary monster the moment they're touched once —
       every other monster still shares the plain wander/chase/remember
       behavior
-- [ ] Real pathfinding for monster chase (currently a greedy step toward the
-      target tile)

@@ -78,11 +78,16 @@ step 1.
   AoE spell) showing what the shot would hit, `Enter` fires, `Esc` cancels; a
   toggled spell (like Sandstorm) instead turns on/off immediately, no aiming;
   a summon spell raises a minion next to you immediately, no aiming either
-- `m` to command your minions, if you have any: **Follow** (return to your
-  side, defending themselves if attacked) or **Attack...** (pick a monster
-  with a cursor — every minion switches to hunting it, reverting to Follow
-  once it dies); walking into your own minion swaps places with it instead
-  of attacking
+- Commanding minions, if you have any: `o` / `p` cycle command focus to the
+  next/previous minion, or `m` opens a roster menu to pick one (or "All")
+  by letter — either way drops you into one cursor with no range limit.
+  Move it onto a monster and press `Enter` to send the minion(s) to attack
+  it, or onto empty ground to send them to hold that position (still
+  defending themselves if something comes into range); `f` instead tells
+  them to follow you, no aiming needed; `Esc` cancels. `Shift+P` snaps
+  command focus back to yourself. The minion(s) you're currently
+  commanding are highlighted so you don't lose track while aiming.
+  Walking into your own minion swaps places with it instead of attacking
 - On leveling up, `Shift+S` / `Shift+D` / `Shift+I` to put your point into
   Strength / Dexterity / Intelligence
 - `]` to open the full message log (scroll with `j`/`k` or arrows, `Esc` or
@@ -165,14 +170,18 @@ roguelike/
       every other monster still shares the plain wander/chase/remember
       behavior
 - [x] Summoner playstyle, phase 1: a spell raises a temporary minion that
-      fights at your side; command the whole pack with `m` (Follow or
-      Attack a chosen monster); hostile monsters can target minions
-      instead of always going after you, so they're real meat-shields;
-      minions are immune to your own spells, swap places instead of being
-      attacked if you walk into them, and follow you through stairs
-- [ ] Summoner playstyle, phase 2: direct per-minion control (an "X-COM
-      mode" cycling focus between individual minions) as an alternative to
-      pack-wide orders, and raising the minion cap toward a 1-7 range
+      fights at your side; hostile monsters can target minions instead of
+      always going after you, so they're real meat-shields; minions are
+      immune to your own spells, swap places instead of being attacked if
+      you walk into them, and follow you through stairs
+- [x] Summoner playstyle, phase 2: per-minion control instead of pack-only
+      orders — `o`/`p` cycle command focus between individual minions (or
+      pick one from a roster with `m`), aim a cursor with no range limit,
+      and send that minion (or the whole pack) to attack a chosen monster
+      or hold a chosen tile, still defending itself either way; the
+      minion(s) you're commanding are highlighted so you don't lose track
 - [ ] Summoner playstyle, phase 3: true necromancy — reanimating the
       specific monster you just killed (not just conjuring a generic
-      minion), via a corpse left on the ground and a spell that targets one
+      minion), via a corpse left on the ground and a spell that targets one;
+      also raising the minion cap toward a 1-7 range now that per-minion
+      control exists

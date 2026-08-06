@@ -633,6 +633,12 @@ int main(int argc, char* argv[]) {
     // math as the single-target hit below, just applied to more than one target. Used
     // for spells with aoe_radius > 0 (e.g. Fireball); see find_impact() for how (cx,cy)
     // is chosen to match what the Targeting preview showed the player.
+    //
+    // The caster isn't exempt: if the player is within radius of the blast too (a point-
+    // blank cast, or a wall/monster close enough that the impact lands next to them),
+    // they take the same roll. This is the actual deterrent against casting an AoE on
+    // something adjacent — unlike the monster hits above, armor still reduces it, same
+    // as any other landed hit (see the player's melee-damage-taken code above).
     auto explode = [&](Projectile& proj, int cx, int cy) {
       add_message("Your " + proj.name + " explodes!");
       for (size_t m = 0; m < level.monsters.size();) {
@@ -650,6 +656,17 @@ int main(int argc, char* argv[]) {
           add_message("The blast hits the " + target.name + " for " + std::to_string(damage) + ".");
         }
         ++m;
+      }
+
+      if (player.is_alive() && std::abs(player.x - cx) <= proj.aoe_radius && std::abs(player.y - cy) <= proj.aoe_radius) {
+        int raw_damage = roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus;
+        int damage = std::max(raw_damage - player.armor.defense, 0);
+        player.hp -= damage;
+        add_message("You're caught in your own " + proj.name + " for " + std::to_string(damage) + "!");
+        if (!player.is_alive()) {
+          death_cause = proj.name + " you cast";
+          mode = Mode::Dead;
+        }
       }
     };
 

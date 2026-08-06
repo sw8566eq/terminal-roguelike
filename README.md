@@ -69,16 +69,19 @@ step 1.
 - `g` to pick up whatever's on your tile (nothing is picked up automatically)
 - `w` to open the weapon menu and equip a carried weapon (or bare fists)
 - `a` to open the armor menu and equip a carried piece (or bare skin)
-- `q` to open the potion menu and drink one (heal, or a temporary stat boost —
-  see below)
+- `q` to open the potion menu and drink one (heal, a temporary stat boost, or
+  teleport to a random spot on the floor — see below)
 - `d` to drop your equipped weapon/armor or something from your pack
 - `z` to open your known spells and cast one (unlocked by Intelligence — see
-  below); movement then aims a targeting cursor instead of moving you, with
-  a preview line showing what the shot would hit, `Enter` fires, `Esc` cancels
+  below); for an aimed spell, movement then steers a targeting cursor instead
+  of moving you, with a preview line (and a highlighted blast radius for an
+  AoE spell) showing what the shot would hit, `Enter` fires, `Esc` cancels; a
+  toggled spell (like Sandstorm) instead turns on/off immediately, no aiming
 - On leveling up, `Shift+S` / `Shift+D` / `Shift+I` to put your point into
   Strength / Dexterity / Intelligence
 - `]` to open the full message log (scroll with `j`/`k` or arrows, `Esc` or
   `]` to close); the HUD always shows the last few messages anyway
+- `?` to open a controls reference screen (`?` or `Esc` to close)
 - `Esc` to quit
 
 ### Debug flags
@@ -149,9 +152,11 @@ roguelike/
 - [x] Weapon/armor/potion variety also scales with depth, mirroring monsters
 - [x] Passive HP regeneration (slow, scales with max HP)
 - [x] Multi-line message log with scrollback (`]`), repeat-message coalescing
-- [x] First distinct monster AI: Goblin Slinger snipes from range without
-      approaching, but permanently switches to a melee dagger and starts
-      chasing like an ordinary monster the moment it's touched once — every
-      other monster still shares the plain wander/chase/remember behavior
+- [x] First distinct monster AI: Goblin Slinger (floors 1-4) and its tougher
+      floor-5+ counterpart Orc Archer snipe from range without approaching,
+      but permanently switch to a more accurate melee weapon and start
+      chasing like an ordinary monster the moment they're touched once —
+      every other monster still shares the plain wander/chase/remember
+      behavior
 - [ ] Real pathfinding for monster chase (currently a greedy step toward the
       target tile)

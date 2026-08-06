@@ -133,6 +133,13 @@ const std::vector<MonsterTemplate> kMonsterTable = {
      /*evasion=*/8, /*accuracy=*/3, /*min_depth=*/5, /*max_depth=*/-1, /*attack_range=*/1},
     {"Orc", 'o', tcod::ColorRGB{60, 120, 60}, 14, Weapon{"Orc Axe", 1, 8, 0}, /*xp_reward=*/22, /*evasion=*/5,
      /*accuracy=*/4, /*min_depth=*/5, /*max_depth=*/-1, /*attack_range=*/1},
+    // Orc Archer: the same ranged-then-permanently-melee behavior as Goblin Slinger
+    // (attack_range/melee_weapon/melee_accuracy, see those comments and
+    // Actor::melee_engaged), just with every stat scaled up to match this floor-5+
+    // tier — same relationship Orc already has to Goblin.
+    {"Orc Archer", 'O', tcod::ColorRGB{110, 130, 60}, 10, Weapon{"Bow", 1, 8, 0}, /*xp_reward=*/18,
+     /*evasion=*/6, /*accuracy=*/2, /*min_depth=*/5, /*max_depth=*/-1, /*attack_range=*/5,
+     /*melee_weapon=*/Weapon{"Short Sword", 1, 8, 0}, /*melee_accuracy=*/5},
     {"Troll", 'T', tcod::ColorRGB{100, 110, 80}, 22, Weapon{"Massive Club", 2, 6, 0}, /*xp_reward=*/40,
      /*evasion=*/2, /*accuracy=*/5, /*min_depth=*/8, /*max_depth=*/-1, /*attack_range=*/1},
 };

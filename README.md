@@ -87,6 +87,9 @@ These are for development/testing, not normal play:
 
 - `--floor=N` — jump straight to floor N at startup instead of walking down
   from floor 1
+- `--level=N` — spawn already at player level N, prompting for all N-1
+  attribute points at startup so you allocate them yourself (same LevelUp
+  prompt as leveling up for real); combinable with `--floor=N`
 - `--reveal` — show the entire current floor's terrain/monsters/items
   regardless of exploration or line of sight (dimmed where not actually in
   view), for eyeballing spawns without exploring first
@@ -137,6 +140,8 @@ roguelike/
 - [x] Passive HP regeneration (slow, scales with max HP)
 - [x] Multi-line message log with scrollback (`]`), repeat-message coalescing
 - [ ] More spells beyond Magic Dart
+- [ ] Sandstorm spell idea: an AoE centered on the player that follows them
+      around, rather than a fired projectile
 - [ ] Distinct per-monster-type AI (currently all monsters share the same
       wander/chase/remember behavior)
 - [ ] Real pathfinding for monster chase (currently a greedy step toward the

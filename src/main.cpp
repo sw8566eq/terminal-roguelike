@@ -3,6 +3,7 @@
 #include <libtcod.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -121,10 +122,19 @@ std::vector<int> potions_available_at_depth(int depth) { return available_at_dep
 // Max HP scales with Strength, so there's no need for a separate Vitality stat.
 int max_hp_for_strength(int strength) { return 10 + strength * 5; }
 
+// Max mana scales with Intelligence. Deliberately not shaped like max_hp_for_strength
+// above — mana costs are small (1-3 per cast, see kSpellTable) so the pool only needs
+// to be a handful of casts deep, not hundreds of points.
+int max_mana_for_intelligence(int intelligence) { return 4 + static_cast<int>(std::ceil(1.8 * intelligence)); }
+
 // Turns for passive HP regen to heal from 0 to full. Regen scales with max HP (see
 // end_turn()) so this stays constant regardless of build — a tankier character heals
 // more HP per turn, but takes the same number of turns to fully recover.
 constexpr int kHpRegenTurns = 150;
+
+// Same idea as kHpRegenTurns, but for mana (see end_turn()). Independent constant so
+// the two regen rates can be tuned separately later.
+constexpr int kManaRegenTurns = 150;
 
 // Percent chance to dodge an attack entirely, as a straight Dexterity contest between
 // defender and attacker (on a monster, its Dexterity doubles as "accuracy" — see
@@ -155,11 +165,17 @@ const Armor kNoArmor = Armor{"Nothing", 0, /*is_intrinsic=*/true};
 // A ranged spell: damage is dice_count dice of dice_sides each, plus floor(INT/3).
 // Known automatically once the player's Intelligence reaches unlock_int — nothing to
 // learn or pick up, it just unlocks. (Thresholds are placeholders until the rest of
-// the spell pool is designed; there's only one spell so far.)
+// the spell pool is designed.)
 //
 // speed is tiles traveled per player turn, not real time — there's no animation.
 // "Instant" just means a speed high enough to always cross the whole map in one turn;
-// slower future spells would take multiple turns to reach a distant target.
+// slower spells (e.g. Fireball) take multiple turns to reach a distant target.
+//
+// aoe_radius: 0 means the spell only ever hits the single tile/monster it collides
+// with (Magic Dart). A positive radius means it explodes on impact into a square blast
+// of that Chebyshev radius (1 = 3x3) centered on wherever it stopped, damaging every
+// monster caught inside — see advance_projectiles() for how "wherever it stopped" is
+// determined (wall/monster/max-range all count).
 struct Spell {
   std::string name;
   int unlock_int;
@@ -167,6 +183,8 @@ struct Spell {
   int dice_sides;
   int speed;
   int range;  // max cast distance from the caster, in tiles (straight-line)
+  int mana_cost;
+  int aoe_radius = 0;
   char glyph;
   tcod::ColorRGB color;
 };
@@ -177,8 +195,12 @@ const std::vector<Spell> kSpellTable = {
     // range happens to match the player's starting FOV radius today, but it's its own
     // fixed number — it won't change if FOV radius ever does (e.g. a future perception
     // mechanic).
-    {"Magic Dart", /*unlock_int=*/3, /*dice_count=*/1, /*dice_sides=*/2, kInstantSpellSpeed, /*range=*/8, '*',
-     tcod::ColorRGB{200, 100, 255}},
+    {"Magic Dart", /*unlock_int=*/3, /*dice_count=*/1, /*dice_sides=*/2, kInstantSpellSpeed, /*range=*/8,
+     /*mana_cost=*/1, /*aoe_radius=*/0, '*', tcod::ColorRGB{200, 100, 255}},
+    // Slow-moving orb (visibly crosses several turns instead of resolving instantly) that
+    // explodes into a 3x3 blast wherever it stops, rather than just hitting one target.
+    {"Fireball", /*unlock_int=*/6, /*dice_count=*/1, /*dice_sides=*/6, /*speed=*/2, /*range=*/8,
+     /*mana_cost=*/3, /*aoe_radius=*/1, 'o', tcod::ColorRGB{255, 120, 40}},
 };
 
 // Indices into kSpellTable of every spell the player currently knows, in display
@@ -218,6 +240,9 @@ struct Projectile {
   int dice_count = 1;
   int dice_sides = 2;
   int bonus = 0;  // locked in at cast time (e.g. floor(INT/3)), not re-read later
+  int aoe_radius = 0;  // 0 = single-target hit only; >0 = explode in a square blast on impact
+  int prev_x = 0;  // last tile actually entered so far (seeded at the caster's tile at cast
+  int prev_y = 0;  // time) — where an aoe_radius>0 spell explodes if the next tile is a wall
   std::string name;
   char glyph = '*';
   tcod::ColorRGB color{255, 255, 255};
@@ -231,6 +256,35 @@ std::vector<std::pair<int, int>> trace_path(int from_x, int from_y, int to_x, in
     path.push_back({x, y});
   }
   return path;
+}
+
+// Index into `monsters` of the living monster standing at (x,y), or -1 if none. Shared
+// by advance_projectiles() (resolving a spell hit) and find_impact() below (predicting
+// where a shot would land) so both agree on what counts as "occupied."
+int monster_at(const std::vector<Actor>& monsters, int x, int y) {
+  for (size_t i = 0; i < monsters.size(); ++i) {
+    if (monsters[i].x == x && monsters[i].y == y) return static_cast<int>(i);
+  }
+  return -1;
+}
+
+// Where a shot fired along `path` from (start_x,start_y) would come to rest, applying
+// the same three rules advance_projectiles() applies turn-by-turn: a wall stops it on
+// the tile just before the wall, a monster stops it on the monster's own tile, and
+// running off the end of the path (nothing there) stops it on the final tile. Used by
+// the Targeting aim preview to show where an AoE spell would actually explode before
+// the player commits to firing — keep this in sync with advance_projectiles() if the
+// stopping rules ever change.
+std::pair<int, int> find_impact(const std::vector<std::pair<int, int>>& path, int start_x, int start_y,
+                                 const Map& map, const std::vector<Actor>& monsters) {
+  int prev_x = start_x, prev_y = start_y;
+  for (const auto& [x, y] : path) {
+    if (!map.is_walkable(x, y)) return {prev_x, prev_y};
+    if (monster_at(monsters, x, y) >= 0) return {x, y};
+    prev_x = x;
+    prev_y = y;
+  }
+  return {prev_x, prev_y};  // reached the end of the path with nothing there
 }
 
 // A monster glyph remembered at a tile after it's no longer in view — fog-of-war
@@ -543,14 +597,27 @@ int main(int argc, char* argv[]) {
   std::vector<Level> levels;
   int current_level = 0;
 
+  // The one place the player's level actually advances: bumps `level` and queues one
+  // more forced attribute-point prompt (Mode::LevelUp), same as every other level-up.
+  // Deliberately doesn't touch XP itself — grant_xp (below) spends XP as it loops
+  // through however many thresholds one reward crosses; the --level= debug startup
+  // flag calls this directly to spawn pre-leveled without needing to fake XP. Either
+  // caller can call this more than once in a row (a big XP reward killing several
+  // monsters at once, or a debug spawn several levels up) — pending_attribute_points
+  // just keeps accumulating and the LevelUp prompt loops until it's spent, so double
+  // (or more) level-ups are handled by this one core path, not a special case anywhere.
+  auto level_up_once = [&]() {
+    player.level += 1;
+    pending_attribute_points += 1;
+  };
+
   // Grants XP and processes any level-ups it triggers (normally one, but a large XP
   // reward could trigger several), queuing a forced attribute-point prompt for each.
   auto grant_xp = [&](int amount) {
     player.xp += amount;
     while (player.xp >= xp_needed_for_level(player.level)) {
       player.xp -= xp_needed_for_level(player.level);
-      player.level += 1;
-      pending_attribute_points += 1;
+      level_up_once();
     }
     if (pending_attribute_points > 0) mode = Mode::LevelUp;
   };
@@ -560,45 +627,83 @@ int main(int argc, char* argv[]) {
   // Called once per player turn, from end_turn().
   auto advance_projectiles = [&]() {
     Level& level = levels[static_cast<size_t>(current_level)];
+
+    // Deals independently-rolled damage to every living monster within aoe_radius tiles
+    // (Chebyshev distance, so a radius of 1 is a 3x3 box) of (cx,cy) — same per-target
+    // math as the single-target hit below, just applied to more than one target. Used
+    // for spells with aoe_radius > 0 (e.g. Fireball); see find_impact() for how (cx,cy)
+    // is chosen to match what the Targeting preview showed the player.
+    auto explode = [&](Projectile& proj, int cx, int cy) {
+      add_message("Your " + proj.name + " explodes!");
+      for (size_t m = 0; m < level.monsters.size();) {
+        Actor& target = level.monsters[m];
+        if (std::abs(target.x - cx) <= proj.aoe_radius && std::abs(target.y - cy) <= proj.aoe_radius) {
+          int damage = roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus;
+          target.hp -= damage;
+          if (!target.is_alive()) {
+            add_message("The blast kills the " + target.name + "!");
+            int xp_reward = target.xp_reward;  // read before erase invalidates `target`
+            level.monsters.erase(level.monsters.begin() + static_cast<long>(m));
+            grant_xp(xp_reward);
+            continue;  // next monster has shifted down into slot m; don't advance past it
+          }
+          add_message("The blast hits the " + target.name + " for " + std::to_string(damage) + ".");
+        }
+        ++m;
+      }
+    };
+
     for (size_t i = 0; i < level.projectiles.size();) {
       Projectile& proj = level.projectiles[i];
       bool consumed = false;
 
       for (int step = 0; step < proj.speed && !consumed; ++step) {
         if (proj.path_index >= proj.path.size()) {
-          consumed = true;  // reached the target tile with nothing there; the spell dissipates
+          // Reached the end of its range with nothing there. A single-target spell just
+          // dissipates, as before; an AoE spell still goes off at its destination, since
+          // that's the "reaches its destination" case (may still catch nearby monsters).
+          if (proj.aoe_radius > 0) explode(proj, proj.prev_x, proj.prev_y);
+          consumed = true;
           break;
         }
         auto [x, y] = proj.path[proj.path_index];
         ++proj.path_index;
 
         if (!level.map.is_walkable(x, y)) {
-          add_message("Your " + proj.name + " fizzles against a wall.");
+          if (proj.aoe_radius > 0) {
+            explode(proj, proj.prev_x, proj.prev_y);  // last open tile before the wall
+          } else {
+            add_message("Your " + proj.name + " fizzles against a wall.");
+          }
           consumed = true;
           break;
         }
 
-        int target_index = -1;
-        for (size_t m = 0; m < level.monsters.size(); ++m) {
-          if (level.monsters[m].x == x && level.monsters[m].y == y) {
-            target_index = static_cast<int>(m);
-            break;
-          }
-        }
+        int target_index = monster_at(level.monsters, x, y);
         if (target_index >= 0) {
-          Actor& target = level.monsters[static_cast<size_t>(target_index)];
-          int damage = roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus;
-          target.hp -= damage;
-          if (!target.is_alive()) {
-            add_message("Your " + proj.name + " kills the " + target.name + "!");
-            int xp_reward = target.xp_reward;  // read before erase invalidates `target`
-            level.monsters.erase(level.monsters.begin() + target_index);
-            grant_xp(xp_reward);
+          if (proj.aoe_radius > 0) {
+            explode(proj, x, y);  // the monster's own tile is a valid, walkable center
           } else {
-            add_message("Your " + proj.name + " hits the " + target.name + " for " + std::to_string(damage) + ".");
+            Actor& target = level.monsters[static_cast<size_t>(target_index)];
+            int damage = roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus;
+            target.hp -= damage;
+            if (!target.is_alive()) {
+              add_message("Your " + proj.name + " kills the " + target.name + "!");
+              int xp_reward = target.xp_reward;  // read before erase invalidates `target`
+              level.monsters.erase(level.monsters.begin() + target_index);
+              grant_xp(xp_reward);
+            } else {
+              add_message("Your " + proj.name + " hits the " + target.name + " for " + std::to_string(damage) + ".");
+            }
           }
           consumed = true;
+          break;
         }
+
+        // Empty, walkable tile: the spell keeps going. Remember it as the last open tile
+        // in case the very next one stops it (the aoe_radius wall-hit case above).
+        proj.prev_x = x;
+        proj.prev_y = y;
       }
 
       if (consumed) {
@@ -620,6 +725,15 @@ int main(int argc, char* argv[]) {
       while (player.hp_regen_accumulator >= 1.0f && player.hp < player.max_hp) {
         player.hp_regen_accumulator -= 1.0f;
         player.hp += 1;
+      }
+    }
+
+    // Passive mana regen: identical shape to the HP regen above (see kManaRegenTurns).
+    if (player.is_alive() && player.mana < player.max_mana) {
+      player.mana_regen_accumulator += static_cast<float>(player.max_mana) / static_cast<float>(kManaRegenTurns);
+      while (player.mana_regen_accumulator >= 1.0f && player.mana < player.max_mana) {
+        player.mana_regen_accumulator -= 1.0f;
+        player.mana += 1;
       }
     }
 
@@ -645,6 +759,8 @@ int main(int argc, char* argv[]) {
       player.temp_int_turns -= 1;
       if (player.temp_int_turns == 0) {
         player.temp_int_bonus = 0;
+        player.max_mana = max_mana_for_intelligence(player.intelligence);
+        player.mana = std::min(player.mana, player.max_mana);  // clamp past the new, lower ceiling
         add_message("Your surge of insight fades.");
       }
     }
@@ -763,6 +879,9 @@ int main(int argc, char* argv[]) {
     player.max_hp = max_hp_for_strength(player.strength);
     player.hp = player.max_hp;
     player.hp_regen_accumulator = 0.0f;
+    player.max_mana = max_mana_for_intelligence(player.intelligence);
+    player.mana = player.max_mana;
+    player.mana_regen_accumulator = 0.0f;
     player.weapon = kFists;
     player.armor = kNoArmor;
     player.temp_str_bonus = 0;
@@ -812,6 +931,12 @@ int main(int argc, char* argv[]) {
   // deep floors doesn't require a long walk down through every floor above it. Not
   // meant for normal play; a missing/malformed value is just silently ignored.
   //
+  // `--level=N` spawns the player already at level N, forcing the same Mode::LevelUp
+  // prompt (N-1) times in a row so you allocate every point yourself, same as leveling
+  // up for real — it calls level_up_once() directly rather than faking XP, so it's the
+  // exact core path a big XP reward would also drive if it crossed several thresholds
+  // at once (see level_up_once's comment). Combinable with --floor=N.
+  //
   // `--reveal` shows every tile/monster/item on the current floor regardless of
   // exploration or FOV (still dimmed if not actually in current sight, matching the
   // remembered-terrain/monster look) — for eyeballing spawns and loot without having
@@ -833,11 +958,21 @@ int main(int argc, char* argv[]) {
       dump_loot = true;
       continue;
     }
-    const std::string prefix = "--floor=";
-    if (arg.rfind(prefix, 0) != 0) continue;
-    int target_floor = std::atoi(arg.c_str() + prefix.size());
-    for (int f = 1; f < target_floor; ++f) descend();
+    const std::string floor_prefix = "--floor=";
+    if (arg.rfind(floor_prefix, 0) == 0) {
+      int target_floor = std::atoi(arg.c_str() + floor_prefix.size());
+      for (int f = 1; f < target_floor; ++f) descend();
+      continue;
+    }
+    const std::string level_prefix = "--level=";
+    if (arg.rfind(level_prefix, 0) == 0) {
+      int target_level = std::atoi(arg.c_str() + level_prefix.size());
+      for (int lv = player.level; lv < target_level; ++lv) level_up_once();
+      continue;
+    }
   }
+  // Surfaces the LevelUp prompt if --level= queued any points, same as grant_xp does.
+  if (pending_attribute_points > 0) mode = Mode::LevelUp;
 
   if (dump_loot) {
     Level& level = levels[static_cast<size_t>(current_level)];
@@ -924,8 +1059,12 @@ int main(int argc, char* argv[]) {
       for (size_t i = 0; i < known.size(); ++i) {
         const Spell& s = kSpellTable[static_cast<size_t>(known[i])];
         std::string line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (" +
-                            std::to_string(s.dice_count) + "d" + std::to_string(s.dice_sides) + "+INT/3)";
-        tcod::print(console, {0, 2 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
+                            std::to_string(s.dice_count) + "d" + std::to_string(s.dice_sides) + "+INT/3) - " +
+                            std::to_string(s.mana_cost) + " MP";
+        // Dimmed red instead of the usual grey once you can't actually afford it.
+        bool affordable = player.mana >= s.mana_cost;
+        tcod::print(console, {0, 2 + static_cast<int>(i)}, line,
+                    affordable ? tcod::ColorRGB{200, 200, 200} : tcod::ColorRGB{150, 80, 80}, std::nullopt);
       }
     } else if (mode == Mode::Drop) {
       tcod::print(console, {0, 0}, "Drop - press a letter to drop, Esc to cancel", tcod::ColorRGB{255, 255, 255},
@@ -1001,6 +1140,7 @@ int main(int argc, char* argv[]) {
       // distinct log messages (or the level-up/targeting prompt) — kept on their own
       // lines so a long stats prefix can't crowd them out.
       std::string status_line = "HP:" + std::to_string(player.hp) + "/" + std::to_string(player.max_hp) +
+                                 " MP:" + std::to_string(player.mana) + "/" + std::to_string(player.max_mana) +
                                  " Lvl:" + std::to_string(player.level) + " Floor:" + std::to_string(current_level + 1);
       tcod::print(console, {0, 0}, status_line, tcod::ColorRGB{255, 255, 255}, std::nullopt);
 
@@ -1021,8 +1161,9 @@ int main(int argc, char* argv[]) {
                               ")! Press Shift+S/D/I to raise Strength/Dexterity/Intelligence. ***";
         tcod::print(console, {0, 2}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
       } else if (mode == Mode::Targeting) {
-        std::string prompt = "Casting " + kSpellTable[static_cast<size_t>(casting_spell_index)].name +
-                              " - move to target, Enter to fire, Esc to cancel.";
+        const Spell& casting_spell = kSpellTable[static_cast<size_t>(casting_spell_index)];
+        std::string prompt = "Casting " + casting_spell.name + " (" + std::to_string(casting_spell.mana_cost) +
+                              " MP) - move to target, Enter to fire, Esc to cancel.";
         tcod::print(console, {0, 2}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
       } else {
         // Always exactly the last MESSAGE_ROWS distinct messages, oldest on top, one per line —
@@ -1146,6 +1287,28 @@ int main(int argc, char* argv[]) {
           cell.fg = stops_here ? tcod::ColorRGB{255, 60, 60} : tcod::ColorRGB{150, 60, 60};
           if (blocked || has_monster) break;
         }
+
+        // AoE spells (Fireball etc.) also highlight the blast radius around wherever the
+        // shot would actually come to rest — find_impact() applies the exact same
+        // stopping rules advance_projectiles() uses, so this matches what firing now
+        // would do. Recolors tiles rather than overwriting their glyph, so monsters/
+        // terrain caught in the blast stay visible underneath the highlight.
+        const Spell& previewed_spell = kSpellTable[static_cast<size_t>(casting_spell_index)];
+        if (previewed_spell.aoe_radius > 0) {
+          auto [impact_x, impact_y] = find_impact(preview, player.x, player.y, level.map, level.monsters);
+          int radius = previewed_spell.aoe_radius;
+          for (int by = impact_y - radius; by <= impact_y + radius; ++by) {
+            for (int bx = impact_x - radius; bx <= impact_x + radius; ++bx) {
+              if (bx < 0 || by < 0 || bx >= level.map.width() || by >= level.map.height()) continue;
+              if (!level.map.is_explored(bx, by) && !reveal_mode) continue;
+              console.at(bx, by + HUD_HEIGHT).fg = tcod::ColorRGB{255, 140, 60};
+            }
+          }
+          // Re-mark the impact tile on top so the center stays visually distinct.
+          auto& impact_cell = console.at(impact_x, impact_y + HUD_HEIGHT);
+          impact_cell.ch = 'X';
+          impact_cell.fg = tcod::ColorRGB{255, 60, 60};
+        }
       }
     }
 
@@ -1222,6 +1385,9 @@ int main(int argc, char* argv[]) {
           auto known_before = known_spell_indices(player.intelligence);
           player.intelligence += 1;
           auto known_after = known_spell_indices(player.intelligence);
+          int new_max_mana = max_mana_for_intelligence(player.intelligence);
+          player.mana += new_max_mana - player.max_mana;
+          player.max_mana = new_max_mana;
           add_message("Intelligence increased to " + std::to_string(player.intelligence) + "!");
           for (int spell_idx : known_after) {
             bool already_known = std::find(known_before.begin(), known_before.end(), spell_idx) != known_before.end();
@@ -1320,6 +1486,8 @@ int main(int argc, char* argv[]) {
             } else if (chosen.buff_stat == StatKind::Intelligence) {
               if (player.temp_int_turns <= 0) {
                 player.temp_int_bonus = chosen.buff_amount;
+                player.max_mana = max_mana_for_intelligence(player.intelligence + player.temp_int_bonus);
+                // Ceiling only, unlike leveling up: current mana doesn't jump with it.
               }
               player.temp_int_turns = chosen.buff_turns;
               add_message("You feel sharp! INT +" + std::to_string(chosen.buff_amount) + " for " +
@@ -1356,6 +1524,12 @@ int main(int argc, char* argv[]) {
           continue;
         }
         if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER) {
+          if (player.mana < spell.mana_cost) {
+            add_message("Not enough mana to cast " + spell.name + ".");
+            mode = Mode::Playing;  // free cancel, same as Esc — no turn spent
+            continue;
+          }
+
           // Any tile is a legal target now: the spell travels and resolves against
           // whatever (if anything) it actually reaches, not necessarily the cursor tile.
           Projectile proj;
@@ -1363,6 +1537,9 @@ int main(int argc, char* argv[]) {
           proj.speed = spell.speed;
           proj.dice_count = spell.dice_count;
           proj.dice_sides = spell.dice_sides;
+          proj.aoe_radius = spell.aoe_radius;
+          proj.prev_x = player.x;  // seeds the "last open tile" for an immediate wall hit
+          proj.prev_y = player.y;
           // Locked in now, not re-read when it lands. Temporary INT (from a Potion of
           // Intelligence) boosts this the same as permanent INT would — only spell
           // *unlocking* (known_spell_indices, above) ignores the temporary bonus.
@@ -1371,6 +1548,7 @@ int main(int argc, char* argv[]) {
           proj.glyph = spell.glyph;
           proj.color = spell.color;
           level.projectiles.push_back(proj);
+          player.mana -= spell.mana_cost;
 
           add_message("You cast " + spell.name + ".");
           mode = Mode::Playing;

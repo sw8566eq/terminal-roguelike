@@ -77,8 +77,8 @@ struct Actor {
   // melee damage (no separate Vitality stat). Dexterity drives dodge chance on both
   // sides of a fight (see dodge_chance_vs() in main.cpp) — on a monster it doubles as
   // its "accuracy": a low-Dexterity monster is easy for the player to dodge, a
-  // high-Dexterity one much less so. Intelligence is tracked now but only affects spell
-  // unlocks/damage — no other effect yet.
+  // high-Dexterity one much less so. Intelligence drives spell unlocks/damage and max
+  // mana (max_mana_for_intelligence() in main.cpp, mirroring max_hp_for_strength()).
   int strength = 1;
   int dexterity = 1;
   int intelligence = 1;
@@ -97,6 +97,14 @@ struct Actor {
   // Player only: fractional HP banked toward the next point of passive regen (HP/turn
   // is usually not a whole number, so this carries the remainder between turns).
   float hp_regen_accumulator = 0.0f;
+
+  // Player only: mana, spent to cast spells (see Spell::mana_cost in main.cpp) and
+  // regenerated passively the same way HP is. max_mana comes from
+  // max_mana_for_intelligence(); mana_regen_accumulator is the same fractional-banking
+  // trick as hp_regen_accumulator above.
+  int mana = 0;
+  int max_mana = 0;
+  float mana_regen_accumulator = 0.0f;
 
   // Player only: temporary stat bonuses from stat potions (Potion of Strength/
   // Dexterity/Intelligence), and turns remaining before each reverts. Ticked down once

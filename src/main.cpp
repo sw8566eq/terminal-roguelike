@@ -147,6 +147,49 @@ const std::vector<MonsterTemplate> kMonsterTable = {
      /*evasion=*/2, /*accuracy=*/5, /*min_depth=*/8, /*max_depth=*/-1, /*attack_range=*/1},
 };
 
+// A player-summoned minion (Allegiance::Player) — same shape as MonsterTemplate where
+// they overlap (name/glyph/color/max_hp/weapon/evasion/accuracy/attack_range,
+// optional melee_weapon/melee_accuracy for a ranged-then-engage minion later), but a
+// deliberately separate table: which row is available is gated by which summon spell
+// unlocked it (Spell::summon_template_index), not by depth, so it doesn't share
+// kMonsterTable's min_depth/max_depth/available_at_depth() machinery. No xp_reward
+// either — the player doesn't earn XP for a minion dying (see the hostile-monster
+// target-death handling in end_turn()).
+struct MinionTemplate {
+  std::string name;
+  char glyph;
+  tcod::ColorRGB color;
+  int max_hp;
+  Weapon weapon;
+  int evasion;
+  int accuracy;  // dexterity-equivalent, same as MonsterTemplate::accuracy — combat
+                 // between any two Actors (minion-vs-hostile or hostile-vs-minion)
+                 // reuses dodge_chance_vs(), never the player's own hit-dice system.
+  int attack_range;
+  Weapon melee_weapon = Weapon{};
+  int melee_accuracy = 0;
+  // Turns until this minion expires on its own, or -1 for permanent (only dies in
+  // combat). See Actor::duration_turns.
+  int duration_turns = -1;
+};
+
+const std::vector<MinionTemplate> kMinionTable = {
+    // A basic, temporary conscript — glyph/color deliberately distinct from the
+    // hostile Skeleton ('s', white) so friend and foe never look alike at a glance.
+    // Weaker than a real (hostile) Skeleton and time-limited, reflecting that this is
+    // an early, low-commitment summon rather than true necromancy (see the roadmap's
+    // Phase 3 for permanently reanimating a specific slain monster).
+    {"Skeletal Minion", 'u', tcod::ColorRGB{100, 200, 220}, /*max_hp=*/8, Weapon{"Bone Claws", 1, 5, 0},
+     /*evasion=*/6, /*accuracy=*/3, /*attack_range=*/1, /*melee_weapon=*/Weapon{}, /*melee_accuracy=*/0,
+     /*duration_turns=*/40},
+};
+
+// How many minions the player can have active at once, checked when casting a summon
+// spell. Deliberately conservative to start (roadmap targets a 1-7 range once the
+// pack-order UI has actually been played) — raising this later is a one-constant
+// change, not a redesign, since nothing else here assumes a specific pack size.
+constexpr int kMaxMinions = 3;
+
 // Indices into `table` of every entry whose min_depth/max_depth range includes `depth`
 // (1-indexed; max_depth < 0 means no upper limit). Shared by monsters, weapons, armor,
 // and potions — every one of those tables uses this identical min/max_depth shape, so
@@ -256,6 +299,15 @@ const Armor kNoArmor = Armor{"Nothing", 0, /*is_intrinsic=*/true};
 // harder to dodge. An AoE spell should generally roll much higher than a precise
 // single-target one (see kSpellTable below): "wide" is its own kind of hard-to-dodge,
 // same as "fast" is for a weapon.
+//
+// is_summon marks a third spell "kind" alongside a fired Projectile and a toggle:
+// selecting it in the spell menu immediately spawns a copy of
+// kMinionTable[summon_template_index] as a new Allegiance::Player Actor next to the
+// player (see the SpellMenu handler) — no Targeting step, same "resolves right from
+// the menu" shape as a toggle spell's on/off, just a one-time effect instead of a
+// persistent aura. dice_count/dice_sides/speed/range/aoe_radius/hit_dice/glyph/color
+// are unused for these; mana_cost is what it costs to cast, same field every other
+// spell already uses.
 struct Spell {
   std::string name;
   int unlock_int;
@@ -272,6 +324,10 @@ struct Spell {
   int hit_dice_sides;
   char glyph;
   tcod::ColorRGB color;
+  // Trailing (with defaults) so the three existing rows above don't need updating —
+  // same convention as Weapon::hit_dice_count/sides.
+  bool is_summon = false;
+  int summon_template_index = 0;  // summon spells only: row into kMinionTable
 };
 
 constexpr int kInstantSpellSpeed = 99;  // safely more tiles than this map's diagonal
@@ -297,6 +353,14 @@ const std::vector<Spell> kSpellTable = {
     {"Sandstorm", /*unlock_int=*/9, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/0,
      /*mana_cost=*/3, /*aoe_radius=*/3, /*is_toggle=*/true, /*tick_damage=*/2, /*tick_mana_cost=*/2,
      /*hit_dice_count=*/2, /*hit_dice_sides=*/6, 's', tcod::ColorRGB{230, 190, 90}},
+    // First summon spell: raises kMinionTable[0] (Skeletal Minion) next to the player.
+    // unlock_int sits between Magic Dart and Fireball — an early, low-commitment taste
+    // of the summoner playstyle before anything heavier. See the SpellMenu handler for
+    // how casting a summon spell differs from firing/toggling.
+    {"Raise Skeleton", /*unlock_int=*/5, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/0,
+     /*mana_cost=*/4, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
+     /*hit_dice_count=*/0, /*hit_dice_sides=*/0, 'u', tcod::ColorRGB{100, 200, 220}, /*is_summon=*/true,
+     /*summon_template_index=*/0},
 };
 
 // Indices into kSpellTable of every spell the player currently knows, in display
@@ -366,6 +430,42 @@ int monster_at(const std::vector<Actor>& monsters, int x, int y) {
   return -1;
 }
 
+// Same as monster_at(), but only ever matches a hostile monster — a minion at (x,y)
+// is invisible to this query. Used everywhere a player-cast spell decides what
+// blocks/stops it (advance_projectiles(), find_impact(), the live aim-preview line),
+// so the player's own minions are fully transparent to their spells: never targeted,
+// never blocking the shot, never accidentally the thing a Magic Dart fizzles against.
+int hostile_monster_at(const std::vector<Actor>& monsters, int x, int y) {
+  for (size_t i = 0; i < monsters.size(); ++i) {
+    if (monsters[i].allegiance == Allegiance::Hostile && monsters[i].x == x && monsters[i].y == y) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+// Index into `actors` of the living Actor with the given id, or -1 if it's dead/gone.
+// Used to resolve MinionOrder::AttackTarget's attack_target_id back to an actual
+// Actor each turn, rather than holding a raw index (unsafe across a vector that
+// erases-in-place on death — see Actor::id).
+int actor_index_by_id(const std::vector<Actor>& actors, int id) {
+  for (size_t i = 0; i < actors.size(); ++i) {
+    if (actors[i].id == id && actors[i].is_alive()) return static_cast<int>(i);
+  }
+  return -1;
+}
+
+// How many of the player's minions are currently alive on this floor (minions always
+// live on whichever floor the player is currently on — see the cross-floor handling
+// in descend()/ascend()). Checked against kMaxMinions when casting a summon spell.
+int count_minions(const std::vector<Actor>& monsters) {
+  int count = 0;
+  for (const auto& m : monsters) {
+    if (m.allegiance == Allegiance::Player && m.is_alive()) ++count;
+  }
+  return count;
+}
+
 // Where a shot fired along `path` from (start_x,start_y) would come to rest, applying
 // the same three rules advance_projectiles() applies turn-by-turn: a wall stops it on
 // the tile just before the wall, a monster stops it on the monster's own tile, and
@@ -378,7 +478,7 @@ std::pair<int, int> find_impact(const std::vector<std::pair<int, int>>& path, in
   int prev_x = start_x, prev_y = start_y;
   for (const auto& [x, y] : path) {
     if (!map.is_walkable(x, y)) return {prev_x, prev_y};
-    if (monster_at(monsters, x, y) >= 0) return {x, y};
+    if (hostile_monster_at(monsters, x, y) >= 0) return {x, y};
     prev_x = x;
     prev_y = y;
   }
@@ -440,6 +540,23 @@ std::pair<int, int> random_free_tile(const Map& map, const std::vector<std::pair
     }
     if (!taken) return {x, y};
   }
+}
+
+// Finds a free (walkable, unoccupied) tile adjacent to (x,y) — the 8 neighbors,
+// checked in a fixed order. Used to place a newly summoned minion next to the caster.
+// Returns false (out_x/out_y untouched) if every neighbor is blocked.
+bool free_adjacent_tile(const Map& map, const std::vector<Actor>& monsters, int x, int y, int& out_x, int& out_y) {
+  const int offsets[8][2] = {{-1, -1}, {0, -1}, {1, -1}, {-1, 0}, {1, 0}, {-1, 1}, {0, 1}, {1, 1}};
+  for (const auto& off : offsets) {
+    int nx = x + off[0];
+    int ny = y + off[1];
+    if (!map.is_walkable(nx, ny)) continue;
+    if (monster_at(monsters, nx, ny) >= 0) continue;
+    out_x = nx;
+    out_y = ny;
+    return true;
+  }
+  return false;
 }
 
 enum class ItemKind { Weapon, Armor, Potion };
@@ -520,6 +637,16 @@ void update_monster_memory(Level& level) {
 // Monster count grows gently with depth, capped so deep floors don't get absurd.
 int monster_count_for_depth(int depth) { return std::min(NUM_MONSTERS + (depth - 1) / 2, NUM_MONSTERS + 5); }
 
+// Assigns a stable id (see Actor::id) to a newly spawned monster or minion — a plain
+// incrementing counter, unique for the life of the process. Ids are only ever compared
+// for equality (MinionOrder::AttackTarget matching a specific enemy across turns), so
+// there's no need to reset this on a new game/restart; nothing outlives the Level that
+// held the old ids anyway.
+int allocate_actor_id() {
+  static int next_id = 1;
+  return next_id++;
+}
+
 // Builds and populates a fresh floor. depth is 1-indexed (matches the "Floor:N" HUD)
 // and gates which monsters can spawn here, plus how many.
 Level generate_level(int width, int height, bool has_stairs_up, int depth) {
@@ -546,6 +673,7 @@ Level generate_level(int width, int height, bool has_stairs_up, int depth) {
     int table_index = available_monsters[static_cast<size_t>(random_int(0, static_cast<int>(available_monsters.size()) - 1))];
     const MonsterTemplate& tmpl = kMonsterTable[static_cast<size_t>(table_index)];
     Actor monster;
+    monster.id = allocate_actor_id();
     monster.x = mx;
     monster.y = my;
     monster.hp = monster.max_hp = tmpl.max_hp;
@@ -733,10 +861,12 @@ int main(int argc, char* argv[]) {
     SpellMenu,
     Targeting,
     MessageLog,
-    Help
+    Help,
+    MinionOrders,
+    MinionTargeting
   };
   int casting_spell_index = -1;  // which kSpellTable entry is being aimed, while Mode::Targeting
-  int target_x = 0;              // targeting cursor position, while Mode::Targeting
+  int target_x = 0;              // targeting cursor position, while Mode::Targeting or Mode::MinionTargeting
   int target_y = 0;
   // Index into kSpellTable of the currently-running toggle spell (e.g. Sandstorm), or
   // -1 if none is active. Only one toggle spell can run at a time — simple on purpose,
@@ -793,6 +923,12 @@ int main(int argc, char* argv[]) {
       add_message("Your " + proj.name + " explodes!");
       for (size_t m = 0; m < level.monsters.size();) {
         Actor& target = level.monsters[m];
+        // Minions are immune to the player's own AoE splash — only hostile monsters
+        // are ever caught in it. (The player themself is still at risk, below.)
+        if (target.allegiance == Allegiance::Player) {
+          ++m;
+          continue;
+        }
         if (std::abs(target.x - cx) <= proj.aoe_radius && std::abs(target.y - cy) <= proj.aoe_radius) {
           int dodge_chance = monster_dodge_chance(target.evasion, proj.hit_dice_count, proj.hit_dice_sides);
           if (random_int(1, 100) <= dodge_chance) {
@@ -852,7 +988,7 @@ int main(int argc, char* argv[]) {
           break;
         }
 
-        int target_index = monster_at(level.monsters, x, y);
+        int target_index = hostile_monster_at(level.monsters, x, y);
         if (target_index >= 0) {
           if (proj.aoe_radius > 0) {
             explode(proj, x, y);  // the monster's own tile is a valid, walkable center
@@ -947,6 +1083,21 @@ int main(int argc, char* argv[]) {
 
     Level& level = levels[static_cast<size_t>(current_level)];
 
+    // Minion duration: a timed minion (duration_turns > 0, see MinionTemplate) expires
+    // on its own once it hits 0, same "tick down, then resolve" shape as the temp stat
+    // buffs above. A permanent minion (duration_turns <= 0, the default) never enters
+    // this countdown at all. Marked via hp = 0 rather than erased here — same deferred-
+    // sweep reasoning as the AI loops below, and it also means an expiring minion
+    // doesn't get to act this same turn (is_alive() already gates both AI loops).
+    for (auto& m : level.monsters) {
+      if (m.allegiance != Allegiance::Player || !m.is_alive() || m.duration_turns <= 0) continue;
+      m.duration_turns -= 1;
+      if (m.duration_turns == 0) {
+        add_message("Your " + m.name + " collapses into dust.");
+        m.hp = 0;
+      }
+    }
+
     // Toggled aura spells (e.g. Sandstorm): while active, drains tick_mana_cost every
     // turn and deals tick_damage to every monster within aoe_radius tiles (Chebyshev
     // distance) of the player's *current* position — recentered each turn, since the
@@ -965,6 +1116,12 @@ int main(int argc, char* argv[]) {
         player.mana -= storm.tick_mana_cost;
         for (size_t m = 0; m < level.monsters.size();) {
           Actor& target = level.monsters[m];
+          // Minions stand in the storm untouched — see explode()'s identical
+          // exemption for Fireball's blast.
+          if (target.allegiance == Allegiance::Player) {
+            ++m;
+            continue;
+          }
           if (std::abs(target.x - player.x) <= storm.aoe_radius && std::abs(target.y - player.y) <= storm.aoe_radius) {
             int dodge_chance = monster_dodge_chance(target.evasion, storm.hit_dice_count, storm.hit_dice_sides);
             if (random_int(1, 100) <= dodge_chance) {
@@ -989,12 +1146,16 @@ int main(int argc, char* argv[]) {
     }
 
     // Tries to step a monster by (step_dx, step_dy); does nothing and returns false if
-    // that tile is a wall or already has another living monster on it.
+    // that tile is a wall, already has another living monster on it, or is the
+    // player's own tile (the player isn't in level.monsters, so that needs its own
+    // check — no monster/minion ever displaces the player by walking into them; the
+    // player initiates all bump-to-attack contact, never the other way around).
     auto try_monster_step = [&](Actor& m, int step_dx, int step_dy) -> bool {
       if (step_dx == 0 && step_dy == 0) return false;
       int nx = m.x + step_dx;
       int ny = m.y + step_dy;
       if (!level.map.is_walkable(nx, ny)) return false;
+      if (nx == player.x && ny == player.y) return false;
       for (const auto& other : level.monsters) {
         if (&other != &m && other.is_alive() && other.x == nx && other.y == ny) return false;
       }
@@ -1003,12 +1164,78 @@ int main(int argc, char* argv[]) {
       return true;
     };
 
+    // Resolves `attacker` attacking `defender`, where defender is anything other than
+    // the player (the player has armor and a death screen — handled inline in the
+    // hostile-monster loop below instead). Works symmetrically whichever direction:
+    // a hostile monster attacking a minion, or a minion attacking a hostile monster —
+    // both are monster-shaped Actors with the same dexterity/weapon/optional
+    // melee_weapon fields, so this is the exact combat math every monster-vs-player
+    // attack already used, just re-pointed at another Actor and phrased for whichever
+    // side is "yours". No armor reduction (only the player wears armor). Grants XP if
+    // the attacker is one of the player's minions and the kill is a hostile monster —
+    // a minion's kill still furthers the player — never for a hostile monster's kill
+    // (killing a minion isn't a player achievement). Doesn't erase a dead defender;
+    // see the deferred sweep after both AI loops below for why.
+    auto resolve_actor_attack = [&](Actor& attacker, Actor& defender) {
+      bool adjacent = std::abs(defender.x - attacker.x) <= 1 && std::abs(defender.y - attacker.y) <= 1;
+      bool use_melee_weapon = adjacent && !attacker.melee_weapon.name.empty();
+      if (use_melee_weapon) attacker.melee_engaged = true;
+      const Weapon& weapon_used = use_melee_weapon ? attacker.melee_weapon : attacker.weapon;
+      int attacker_dex = use_melee_weapon ? attacker.melee_dexterity : attacker.dexterity;
+
+      std::string attacker_subject = (attacker.allegiance == Allegiance::Player ? "Your " : "The ") + attacker.name;
+      std::string attacker_lower = (attacker.allegiance == Allegiance::Player ? "your " : "the ") + attacker.name;
+      std::string defender_subject = (defender.allegiance == Allegiance::Player ? "Your " : "The ") + defender.name;
+      std::string defender_lower = (defender.allegiance == Allegiance::Player ? "your " : "the ") + defender.name;
+
+      if (random_int(1, 100) <= dodge_chance_vs(defender.dexterity, attacker_dex)) {
+        add_message(defender_subject + " dodges " + attacker_lower + "'s attack!");
+        return;
+      }
+      int damage = roll_damage(weapon_used);
+      defender.hp -= damage;
+      if (!defender.is_alive()) {
+        add_message(attacker_subject + " kills " + defender_lower + "!");
+        if (attacker.allegiance == Allegiance::Player) grant_xp(defender.xp_reward);
+      } else {
+        add_message(attacker_subject + " hits " + defender_lower + " with its " + weapon_used.name + " for " +
+                    std::to_string(damage) + ".");
+      }
+    };
+
     for (auto& monster : level.monsters) {
       if (mode == Mode::Dead) break;  // player already died to an earlier monster this turn
-      if (!monster.is_alive()) continue;
+      if (!monster.is_alive() || monster.allegiance != Allegiance::Hostile) continue;
 
-      int dx = player.x - monster.x;
-      int dy = player.y - monster.y;
+      // Picks this monster's target for the turn: the player, or the closest living
+      // minion whose tile is currently in the player's FOV (there's no separate
+      // per-monster FOV; "lit right now" — the same is_in_fov() check already used to
+      // decide whether to even render a minion — stands in for "this monster would
+      // notice it"). Ties favor the player. Minions don't get their own "remembered
+      // last position" the way the player does (last_seen_player_x/y below is still
+      // player-specific) — a Phase 1 simplification. With zero minions on the floor
+      // this always resolves to the player, so solo-player behavior is unchanged.
+      bool target_is_player = true;
+      int target_minion_index = -1;
+      int target_x = player.x;
+      int target_y = player.y;
+      int best_dist = std::max(std::abs(player.x - monster.x), std::abs(player.y - monster.y));
+      for (size_t ti = 0; ti < level.monsters.size(); ++ti) {
+        const Actor& candidate = level.monsters[ti];
+        if (candidate.allegiance != Allegiance::Player || !candidate.is_alive()) continue;
+        if (!level.map.is_in_fov(candidate.x, candidate.y)) continue;
+        int dist = std::max(std::abs(candidate.x - monster.x), std::abs(candidate.y - monster.y));
+        if (dist < best_dist) {
+          best_dist = dist;
+          target_is_player = false;
+          target_minion_index = static_cast<int>(ti);
+          target_x = candidate.x;
+          target_y = candidate.y;
+        }
+      }
+
+      int dx = target_x - monster.x;
+      int dy = target_y - monster.y;
       int abs_dx = dx < 0 ? -dx : dx;
       int abs_dy = dy < 0 ? -dy : dy;
       // Generalizes "adjacent" (melee) into "within this monster's attack_range" —
@@ -1019,14 +1246,18 @@ int main(int argc, char* argv[]) {
       //
       // Once melee_engaged (see Actor::melee_engaged), a ranged monster permanently
       // stops using its full attack_range and behaves as if it were 1 — it snipes from
-      // range right up until the player reaches it, and from then on it's just a
+      // range right up until it reaches its target, and from then on it's just a
       // melee-only monster (chasing when out of reach, same as any other), never going
       // back to sniping.
       int effective_range = monster.melee_engaged ? 1 : monster.attack_range;
       bool in_range = std::max(abs_dx, abs_dy) <= effective_range && (dx != 0 || dy != 0);
-      bool can_attack = in_range && line_clear(monster.x, monster.y, player.x, player.y, level.map);
+      bool can_attack = in_range && line_clear(monster.x, monster.y, target_x, target_y, level.map);
 
       if (can_attack) {
+        if (!target_is_player) {
+          resolve_actor_attack(monster, level.monsters[static_cast<size_t>(target_minion_index)]);
+          continue;
+        }
         // Some monsters (e.g. Goblin Slinger) fall back to a separate, more accurate
         // melee weapon once you're actually adjacent, rather than using their ranged
         // one at point-blank range — see MonsterTemplate::melee_weapon. Every other
@@ -1057,15 +1288,17 @@ int main(int argc, char* argv[]) {
         continue;
       }
 
-      // Out of range (or no line of sight): chase if the player would currently see this tile (shadowcasting
-      // FOV is reciprocal, so this doubles as "can the monster see the player" without
-      // computing a separate FOV per monster). Otherwise, if the monster still
-      // remembers where it last saw the player, head there instead of immediately
-      // giving up — once it arrives and the player isn't there, the memory clears and
-      // it falls back to idle wandering. Movement follows a real A* path
-      // (Map::find_path(), libtcod's TCODPath) recomputed fresh every turn — cheap
-      // enough at this map size that there's no need to cache it turn-to-turn — so a
-      // monster routes around a wall segment instead of pacing against it.
+      // Out of range (or no line of sight): chase toward the chosen target if it's
+      // currently visible — for the player specifically, "visible" still means the
+      // FOV-reciprocity check below (can_see_player), same as always; a minion target
+      // was already required to be in_fov to be picked as the target at all, above.
+      // Otherwise, if the monster still remembers where it last saw the player
+      // specifically, head there instead of immediately giving up — once it arrives
+      // and the player isn't there, the memory clears and it falls back to idle
+      // wandering. Movement follows a real A* path (Map::find_path(), libtcod's
+      // TCODPath) recomputed fresh every turn — cheap enough at this map size that
+      // there's no need to cache it turn-to-turn — so a monster routes around a wall
+      // segment instead of pacing against it.
       bool can_see_player = level.map.is_in_fov(monster.x, monster.y);
       if (can_see_player) {
         monster.last_seen_player_x = player.x;
@@ -1074,18 +1307,19 @@ int main(int argc, char* argv[]) {
 
       int move_dx = 0;
       int move_dy = 0;
-      bool has_chase_target = can_see_player || monster.last_seen_player_x >= 0;
+      bool can_see_target = target_is_player ? can_see_player : true;  // minion targets are always is_in_fov, see above
+      bool has_chase_target = can_see_target || monster.last_seen_player_x >= 0;
       if (has_chase_target) {
-        int target_x = can_see_player ? player.x : monster.last_seen_player_x;
-        int target_y = can_see_player ? player.y : monster.last_seen_player_y;
-        if (target_x == monster.x && target_y == monster.y) {
-          // Arrived at the last-known spot and the player isn't here: give up the
-          // chase. Falls through to a wander roll below this turn, same as if there'd
-          // never been anything to chase.
+        int chase_x = can_see_target ? target_x : monster.last_seen_player_x;
+        int chase_y = can_see_target ? target_y : monster.last_seen_player_y;
+        if (chase_x == monster.x && chase_y == monster.y) {
+          // Arrived at the last-known spot and nothing's here: give up the chase.
+          // Falls through to a wander roll below this turn, same as if there'd never
+          // been anything to chase.
           monster.last_seen_player_x = -1;
           monster.last_seen_player_y = -1;
         } else {
-          auto path = level.map.find_path(monster.x, monster.y, target_x, target_y);
+          auto path = level.map.find_path(monster.x, monster.y, chase_x, chase_y);
           // Empty means no route exists at all — falls through to the wander roll
           // below, same shape as today's "stuck" case, just genuinely no path instead
           // of one greedy step happening to be blocked.
@@ -1107,6 +1341,93 @@ int main(int argc, char* argv[]) {
       // (e.g. a diagonal clipped by a wall corner).
       if (!try_monster_step(monster, move_dx, move_dy)) {
         if (!try_monster_step(monster, move_dx, 0)) try_monster_step(monster, 0, move_dy);
+      }
+    }
+
+    // The player's minions act after every hostile monster has had its turn. Each one
+    // is either Following (path toward the player, ignoring FOV — a summoned minion
+    // always knows where its own summoner is, unlike a hostile monster tracking the
+    // player — but attacking any hostile that's already in range instead of moving,
+    // same "adjacent → attack, else → close the distance" shape hostile monsters use)
+    // or AttackTarget (path toward/attack one specific enemy, by id — see
+    // MinionOrder). An AttackTarget minion whose target has died or otherwise
+    // disappeared (actor_index_by_id returns -1) reverts to Follow and just holds
+    // position for the rest of this turn, picking up the chase next turn.
+    for (auto& minion : level.monsters) {
+      if (mode == Mode::Dead) break;
+      if (!minion.is_alive() || minion.allegiance != Allegiance::Player) continue;
+
+      if (minion.order == MinionOrder::AttackTarget) {
+        int ti = actor_index_by_id(level.monsters, minion.attack_target_id);
+        if (ti < 0) {
+          minion.order = MinionOrder::Follow;
+          continue;
+        }
+        Actor& target = level.monsters[static_cast<size_t>(ti)];
+        int tdx = std::abs(target.x - minion.x);
+        int tdy = std::abs(target.y - minion.y);
+        bool in_range = std::max(tdx, tdy) <= minion.attack_range;
+        if (in_range && line_clear(minion.x, minion.y, target.x, target.y, level.map)) {
+          resolve_actor_attack(minion, target);
+          continue;
+        }
+        auto path = level.map.find_path(minion.x, minion.y, target.x, target.y);
+        if (!path.empty()) {
+          int move_dx = path[0].first - minion.x;
+          int move_dy = path[0].second - minion.y;
+          if (!try_monster_step(minion, move_dx, move_dy)) {
+            if (!try_monster_step(minion, move_dx, 0)) try_monster_step(minion, 0, move_dy);
+          }
+        }
+        continue;
+      }
+
+      // Follow: auto-defend against the closest in-range hostile instead of moving...
+      int best_hostile = -1;
+      int best_dist = 0;
+      for (size_t hi = 0; hi < level.monsters.size(); ++hi) {
+        const Actor& hostile = level.monsters[hi];
+        if (hostile.allegiance != Allegiance::Hostile || !hostile.is_alive()) continue;
+        int hdx = std::abs(hostile.x - minion.x);
+        int hdy = std::abs(hostile.y - minion.y);
+        int dist = std::max(hdx, hdy);
+        if (dist > minion.attack_range) continue;
+        if (!line_clear(minion.x, minion.y, hostile.x, hostile.y, level.map)) continue;
+        if (best_hostile < 0 || dist < best_dist) {
+          best_hostile = static_cast<int>(hi);
+          best_dist = dist;
+        }
+      }
+      if (best_hostile >= 0) {
+        resolve_actor_attack(minion, level.monsters[static_cast<size_t>(best_hostile)]);
+        continue;
+      }
+      // ...otherwise close the distance to the player. try_monster_step already
+      // refuses to step onto the player's own tile, so this naturally stops once
+      // adjacent rather than trying to stack on them.
+      auto path = level.map.find_path(minion.x, minion.y, player.x, player.y);
+      if (!path.empty()) {
+        int move_dx = path[0].first - minion.x;
+        int move_dy = path[0].second - minion.y;
+        try_monster_step(minion, move_dx, move_dy);
+      }
+    }
+
+    // Deferred cleanup: remove anything that died during either AI loop above (a
+    // minion killed by a hostile monster, or a hostile monster killed by a minion).
+    // Deferred rather than erased in-place during either loop above, since both loops
+    // iterate over this same vector and can each kill something the *other* loop
+    // still needs to reference later in the same turn (e.g. monster #2 kills a minion
+    // that monster #5 is also currently targeting) — erasing immediately would shift
+    // indices out from under whichever loop hadn't gotten there yet. Contrast with
+    // explode()/advance_projectiles(), which erase immediately — those are
+    // self-contained single-purpose loops, not two loops that can each kill something
+    // the other is also indexing into.
+    for (size_t i = 0; i < level.monsters.size();) {
+      if (!level.monsters[i].is_alive()) {
+        level.monsters.erase(level.monsters.begin() + static_cast<long>(i));
+      } else {
+        ++i;
       }
     }
   };
@@ -1154,24 +1475,63 @@ int main(int argc, char* argv[]) {
 
   // Goes down the stairs the player is currently standing on, generating the floor
   // below the first time it's visited.
+  // Moves every one of the player's minions from `from_level` to `to_level`,
+  // positioned near the player's new spot — called by descend()/ascend() so minions
+  // follow the player between floors instead of being left behind (floors are
+  // otherwise fully independent/persistent — see the Level comment). Falls back to
+  // any free tile on the new floor if the immediate area around the player is too
+  // crowded to fit everyone adjacent.
+  auto move_minions_to_new_floor = [&](Level& from_level, Level& to_level) {
+    for (size_t i = 0; i < from_level.monsters.size();) {
+      if (from_level.monsters[i].allegiance != Allegiance::Player) {
+        ++i;
+        continue;
+      }
+      Actor minion = from_level.monsters[i];
+      from_level.monsters.erase(from_level.monsters.begin() + static_cast<long>(i));
+      int nx, ny;
+      if (free_adjacent_tile(to_level.map, to_level.monsters, player.x, player.y, nx, ny)) {
+        minion.x = nx;
+        minion.y = ny;
+      } else {
+        std::vector<std::pair<int, int>> occupied = {{player.x, player.y}};
+        for (const auto& m : to_level.monsters) occupied.push_back({m.x, m.y});
+        auto [rx, ry] = random_free_tile(to_level.map, occupied);
+        minion.x = rx;
+        minion.y = ry;
+      }
+      to_level.monsters.push_back(minion);
+      // Don't advance i — the erase above shifted the next element into slot i.
+    }
+  };
+
   auto descend = [&]() {
+    int old_index = current_level;
     current_level += 1;
     if (static_cast<size_t>(current_level) >= levels.size()) {
       levels.push_back(generate_level(MAP_WIDTH, MAP_HEIGHT, /*has_stairs_up=*/true, /*depth=*/current_level + 1));
     }
+    // Both re-fetched fresh, after the possible push_back above — which can reallocate
+    // `levels` and would dangle a reference taken any earlier (same hazard noted where
+    // the render loop re-fetches `level` per event).
+    Level& old_level = levels[static_cast<size_t>(old_index)];
     Level& level = levels[static_cast<size_t>(current_level)];
     player.x = level.entry_x;
     player.y = level.entry_y;
+    move_minions_to_new_floor(old_level, level);
     level.map.update_fov(player.x, player.y, FOV_RADIUS);
     add_message("You descend the stairs.");
   };
 
   // Goes back up to the floor above, landing on the stairs down that was taken from it.
   auto ascend = [&]() {
+    int old_index = current_level;
     current_level -= 1;
+    Level& old_level = levels[static_cast<size_t>(old_index)];
     Level& level = levels[static_cast<size_t>(current_level)];
     player.x = level.stairs_down_x;
     player.y = level.stairs_down_y;
+    move_minions_to_new_floor(old_level, level);
     level.map.update_fov(player.x, player.y, FOV_RADIUS);
     add_message("You ascend the stairs.");
   };
@@ -1336,11 +1696,19 @@ int main(int argc, char* argv[]) {
         const Spell& s = kSpellTable[static_cast<size_t>(known[i])];
         bool is_active = active_toggle_spell == known[i];
         std::string line;
+        bool at_minion_cap = false;
         if (s.is_toggle) {
           line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (" +
                  std::to_string(s.tick_damage) + " dmg/turn in " + std::to_string(2 * s.aoe_radius + 1) + "x" +
                  std::to_string(2 * s.aoe_radius + 1) + ", " + std::to_string(s.tick_mana_cost) + " MP/turn) - " +
                  std::to_string(s.mana_cost) + " MP to toggle" + (is_active ? " [ACTIVE]" : "");
+        } else if (s.is_summon) {
+          const MinionTemplate& tmpl = kMinionTable[static_cast<size_t>(s.summon_template_index)];
+          std::string duration_str =
+              tmpl.duration_turns > 0 ? std::to_string(tmpl.duration_turns) + " turns" : "permanent";
+          at_minion_cap = count_minions(level.monsters) >= kMaxMinions;
+          line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (summons a " + tmpl.name + ", " +
+                 duration_str + ") - " + std::to_string(s.mana_cost) + " MP" + (at_minion_cap ? " [AT CAP]" : "");
         } else {
           line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (" + std::to_string(s.dice_count) +
                  "d" + std::to_string(s.dice_sides) + "+INT/3) - " + std::to_string(s.mana_cost) + " MP";
@@ -1348,7 +1716,7 @@ int main(int argc, char* argv[]) {
         // Dimmed red instead of the usual grey once you can't actually afford it — a
         // currently-active toggle is always "affordable" to select again (turning it
         // off is always free) so it doesn't get the red treatment.
-        bool affordable = is_active || player.mana >= s.mana_cost;
+        bool affordable = is_active || (player.mana >= s.mana_cost && !at_minion_cap);
         tcod::print(console, {0, 2 + static_cast<int>(i)}, line,
                     affordable ? tcod::ColorRGB{200, 200, 200} : tcod::ColorRGB{150, 80, 80}, std::nullopt);
       }
@@ -1411,6 +1779,7 @@ int main(int argc, char* argv[]) {
           "w  a  q                           Weapon / Armor / Potion menu (equip or drink)",
           "d                                 Drop a weapon, armor, or potion",
           "z                                 Cast a known spell",
+          "m                                 Command your minions (Follow / Attack)",
           "]                                 Message log (full scrollback)",
           "Shift+S  Shift+D  Shift+I         On level up: spend the point on STR/DEX/INT",
           "Esc                               Quit (or close the current menu)",
@@ -1419,6 +1788,13 @@ int main(int argc, char* argv[]) {
         tcod::print(console, {0, 1 + static_cast<int>(i)}, kHelpLines[i], tcod::ColorRGB{200, 200, 200},
                     std::nullopt);
       }
+    } else if (mode == Mode::MinionOrders) {
+      tcod::print(console, {0, 0}, "Command your minions - press a letter, Esc to close", tcod::ColorRGB{255, 255, 255},
+                  std::nullopt);
+      tcod::print(console, {0, 2}, "a) Follow - stay near you, defend themselves if attacked",
+                  tcod::ColorRGB{200, 200, 200}, std::nullopt);
+      tcod::print(console, {0, 3}, "b) Attack... - pick a monster for every minion to focus",
+                  tcod::ColorRGB{200, 200, 200}, std::nullopt);
     } else {
       update_monster_memory(level);
 
@@ -1456,6 +1832,9 @@ int main(int argc, char* argv[]) {
         std::string prompt = "Casting " + casting_spell.name + " (" + std::to_string(casting_spell.mana_cost) +
                               " MP) - move to target, Enter to fire, Esc to cancel.";
         tcod::print(console, {0, 2}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
+      } else if (mode == Mode::MinionTargeting) {
+        tcod::print(console, {0, 2}, "Pick a target - move to a monster, Enter to command the attack, Esc to cancel.",
+                    tcod::ColorRGB{255, 255, 100}, std::nullopt);
       } else {
         // Always exactly the last MESSAGE_ROWS distinct messages, oldest on top, one per line —
         // never wrapped or combined, even if several things happened on the same turn.
@@ -1589,8 +1968,7 @@ int main(int argc, char* argv[]) {
         for (size_t i = 0; i < preview.size(); ++i) {
           auto [x, y] = preview[i];
           bool blocked = !level.map.is_walkable(x, y);
-          bool has_monster = std::any_of(level.monsters.begin(), level.monsters.end(),
-                                          [&](const Actor& m) { return m.x == x && m.y == y; });
+          bool has_monster = hostile_monster_at(level.monsters, x, y) >= 0;
           bool stops_here = blocked || has_monster || i + 1 == preview.size();
           auto& cell = console.at(x, y + HUD_HEIGHT);
           cell.ch = stops_here ? 'X' : '*';
@@ -1619,6 +1997,17 @@ int main(int argc, char* argv[]) {
           impact_cell.ch = 'X';
           impact_cell.fg = tcod::ColorRGB{255, 60, 60};
         }
+      }
+
+      if (mode == Mode::MinionTargeting) {
+        // No line trace or AoE like a spell — this just picks whichever monster (if
+        // any) is standing on the cursor tile, so the cursor itself is the whole
+        // preview. A monster there gets its glyph tinted red (still visible, just
+        // marked); empty ground just shows a plain 'X'.
+        auto& cell = console.at(target_x, target_y + HUD_HEIGHT);
+        int hit = monster_at(level.monsters, target_x, target_y);
+        cell.fg = tcod::ColorRGB{255, 60, 60};
+        if (hit < 0) cell.ch = 'X';
       }
     }
 
@@ -1848,12 +2237,161 @@ int main(int argc, char* argv[]) {
                 active_toggle_spell = spell_idx;  // set after end_turn(), so the
                                                    // per-turn tick starts next turn
               }
+            } else if (spell.is_summon) {
+              int spawn_x, spawn_y;
+              if (count_minions(level.monsters) >= kMaxMinions) {
+                add_message("You can't command any more minions right now.");
+                mode = Mode::Playing;  // free cancel, no turn spent
+              } else if (player.mana < spell.mana_cost) {
+                add_message("Not enough mana to cast " + spell.name + ".");
+                mode = Mode::Playing;  // free cancel, no turn spent
+              } else if (!free_adjacent_tile(level.map, level.monsters, player.x, player.y, spawn_x, spawn_y)) {
+                add_message("There's no room to summon here!");
+                mode = Mode::Playing;  // free cancel, no turn spent
+              } else {
+                player.mana -= spell.mana_cost;
+                const MinionTemplate& tmpl = kMinionTable[static_cast<size_t>(spell.summon_template_index)];
+                Actor minion;
+                minion.id = allocate_actor_id();
+                minion.allegiance = Allegiance::Player;
+                minion.x = spawn_x;
+                minion.y = spawn_y;
+                minion.hp = minion.max_hp = tmpl.max_hp;
+                minion.glyph = tmpl.glyph;
+                minion.color = tmpl.color;
+                minion.name = tmpl.name;
+                minion.weapon = tmpl.weapon;
+                minion.evasion = tmpl.evasion;
+                minion.dexterity = tmpl.accuracy;  // read by dodge_chance_vs(), same as a hostile monster
+                minion.attack_range = tmpl.attack_range;
+                minion.melee_weapon = tmpl.melee_weapon;
+                minion.melee_dexterity = tmpl.melee_accuracy;
+                minion.duration_turns = tmpl.duration_turns;
+                // Joins the pack's current stance rather than always defaulting to
+                // Follow — if an existing minion is already off attacking something,
+                // the new recruit should too, not stand around while its allies
+                // fight (orders are pack-wide in Phase 1, see the `m` menu).
+                minion.order = MinionOrder::Follow;
+                for (const auto& existing : level.monsters) {
+                  if (existing.allegiance == Allegiance::Player && existing.is_alive() &&
+                      existing.order == MinionOrder::AttackTarget) {
+                    minion.order = MinionOrder::AttackTarget;
+                    minion.attack_target_id = existing.attack_target_id;
+                    break;
+                  }
+                }
+                level.monsters.push_back(minion);
+                add_message("You raise a " + tmpl.name + " to fight for you!");
+                mode = Mode::Playing;
+                end_turn();
+              }
             } else {
               casting_spell_index = spell_idx;
               target_x = player.x;
               target_y = player.y;
               mode = Mode::Targeting;
             }
+          }
+        }
+        continue;
+      }
+
+      if (mode == Mode::MinionOrders) {
+        if (event.key.key == SDLK_ESCAPE) {
+          mode = Mode::Playing;
+        } else if (event.key.key == SDLK_A) {
+          // Follow applies immediately to every minion — no submenu, no turn spent
+          // (an order is free to give; only the minion's own actions cost turns).
+          int ordered = 0;
+          for (auto& m : level.monsters) {
+            if (m.allegiance == Allegiance::Player && m.is_alive()) {
+              m.order = MinionOrder::Follow;
+              ++ordered;
+            }
+          }
+          add_message(ordered == 1 ? "Your minion returns to your side." : "Your minions return to your side.");
+          mode = Mode::Playing;
+        } else if (event.key.key == SDLK_B) {
+          target_x = player.x;
+          target_y = player.y;
+          mode = Mode::MinionTargeting;
+        }
+        continue;
+      }
+
+      if (mode == Mode::MinionTargeting) {
+        if (event.key.key == SDLK_ESCAPE) {
+          mode = Mode::Playing;
+          continue;
+        }
+        if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER) {
+          int hit = monster_at(level.monsters, target_x, target_y);
+          if (hit < 0 || level.monsters[static_cast<size_t>(hit)].allegiance != Allegiance::Hostile) {
+            add_message("There's no monster there to target.");
+            continue;  // stay in targeting mode, no turn spent — try again
+          }
+          int target_id = level.monsters[static_cast<size_t>(hit)].id;
+          std::string target_name = level.monsters[static_cast<size_t>(hit)].name;
+          int ordered = 0;
+          for (auto& m : level.monsters) {
+            if (m.allegiance == Allegiance::Player && m.is_alive()) {
+              m.order = MinionOrder::AttackTarget;
+              m.attack_target_id = target_id;
+              ++ordered;
+            }
+          }
+          add_message((ordered == 1 ? "Your minion attacks the " : "Your minions attack the ") + target_name + "!");
+          mode = Mode::Playing;
+          continue;
+        }
+
+        // Movement keys move the targeting cursor instead of the player — unlike a
+        // spell's Targeting, there's no range limit here (a minion will path however
+        // far it needs to), just the map bounds.
+        int tdx = 0;
+        int tdy = 0;
+        switch (event.key.key) {
+          case SDLK_UP:
+          case SDLK_K:
+            tdy = -1;
+            break;
+          case SDLK_DOWN:
+          case SDLK_J:
+            tdy = 1;
+            break;
+          case SDLK_LEFT:
+          case SDLK_H:
+            tdx = -1;
+            break;
+          case SDLK_RIGHT:
+          case SDLK_L:
+            tdx = 1;
+            break;
+          case SDLK_Y:
+            tdx = -1;
+            tdy = -1;
+            break;
+          case SDLK_U:
+            tdx = 1;
+            tdy = -1;
+            break;
+          case SDLK_B:
+            tdx = -1;
+            tdy = 1;
+            break;
+          case SDLK_N:
+            tdx = 1;
+            tdy = 1;
+            break;
+          default:
+            break;
+        }
+        if (tdx != 0 || tdy != 0) {
+          int nx = target_x + tdx;
+          int ny = target_y + tdy;
+          if (level.map.in_bounds(nx, ny)) {
+            target_x = nx;
+            target_y = ny;
           }
         }
         continue;
@@ -2067,6 +2605,14 @@ int main(int argc, char* argv[]) {
         mode = Mode::SpellMenu;
         continue;
       }
+      if (event.key.key == SDLK_M) {
+        if (count_minions(level.monsters) == 0) {
+          add_message("You have no minions to command.");
+        } else {
+          mode = Mode::MinionOrders;
+        }
+        continue;
+      }
       if (event.key.key == SDLK_RIGHTBRACKET) {
         mode = Mode::MessageLog;
         log_scroll = 0;  // always open showing the most recent messages
@@ -2163,7 +2709,15 @@ int main(int argc, char* argv[]) {
         }
       }
 
-      if (target_index >= 0) {
+      if (target_index >= 0 && level.monsters[static_cast<size_t>(target_index)].allegiance == Allegiance::Player) {
+        // Bump into your own minion: swap places instead of attacking it — you're
+        // squeezing past an ally, not fighting one.
+        Actor& minion = level.monsters[static_cast<size_t>(target_index)];
+        std::swap(player.x, minion.x);
+        std::swap(player.y, minion.y);
+        level.map.update_fov(player.x, player.y, FOV_RADIUS);
+        end_turn();
+      } else if (target_index >= 0) {
         // Bump attack: walking into a monster attacks it instead of moving.
         Actor& target = level.monsters[static_cast<size_t>(target_index)];
 

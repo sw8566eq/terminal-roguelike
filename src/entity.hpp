@@ -71,6 +71,19 @@ struct Potion {
   bool teleports = false;
 };
 
+// Which side an Actor fights on. Hostile is the default so every existing monster
+// spawn path is unaffected; Player marks a summoned minion. The player's own Actor
+// doesn't use this field at all (see main()'s combat-target-selection code, which
+// treats "the player" as a special case rather than an Allegiance::Player Actor
+// living in level.monsters).
+enum class Allegiance { Hostile, Player };
+
+// What a player-owned minion is currently doing — see the minion-AI block in
+// end_turn() (main.cpp). Set per-unit (not one pack-wide variable) so a single
+// pack-wide command (Phase 1) and per-minion overrides (a later X-COM-style control
+// mode) are both just "write this to one or every minion" — no future rearchitecting.
+enum class MinionOrder { Follow, AttackTarget };
+
 // A living thing on the map: the player or a monster. Combat is symmetric
 // (same stats, same roll_damage call on both sides), so both share this one
 // representation for now rather than separate Player/Monster types.
@@ -84,6 +97,30 @@ struct Actor {
   std::string name;
   Weapon weapon;
   Armor armor;
+
+  // Stable identity, assigned once at spawn (see next_actor_id in main()) and never
+  // reused — level.monsters erases in place on death, which shifts a std::vector's
+  // later elements down, so a raw index isn't safe to hold onto across turns. Needed
+  // by MinionOrder::AttackTarget's attack_target_id below, which must keep pointing at
+  // the same enemy even if some other monster earlier in the vector died this turn.
+  // The player's own Actor doesn't need one (nothing ever targets it by id).
+  int id = 0;
+
+  // Monsters only: which side this Actor is on. See Allegiance above.
+  Allegiance allegiance = Allegiance::Hostile;
+
+  // Minions only (Allegiance::Player): the order the player last gave this unit, and
+  // — while order == AttackTarget — which enemy's id it's fighting. Reverts to Follow
+  // on its own once that target dies or otherwise disappears (see end_turn()).
+  MinionOrder order = MinionOrder::Follow;
+  int attack_target_id = -1;
+
+  // Minions only: turns remaining before this minion expires on its own, or -1 for a
+  // permanent minion that only ever dies in combat. Sourced from
+  // MinionTemplate::duration_turns at summon time; ticks down in end_turn() the same
+  // shape as the temp stat-buff timers below, removing the minion (with a message,
+  // not a death) at 0.
+  int duration_turns = -1;
 
   // Player-progression stats; monsters set dexterity from their template (see below)
   // and leave strength/intelligence at their defaults. Strength drives both max HP and

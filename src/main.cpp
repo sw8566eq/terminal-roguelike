@@ -466,6 +466,18 @@ int count_minions(const std::vector<Actor>& monsters) {
   return count;
 }
 
+// One-line status for a minion, for the roster menu (Mode::MinionRoster) — "attacking"
+// names the target if it can still be resolved (actor_index_by_id), same fallback
+// wording as what the minion itself falls back to (Follow) if it can't.
+std::string describe_minion_order(const Actor& minion, const std::vector<Actor>& monsters) {
+  if (minion.order == MinionOrder::Hold) return "holding position";
+  if (minion.order == MinionOrder::AttackTarget) {
+    int ti = actor_index_by_id(monsters, minion.attack_target_id);
+    return ti >= 0 ? "attacking the " + monsters[static_cast<size_t>(ti)].name : "following you";
+  }
+  return "following you";
+}
+
 // Where a shot fired along `path` from (start_x,start_y) would come to rest, applying
 // the same three rules advance_projectiles() applies turn-by-turn: a wall stops it on
 // the tile just before the wall, a monster stops it on the monster's own tile, and
@@ -862,16 +874,26 @@ int main(int argc, char* argv[]) {
     Targeting,
     MessageLog,
     Help,
-    MinionOrders,
-    MinionTargeting
+    MinionRoster,
+    MinionFocus
   };
   int casting_spell_index = -1;  // which kSpellTable entry is being aimed, while Mode::Targeting
-  int target_x = 0;              // targeting cursor position, while Mode::Targeting or Mode::MinionTargeting
+  int target_x = 0;              // cursor position, while Mode::Targeting or Mode::MinionFocus
   int target_y = 0;
   // Index into kSpellTable of the currently-running toggle spell (e.g. Sandstorm), or
   // -1 if none is active. Only one toggle spell can run at a time — simple on purpose,
   // since there's only one so far; a second would need its own slot or a small vector.
   int active_toggle_spell = -1;
+  // Which minion currently has command focus while cycling with o/p (see Mode::Playing's
+  // key handling) — persists across focus sessions so repeated o/p presses keep moving
+  // through the roster in order, not reset to the first minion every time. -1 = no
+  // minion individually focused (either never cycled, or Shift+P reset it).
+  int focused_minion_id = -1;
+  // True only during a Mode::MinionFocus session opened via the roster's "All" option
+  // (or the analogous pack-wide path) — the resulting order applies to every living
+  // minion instead of just the one named by focused_minion_id. Doesn't touch
+  // focused_minion_id itself, so cycling position is preserved across an "All" session.
+  bool commanding_all_minions = false;
   Mode mode = Mode::Playing;
 
   std::vector<Level> levels;
@@ -1344,13 +1366,38 @@ int main(int argc, char* argv[]) {
       }
     }
 
+    // Attacks the closest hostile within minion.attack_range (line_clear()'d), if any
+    // — the "still defend yourself" half of Follow and Hold, so a minion doing either
+    // isn't a free hit for anything that wanders adjacent. Returns whether it attacked
+    // (the caller should skip movement for the turn if so).
+    auto try_minion_auto_defend = [&](Actor& minion) -> bool {
+      int best_hostile = -1;
+      int best_dist = 0;
+      for (size_t hi = 0; hi < level.monsters.size(); ++hi) {
+        const Actor& hostile = level.monsters[hi];
+        if (hostile.allegiance != Allegiance::Hostile || !hostile.is_alive()) continue;
+        int hdx = std::abs(hostile.x - minion.x);
+        int hdy = std::abs(hostile.y - minion.y);
+        int dist = std::max(hdx, hdy);
+        if (dist > minion.attack_range) continue;
+        if (!line_clear(minion.x, minion.y, hostile.x, hostile.y, level.map)) continue;
+        if (best_hostile < 0 || dist < best_dist) {
+          best_hostile = static_cast<int>(hi);
+          best_dist = dist;
+        }
+      }
+      if (best_hostile < 0) return false;
+      resolve_actor_attack(minion, level.monsters[static_cast<size_t>(best_hostile)]);
+      return true;
+    };
+
     // The player's minions act after every hostile monster has had its turn. Each one
-    // is either Following (path toward the player, ignoring FOV — a summoned minion
-    // always knows where its own summoner is, unlike a hostile monster tracking the
-    // player — but attacking any hostile that's already in range instead of moving,
-    // same "adjacent → attack, else → close the distance" shape hostile monsters use)
-    // or AttackTarget (path toward/attack one specific enemy, by id — see
-    // MinionOrder). An AttackTarget minion whose target has died or otherwise
+    // is Following (path toward the player, ignoring FOV — a summoned minion always
+    // knows where its own summoner is, unlike a hostile monster tracking the player),
+    // Holding (path toward and then stand at a specific tile — "guard this spot"), or
+    // AttackTarget (path toward/attack one specific enemy, by id). Follow and Hold both
+    // defend themselves via try_minion_auto_defend() instead of moving if a hostile is
+    // already in range. An AttackTarget minion whose target has died or otherwise
     // disappeared (actor_index_by_id returns -1) reverts to Follow and just holds
     // position for the rest of this turn, picking up the chase next turn.
     for (auto& minion : level.monsters) {
@@ -1382,26 +1429,22 @@ int main(int argc, char* argv[]) {
         continue;
       }
 
-      // Follow: auto-defend against the closest in-range hostile instead of moving...
-      int best_hostile = -1;
-      int best_dist = 0;
-      for (size_t hi = 0; hi < level.monsters.size(); ++hi) {
-        const Actor& hostile = level.monsters[hi];
-        if (hostile.allegiance != Allegiance::Hostile || !hostile.is_alive()) continue;
-        int hdx = std::abs(hostile.x - minion.x);
-        int hdy = std::abs(hostile.y - minion.y);
-        int dist = std::max(hdx, hdy);
-        if (dist > minion.attack_range) continue;
-        if (!line_clear(minion.x, minion.y, hostile.x, hostile.y, level.map)) continue;
-        if (best_hostile < 0 || dist < best_dist) {
-          best_hostile = static_cast<int>(hi);
-          best_dist = dist;
+      if (minion.order == MinionOrder::Hold) {
+        if (try_minion_auto_defend(minion)) continue;
+        if (minion.x == minion.hold_x && minion.y == minion.hold_y) continue;  // already there
+        auto path = level.map.find_path(minion.x, minion.y, minion.hold_x, minion.hold_y);
+        if (!path.empty()) {
+          int move_dx = path[0].first - minion.x;
+          int move_dy = path[0].second - minion.y;
+          if (!try_monster_step(minion, move_dx, move_dy)) {
+            if (!try_monster_step(minion, move_dx, 0)) try_monster_step(minion, 0, move_dy);
+          }
         }
-      }
-      if (best_hostile >= 0) {
-        resolve_actor_attack(minion, level.monsters[static_cast<size_t>(best_hostile)]);
         continue;
       }
+
+      // Follow.
+      if (try_minion_auto_defend(minion)) continue;
       // ...otherwise close the distance to the player. try_monster_step already
       // refuses to step onto the player's own tile, so this naturally stops once
       // adjacent rather than trying to stack on them.
@@ -1779,7 +1822,10 @@ int main(int argc, char* argv[]) {
           "w  a  q                           Weapon / Armor / Potion menu (equip or drink)",
           "d                                 Drop a weapon, armor, or potion",
           "z                                 Cast a known spell",
-          "m                                 Command your minions (Follow / Attack)",
+          "m                                 Command a minion or all of them (roster menu)",
+          "o  p                              Cycle command focus to the next/previous minion",
+          "Shift+P                           Return focus to yourself",
+          "f  Enter                          While focused: Follow / confirm Attack or Hold",
           "]                                 Message log (full scrollback)",
           "Shift+S  Shift+D  Shift+I         On level up: spend the point on STR/DEX/INT",
           "Esc                               Quit (or close the current menu)",
@@ -1788,13 +1834,25 @@ int main(int argc, char* argv[]) {
         tcod::print(console, {0, 1 + static_cast<int>(i)}, kHelpLines[i], tcod::ColorRGB{200, 200, 200},
                     std::nullopt);
       }
-    } else if (mode == Mode::MinionOrders) {
-      tcod::print(console, {0, 0}, "Command your minions - press a letter, Esc to close", tcod::ColorRGB{255, 255, 255},
+    } else if (mode == Mode::MinionRoster) {
+      tcod::print(console, {0, 0}, "Command a minion - press a letter, Esc to close", tcod::ColorRGB{255, 255, 255},
                   std::nullopt);
-      tcod::print(console, {0, 2}, "a) Follow - stay near you, defend themselves if attacked",
-                  tcod::ColorRGB{200, 200, 200}, std::nullopt);
-      tcod::print(console, {0, 3}, "b) Attack... - pick a monster for every minion to focus",
-                  tcod::ColorRGB{200, 200, 200}, std::nullopt);
+      // Each living minion gets a letter, in level.monsters order (stable turn to
+      // turn barring a death); "All" is always the last letter, one past the roster,
+      // for the pack-wide path (see the Mode::Playing 'm' handler and Enter/'a'/'f'
+      // handling in Mode::MinionFocus for what selecting either actually does).
+      int row = 2;
+      char letter = 'a';
+      for (const auto& m : level.monsters) {
+        if (m.allegiance != Allegiance::Player || !m.is_alive()) continue;
+        std::string line =
+            std::string(1, letter) + ") " + m.name + " (" + describe_minion_order(m, level.monsters) + ")";
+        tcod::print(console, {0, row}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
+        ++row;
+        ++letter;
+      }
+      tcod::print(console, {0, row}, std::string(1, letter) + ") All minions at once", tcod::ColorRGB{200, 200, 200},
+                  std::nullopt);
     } else {
       update_monster_memory(level);
 
@@ -1832,9 +1890,18 @@ int main(int argc, char* argv[]) {
         std::string prompt = "Casting " + casting_spell.name + " (" + std::to_string(casting_spell.mana_cost) +
                               " MP) - move to target, Enter to fire, Esc to cancel.";
         tcod::print(console, {0, 2}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
-      } else if (mode == Mode::MinionTargeting) {
-        tcod::print(console, {0, 2}, "Pick a target - move to a monster, Enter to command the attack, Esc to cancel.",
-                    tcod::ColorRGB{255, 255, 100}, std::nullopt);
+      } else if (mode == Mode::MinionFocus) {
+        std::string who = "your minion";
+        if (commanding_all_minions) {
+          who = "all minions";
+        } else {
+          int fi = actor_index_by_id(level.monsters, focused_minion_id);
+          if (fi >= 0) who = level.monsters[static_cast<size_t>(fi)].name;
+        }
+        std::string prompt = "Commanding " + who +
+                              " - move to a monster (attack) or a tile (hold), Enter to confirm, "
+                              "F to follow, Esc to cancel.";
+        tcod::print(console, {0, 2}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
       } else {
         // Always exactly the last MESSAGE_ROWS distinct messages, oldest on top, one per line —
         // never wrapped or combined, even if several things happened on the same turn.
@@ -1999,15 +2066,37 @@ int main(int argc, char* argv[]) {
         }
       }
 
-      if (mode == Mode::MinionTargeting) {
-        // No line trace or AoE like a spell — this just picks whichever monster (if
-        // any) is standing on the cursor tile, so the cursor itself is the whole
-        // preview. A monster there gets its glyph tinted red (still visible, just
-        // marked); empty ground just shows a plain 'X'.
+      if (mode == Mode::MinionFocus) {
+        // Highlights whichever minion(s) are currently being commanded — once the
+        // cursor wanders away from a minion's own tile there's otherwise no way to
+        // tell who you're still aiming for. Recolors the glyph (keeps it, rather than
+        // overwriting with a marker) so it still reads as "that minion", just lit up.
+        for (const auto& m : level.monsters) {
+          if (m.allegiance != Allegiance::Player || !m.is_alive()) continue;
+          if (!commanding_all_minions && m.id != focused_minion_id) continue;
+          bool visible = level.map.is_in_fov(m.x, m.y);
+          if (!visible && !reveal_mode) continue;  // not drawn at all this frame either way
+          console.at(m.x, m.y + HUD_HEIGHT).fg = tcod::ColorRGB{255, 255, 100};
+        }
+
+        // No line trace or AoE like a spell — confirming here either attacks (a
+        // hostile monster under the cursor) or holds (any other walkable tile), see
+        // the Enter handler below, so the cursor color previews which one: red for
+        // attack (the monster's own glyph stays visible, just tinted, same as the
+        // spell-targeting cursor above), green for hold, dim grey for an invalid tile
+        // (a wall, or something already standing there that isn't a valid target).
         auto& cell = console.at(target_x, target_y + HUD_HEIGHT);
-        int hit = monster_at(level.monsters, target_x, target_y);
-        cell.fg = tcod::ColorRGB{255, 60, 60};
-        if (hit < 0) cell.ch = 'X';
+        bool walkable = level.map.is_walkable(target_x, target_y);
+        int hostile_hit = hostile_monster_at(level.monsters, target_x, target_y);
+        if (hostile_hit >= 0) {
+          cell.fg = tcod::ColorRGB{255, 60, 60};
+        } else if (walkable && monster_at(level.monsters, target_x, target_y) < 0) {
+          cell.ch = 'X';
+          cell.fg = tcod::ColorRGB{100, 220, 140};
+        } else {
+          cell.ch = 'X';
+          cell.fg = tcod::ColorRGB{120, 120, 120};
+        }
       }
     }
 
@@ -2029,6 +2118,44 @@ int main(int argc, char* argv[]) {
       // above): descend() can push_back onto `levels`, which may reallocate and would
       // dangle a reference held across more than one queued event in the same batch.
       Level& level = levels[static_cast<size_t>(current_level)];
+
+      // Moves command focus to the next (direction=+1) or previous (direction=-1)
+      // living minion, in level.monsters order, wrapping around; if focused_minion_id
+      // doesn't currently name a living minion (nothing focused yet, or it died),
+      // starts from the first (next) or last (prev) instead of wrapping relative to a
+      // missing position. Always lands on one specific minion — never "all" — and
+      // points the cursor at its current position. Returns false (no-op) if there are
+      // no minions at all. Shared by the 'o'/'p' trigger keys from Mode::Playing and
+      // by the same keys working *inside* Mode::MinionFocus too, so you can tab
+      // straight from planning one minion's order to the next without dropping back
+      // to normal play in between — the "turn planner" feel this whole system is for.
+      auto cycle_minion_focus = [&](int direction) -> bool {
+        std::vector<int> minion_ids;
+        for (const auto& m : level.monsters) {
+          if (m.allegiance == Allegiance::Player && m.is_alive()) minion_ids.push_back(m.id);
+        }
+        if (minion_ids.empty()) return false;
+        int current = -1;
+        for (size_t i = 0; i < minion_ids.size(); ++i) {
+          if (minion_ids[i] == focused_minion_id) {
+            current = static_cast<int>(i);
+            break;
+          }
+        }
+        int next_index;
+        if (current < 0) {
+          next_index = direction >= 0 ? 0 : static_cast<int>(minion_ids.size()) - 1;
+        } else {
+          next_index = (current + direction + static_cast<int>(minion_ids.size())) %
+                       static_cast<int>(minion_ids.size());
+        }
+        focused_minion_id = minion_ids[static_cast<size_t>(next_index)];
+        commanding_all_minions = false;
+        int fi = actor_index_by_id(level.monsters, focused_minion_id);
+        target_x = level.monsters[static_cast<size_t>(fi)].x;
+        target_y = level.monsters[static_cast<size_t>(fi)].y;
+        return true;
+      };
 
       if (mode == Mode::Dead) {
         if (event.key.key == SDLK_ESCAPE) {
@@ -2296,58 +2423,124 @@ int main(int argc, char* argv[]) {
         continue;
       }
 
-      if (mode == Mode::MinionOrders) {
+      if (mode == Mode::MinionRoster) {
         if (event.key.key == SDLK_ESCAPE) {
           mode = Mode::Playing;
-        } else if (event.key.key == SDLK_A) {
-          // Follow applies immediately to every minion — no submenu, no turn spent
-          // (an order is free to give; only the minion's own actions cost turns).
-          int ordered = 0;
-          for (auto& m : level.monsters) {
-            if (m.allegiance == Allegiance::Player && m.is_alive()) {
-              m.order = MinionOrder::Follow;
-              ++ordered;
-            }
+          continue;
+        }
+        if (event.key.key >= SDLK_A && event.key.key <= SDLK_Z) {
+          // Same ordering as the roster's render: a letter per living minion, in
+          // level.monsters order, then one more letter for "All".
+          std::vector<int> minion_ids;
+          for (const auto& m : level.monsters) {
+            if (m.allegiance == Allegiance::Player && m.is_alive()) minion_ids.push_back(m.id);
           }
-          add_message(ordered == 1 ? "Your minion returns to your side." : "Your minions return to your side.");
-          mode = Mode::Playing;
-        } else if (event.key.key == SDLK_B) {
-          target_x = player.x;
-          target_y = player.y;
-          mode = Mode::MinionTargeting;
+          size_t idx = static_cast<size_t>(event.key.key - SDLK_A);
+          if (idx < minion_ids.size()) {
+            focused_minion_id = minion_ids[idx];
+            commanding_all_minions = false;
+            int fi = actor_index_by_id(level.monsters, focused_minion_id);
+            target_x = level.monsters[static_cast<size_t>(fi)].x;
+            target_y = level.monsters[static_cast<size_t>(fi)].y;
+            mode = Mode::MinionFocus;
+          } else if (idx == minion_ids.size()) {
+            commanding_all_minions = true;
+            target_x = player.x;
+            target_y = player.y;
+            mode = Mode::MinionFocus;
+          }
         }
         continue;
       }
 
-      if (mode == Mode::MinionTargeting) {
-        if (event.key.key == SDLK_ESCAPE) {
+      if (mode == Mode::MinionFocus) {
+        // Applies `fn` to every currently-commanded minion — all of them if this
+        // session came from the roster's "All", otherwise just the one named by
+        // focused_minion_id. Shared by F (Follow) and Enter (Attack/Hold) below so
+        // the "who does this apply to" logic can't drift between the two.
+        auto for_each_commanded_minion = [&](auto&& fn) {
+          int count = 0;
+          if (commanding_all_minions) {
+            for (auto& m : level.monsters) {
+              if (m.allegiance == Allegiance::Player && m.is_alive()) {
+                fn(m);
+                ++count;
+              }
+            }
+          } else {
+            int fi = actor_index_by_id(level.monsters, focused_minion_id);
+            if (fi >= 0) {
+              fn(level.monsters[static_cast<size_t>(fi)]);
+              count = 1;
+            }
+          }
+          return count;
+        };
+
+        bool shift_held = (event.key.mod & SDL_KMOD_SHIFT) != 0;
+        if (event.key.key == SDLK_ESCAPE || (event.key.key == SDLK_P && shift_held)) {
+          // Esc just backs out of this one planning action; Shift+P additionally
+          // resets cycle position, so the next 'o'/'p' starts over from the top —
+          // "focusing back on the player instantly."
+          if (event.key.key == SDLK_P) focused_minion_id = -1;
+          commanding_all_minions = false;
+          mode = Mode::Playing;
+          continue;
+        }
+        if (event.key.key == SDLK_O || (event.key.key == SDLK_P && !shift_held)) {
+          // Tab straight to the next/previous minion without dropping back to normal
+          // play in between — plan one, tab, plan the next, same as 'o'/'p' do from
+          // Mode::Playing (see cycle_minion_focus above), just without leaving this mode.
+          if (!cycle_minion_focus(event.key.key == SDLK_O ? 1 : -1)) {
+            add_message("You have no minions to command.");
+            mode = Mode::Playing;
+          }
+          continue;
+        }
+        if (event.key.key == SDLK_F) {
+          int ordered = for_each_commanded_minion([](Actor& m) { m.order = MinionOrder::Follow; });
+          add_message(ordered == 1 ? "Your minion returns to your side." : "Your minions return to your side.");
+          commanding_all_minions = false;
           mode = Mode::Playing;
           continue;
         }
         if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER) {
-          int hit = monster_at(level.monsters, target_x, target_y);
-          if (hit < 0 || level.monsters[static_cast<size_t>(hit)].allegiance != Allegiance::Hostile) {
-            add_message("There's no monster there to target.");
-            continue;  // stay in targeting mode, no turn spent — try again
-          }
-          int target_id = level.monsters[static_cast<size_t>(hit)].id;
-          std::string target_name = level.monsters[static_cast<size_t>(hit)].name;
-          int ordered = 0;
-          for (auto& m : level.monsters) {
-            if (m.allegiance == Allegiance::Player && m.is_alive()) {
+          int hostile_hit = hostile_monster_at(level.monsters, target_x, target_y);
+          if (hostile_hit >= 0) {
+            int target_id = level.monsters[static_cast<size_t>(hostile_hit)].id;
+            std::string target_name = level.monsters[static_cast<size_t>(hostile_hit)].name;
+            int ordered = for_each_commanded_minion([&](Actor& m) {
               m.order = MinionOrder::AttackTarget;
               m.attack_target_id = target_id;
-              ++ordered;
-            }
+            });
+            add_message((ordered == 1 ? "Your minion attacks the " : "Your minions attack the ") + target_name +
+                        "!");
+            commanding_all_minions = false;
+            mode = Mode::Playing;
+            continue;
           }
-          add_message((ordered == 1 ? "Your minion attacks the " : "Your minions attack the ") + target_name + "!");
-          mode = Mode::Playing;
-          continue;
+          bool tile_free = level.map.is_walkable(target_x, target_y) &&
+                            monster_at(level.monsters, target_x, target_y) < 0;
+          if (tile_free) {
+            int hx = target_x;
+            int hy = target_y;
+            int ordered = for_each_commanded_minion([&](Actor& m) {
+              m.order = MinionOrder::Hold;
+              m.hold_x = hx;
+              m.hold_y = hy;
+            });
+            add_message(ordered == 1 ? "Your minion holds position." : "Your minions hold position.");
+            commanding_all_minions = false;
+            mode = Mode::Playing;
+            continue;
+          }
+          add_message("You can't send them there.");
+          continue;  // stay in this mode, no turn spent — try again
         }
 
-        // Movement keys move the targeting cursor instead of the player — unlike a
-        // spell's Targeting, there's no range limit here (a minion will path however
-        // far it needs to), just the map bounds.
+        // Movement keys move the cursor — unlike a spell's Targeting, there's no
+        // range limit here (a minion will path however far it needs to), just the
+        // map bounds.
         int tdx = 0;
         int tdy = 0;
         switch (event.key.key) {
@@ -2609,7 +2802,25 @@ int main(int argc, char* argv[]) {
         if (count_minions(level.monsters) == 0) {
           add_message("You have no minions to command.");
         } else {
-          mode = Mode::MinionOrders;
+          mode = Mode::MinionRoster;
+        }
+        continue;
+      }
+      // 'o'/'p' cycle command focus straight to the next/previous minion (skipping
+      // the roster menu — a faster path for the same thing), landing in
+      // Mode::MinionFocus with the cursor on that minion. Shift+P resets focus
+      // without opening anything — see Mode::MinionFocus's own handling of these
+      // same keys for tabbing between minions without leaving that mode in between.
+      if (event.key.key == SDLK_O || event.key.key == SDLK_P) {
+        bool shift_held = (event.key.mod & SDL_KMOD_SHIFT) != 0;
+        if (event.key.key == SDLK_P && shift_held) {
+          focused_minion_id = -1;
+          continue;
+        }
+        if (!cycle_minion_focus(event.key.key == SDLK_O ? 1 : -1)) {
+          add_message("You have no minions to command.");
+        } else {
+          mode = Mode::MinionFocus;
         }
         continue;
       }

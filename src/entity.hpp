@@ -79,10 +79,14 @@ struct Potion {
 enum class Allegiance { Hostile, Player };
 
 // What a player-owned minion is currently doing — see the minion-AI block in
-// end_turn() (main.cpp). Set per-unit (not one pack-wide variable) so a single
-// pack-wide command (Phase 1) and per-minion overrides (a later X-COM-style control
-// mode) are both just "write this to one or every minion" — no future rearchitecting.
-enum class MinionOrder { Follow, AttackTarget };
+// end_turn() (main.cpp). Set per-unit (not one pack-wide variable) so a pack-wide
+// command and per-minion overrides (cycle-focus, see main()'s focused_minion_id) are
+// both just "write this to one or every minion" — no rearchitecting between the two.
+// Follow paths toward the player, fighting anything adjacent along the way.
+// AttackTarget paths toward/fights one specific enemy by id (attack_target_id below).
+// Hold paths toward and then stands at one specific tile (hold_x/y below), still
+// fighting anything that comes into range — "guard this spot" rather than "sit idle."
+enum class MinionOrder { Follow, AttackTarget, Hold };
 
 // A living thing on the map: the player or a monster. Combat is symmetric
 // (same stats, same roll_damage call on both sides), so both share this one
@@ -109,11 +113,14 @@ struct Actor {
   // Monsters only: which side this Actor is on. See Allegiance above.
   Allegiance allegiance = Allegiance::Hostile;
 
-  // Minions only (Allegiance::Player): the order the player last gave this unit, and
-  // — while order == AttackTarget — which enemy's id it's fighting. Reverts to Follow
-  // on its own once that target dies or otherwise disappears (see end_turn()).
+  // Minions only (Allegiance::Player): the order the player last gave this unit —
+  // while order == AttackTarget, which enemy's id it's fighting (reverts to Follow on
+  // its own once that target dies or otherwise disappears, see end_turn()); while
+  // order == Hold, which tile it's holding.
   MinionOrder order = MinionOrder::Follow;
   int attack_target_id = -1;
+  int hold_x = 0;
+  int hold_y = 0;
 
   // Minions only: turns remaining before this minion expires on its own, or -1 for a
   // permanent minion that only ever dies in combat. Sourced from

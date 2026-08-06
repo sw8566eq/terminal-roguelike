@@ -1815,7 +1815,8 @@ int main(int argc, char* argv[]) {
       tcod::print(console, {0, 0}, "Controls - '?' or Esc to close", tcod::ColorRGB{255, 255, 255}, std::nullopt);
       static const std::vector<std::string> kHelpLines = {
           "",
-          "Arrows / hjkl / yubn (diagonals)  Move; walks into an enemy to attack",
+          "Arrows / hjkl / yubn (diagonals)  Move; walks into an enemy to attack, or",
+          "                                  swaps places with your own minion",
           ".                                 Wait a turn",
           ">  <                              Stairs down/up (must be standing on them)",
           "g                                 Pick up everything on your tile",
@@ -1828,6 +1829,7 @@ int main(int argc, char* argv[]) {
           "f  Enter                          While focused: Follow / confirm Attack or Hold",
           "]                                 Message log (full scrollback)",
           "Shift+S  Shift+D  Shift+I         On level up: spend the point on STR/DEX/INT",
+          "?                                 This screen",
           "Esc                               Quit (or close the current menu)",
       };
       for (size_t i = 0; i < kHelpLines.size(); ++i) {

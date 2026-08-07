@@ -468,7 +468,10 @@ int count_minions(const std::vector<Actor>& monsters) {
 
 // One-line status for a minion, for the roster menu (Mode::MinionRoster) — "attacking"
 // names the target if it can still be resolved (actor_index_by_id), same fallback
-// wording as what the minion itself falls back to (Follow) if it can't.
+// wording as what the minion itself falls back to (Follow) if it can't. Full console
+// width there, so this sentence-length form is safe; the sidebar's Minions list uses
+// the single-letter minion_order_flag() below instead — a target's name (e.g.
+// "attacking the Goblin Slinger") could otherwise run past that panel's edge.
 std::string describe_minion_order(const Actor& minion, const std::vector<Actor>& monsters) {
   if (minion.order == MinionOrder::Hold) return "holding position";
   if (minion.order == MinionOrder::AttackTarget) {
@@ -476,6 +479,18 @@ std::string describe_minion_order(const Actor& minion, const std::vector<Actor>&
     return ti >= 0 ? "attacking the " + monsters[static_cast<size_t>(ti)].name : "following you";
   }
   return "following you";
+}
+
+// Compact single-letter order indicator for the sidebar's Minions list (see above).
+std::string minion_order_flag(const Actor& minion) {
+  switch (minion.order) {
+    case MinionOrder::Hold:
+      return "H";
+    case MinionOrder::AttackTarget:
+      return "A";
+    default:
+      return "F";
+  }
 }
 
 // Where a shot fired along `path` from (start_x,start_y) would come to rest, applying
@@ -782,13 +797,83 @@ bool give_starting_item(const std::string& name, std::vector<Weapon>& inventory,
   return false;
 }
 
+// Hand-drawn ASCII box: corners '+', horizontal '-', vertical '|', with an optional
+// title embedded in the top border (" Title "). libtcod's own tcod::print_frame() is
+// deprecated upstream in favor of exactly this ("print your own banners for frames"),
+// so this is the recommended shape, not a workaround. (x, y) is the box's top-left
+// corner in console cells; the box is w x h cells including the border, so a panel's
+// drawable interior is (x+1, y+1) through (x+w-2, y+h-2).
+void draw_panel(tcod::Console& console, int x, int y, int w, int h, const std::string& title,
+                 tcod::ColorRGB color = tcod::ColorRGB{120, 120, 120}) {
+  for (int i = x + 1; i < x + w - 1; ++i) {
+    console.at(i, y).ch = '-';
+    console.at(i, y).fg = color;
+    console.at(i, y + h - 1).ch = '-';
+    console.at(i, y + h - 1).fg = color;
+  }
+  for (int j = y + 1; j < y + h - 1; ++j) {
+    console.at(x, j).ch = '|';
+    console.at(x, j).fg = color;
+    console.at(x + w - 1, j).ch = '|';
+    console.at(x + w - 1, j).fg = color;
+  }
+  console.at(x, y).ch = '+';
+  console.at(x, y).fg = color;
+  console.at(x + w - 1, y).ch = '+';
+  console.at(x + w - 1, y).fg = color;
+  console.at(x, y + h - 1).ch = '+';
+  console.at(x, y + h - 1).fg = color;
+  console.at(x + w - 1, y + h - 1).ch = '+';
+  console.at(x + w - 1, y + h - 1).fg = color;
+  if (!title.empty()) {
+    tcod::print(console, {x + 2, y}, " " + title + " ", tcod::ColorRGB{255, 255, 255}, std::nullopt);
+  }
+}
+
 int main(int argc, char* argv[]) {
-  constexpr int SCREEN_WIDTH = 100;
-  constexpr int SCREEN_HEIGHT = 32;
-  constexpr int MESSAGE_ROWS = 3;  // how many of the most recent distinct log entries are shown at once
-  constexpr int HUD_HEIGHT = 2 + MESSAGE_ROWS;  // stats, gear, then the message — not part of the map
-  constexpr int MAP_WIDTH = SCREEN_WIDTH;
-  constexpr int MAP_HEIGHT = SCREEN_HEIGHT - HUD_HEIGHT;
+  // Sectioned HUD layout: a context-prompt row, then a map panel (left) and a
+  // stats/enemies/minions "at a glance" sidebar (right) side by side, then a
+  // message-log panel spanning the full width along the bottom. Each panel is a
+  // hand-drawn ASCII box (see draw_panel()) — libtcod's own tcod::print_frame() is
+  // deprecated upstream ("print your own banners for frames"), so this matches the
+  // rest of the file's manual console.at()-based drawing rather than pulling in a
+  // discouraged helper. MAP_ORIGIN_X/Y is where the *camera's* top-left corner lands
+  // on screen; every map-drawing call site offsets by these minus the camera position
+  // (see camera_x/camera_y below) instead of the old HUD_HEIGHT.
+  //
+  // The dungeon itself (MAP_WIDTH x MAP_HEIGHT, what generate_level() builds) is
+  // bigger than what's ever shown at once — MAP_VIEW_W x MAP_VIEW_H is the map panel's
+  // actual on-screen viewport, a scrolling window that follows the player (or the
+  // aim cursor while targeting/commanding — see camera_x/camera_y) so the whole window
+  // fits on a normal screen instead of rendering the entire floor at 1:1.
+  constexpr int MAP_WIDTH = 100;
+  constexpr int MAP_HEIGHT = 27;
+  constexpr int MAP_VIEW_W = 50;
+  constexpr int MAP_VIEW_H = 24;
+  constexpr int MESSAGE_ROWS = 5;  // message-log panel's visible rows, oldest on top
+
+  constexpr int CONTEXT_ROW = 0;  // transient LevelUp/Targeting/MinionFocus prompt
+
+  constexpr int MAP_PANEL_X = 0;
+  constexpr int MAP_PANEL_Y = CONTEXT_ROW + 1;
+  constexpr int MAP_PANEL_W = MAP_VIEW_W + 2;   // +2 for left/right border
+  constexpr int MAP_PANEL_H = MAP_VIEW_H + 2;   // +2 for top/bottom border
+  constexpr int MAP_ORIGIN_X = MAP_PANEL_X + 1;
+  constexpr int MAP_ORIGIN_Y = MAP_PANEL_Y + 1;
+
+  constexpr int SIDEBAR_X = MAP_PANEL_X + MAP_PANEL_W;
+  constexpr int SIDEBAR_Y = MAP_PANEL_Y;
+  constexpr int SIDEBAR_W = 28;
+  constexpr int SIDEBAR_H = MAP_PANEL_H;
+
+  constexpr int LOG_PANEL_X = MAP_PANEL_X;
+  constexpr int LOG_PANEL_Y = MAP_PANEL_Y + MAP_PANEL_H;
+  constexpr int LOG_PANEL_W = MAP_PANEL_W + SIDEBAR_W;
+  constexpr int LOG_PANEL_H = MESSAGE_ROWS + 2;  // +2 for top/bottom border
+
+  constexpr int SCREEN_WIDTH = LOG_PANEL_W;
+  constexpr int SCREEN_HEIGHT = LOG_PANEL_Y + LOG_PANEL_H;
+
   constexpr int FOV_RADIUS = 8;  // how far the player can see; unrelated to any spell's range
   constexpr int TILE_SIZE = 18;  // pixels per cell; square, so tiles aren't stretched
 
@@ -875,10 +960,11 @@ int main(int argc, char* argv[]) {
     MessageLog,
     Help,
     MinionRoster,
-    MinionFocus
+    MinionFocus,
+    Look
   };
   int casting_spell_index = -1;  // which kSpellTable entry is being aimed, while Mode::Targeting
-  int target_x = 0;              // cursor position, while Mode::Targeting or Mode::MinionFocus
+  int target_x = 0;   // cursor position, while Mode::Targeting, Mode::MinionFocus, or Mode::Look
   int target_y = 0;
   // Index into kSpellTable of the currently-running toggle spell (e.g. Sandstorm), or
   // -1 if none is active. Only one toggle spell can run at a time — simple on purpose,
@@ -1823,10 +1909,15 @@ int main(int argc, char* argv[]) {
           "w  a  q                           Weapon / Armor / Potion menu (equip or drink)",
           "d                                 Drop a weapon, armor, or potion",
           "z                                 Cast a known spell",
-          "m                                 Command a minion or all of them (roster menu)",
+          "m                                 Command a minion or all of them (roster menu; Shift+A",
+          "                                  there jumps straight to All)",
           "o  p                              Cycle command focus to the next/previous minion",
           "Shift+P                           Return focus to yourself",
           "f  Enter                          While focused: Follow / confirm Attack or Hold",
+          "                                  (sidebar shows each minion's order as [F]ollow /",
+          "                                  [H]old / [A]ttack)",
+          "x                                 Look around (move the cursor, side panel shows",
+          "                                  details); x or Esc to close",
           "]                                 Message log (full scrollback)",
           "Shift+S  Shift+D  Shift+I         On level up: spend the point on STR/DEX/INT",
           "?                                 This screen",
@@ -1839,11 +1930,15 @@ int main(int argc, char* argv[]) {
     } else if (mode == Mode::MinionRoster) {
       tcod::print(console, {0, 0}, "Command a minion - press a letter, Esc to close", tcod::ColorRGB{255, 255, 255},
                   std::nullopt);
-      // Each living minion gets a letter, in level.monsters order (stable turn to
-      // turn barring a death); "All" is always the last letter, one past the roster,
-      // for the pack-wide path (see the Mode::Playing 'm' handler and Enter/'a'/'f'
-      // handling in Mode::MinionFocus for what selecting either actually does).
-      int row = 2;
+      // "All" is a fixed hotkey (Shift+A) pinned above the roster rather than a letter
+      // tacked onto the end of it — a trailing letter shifts around as the pack's size
+      // changes (and got long enough with a real attack target named to run off the
+      // sidebar in the equivalent per-minion list, see minion_order_flag() above), so
+      // anchoring it first keeps the ordering predictable regardless of pack size.
+      tcod::print(console, {0, 2}, "Shift+A) All minions at once", tcod::ColorRGB{200, 200, 200}, std::nullopt);
+      // Each living minion then gets its own letter, in level.monsters order (stable
+      // turn to turn barring a death).
+      int row = 4;
       char letter = 'a';
       for (const auto& m : level.monsters) {
         if (m.allegiance != Allegiance::Player || !m.is_alive()) continue;
@@ -1853,45 +1948,22 @@ int main(int argc, char* argv[]) {
         ++row;
         ++letter;
       }
-      tcod::print(console, {0, row}, std::string(1, letter) + ") All minions at once", tcod::ColorRGB{200, 200, 200},
-                  std::nullopt);
     } else {
       update_monster_memory(level);
 
-      // Row 0: HP/level/floor. Row 1: attributes + gear. Rows 2+: the last couple of
-      // distinct log messages (or the level-up/targeting prompt) — kept on their own
-      // lines so a long stats prefix can't crowd them out.
-      std::string status_line = "HP:" + std::to_string(player.hp) + "/" + std::to_string(player.max_hp) +
-                                 " MP:" + std::to_string(player.mana) + "/" + std::to_string(player.max_mana) +
-                                 " Lvl:" + std::to_string(player.level) + " Floor:" + std::to_string(current_level + 1);
-      // A running toggle spell (e.g. Sandstorm) has no other on-screen presence — no
-      // aura tile overlay — so this is the only indicator it's still active and draining.
-      if (active_toggle_spell >= 0) {
-        status_line += " [" + kSpellTable[static_cast<size_t>(active_toggle_spell)].name + "]";
-      }
-      tcod::print(console, {0, 0}, status_line, tcod::ColorRGB{255, 255, 255}, std::nullopt);
-
-      // Appends "+N" to a stat only while its temp buff is active, so the HUD reflects
-      // Potion of Strength/Dexterity/Intelligence without a separate buff tracker.
-      auto stat_str = [](int base, int bonus) {
-        return std::to_string(base) + (bonus > 0 ? "+" + std::to_string(bonus) : "");
-      };
-      std::string gear_line = "STR:" + stat_str(player.strength, player.temp_str_bonus) +
-                               " DEX:" + stat_str(player.dexterity, player.temp_dex_bonus) +
-                               " INT:" + stat_str(player.intelligence, player.temp_int_bonus) +
-                               " Wpn:" + player.weapon.name + "(" + describe_weapon(player.weapon) +
-                               ") Arm:" + player.armor.name + "(" + describe_armor(player.armor) + ")";
-      tcod::print(console, {0, 1}, gear_line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
-
+      // Row CONTEXT_ROW: a transient action prompt (level-up / spell targeting /
+      // minion command) when one of those modes is active. Deliberately separate from
+      // the message-log panel below — a long-running prompt shouldn't crowd out or get
+      // crowded out by ordinary log messages.
       if (mode == Mode::LevelUp) {
         std::string prompt = "*** LEVEL UP (now level " + std::to_string(player.level) +
                               ")! Press Shift+S/D/I to raise Strength/Dexterity/Intelligence. ***";
-        tcod::print(console, {0, 2}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
+        tcod::print(console, {0, CONTEXT_ROW}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
       } else if (mode == Mode::Targeting) {
         const Spell& casting_spell = kSpellTable[static_cast<size_t>(casting_spell_index)];
         std::string prompt = "Casting " + casting_spell.name + " (" + std::to_string(casting_spell.mana_cost) +
                               " MP) - move to target, Enter to fire, Esc to cancel.";
-        tcod::print(console, {0, 2}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
+        tcod::print(console, {0, CONTEXT_ROW}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
       } else if (mode == Mode::MinionFocus) {
         std::string who = "your minion";
         if (commanding_all_minions) {
@@ -1901,23 +1973,190 @@ int main(int argc, char* argv[]) {
           if (fi >= 0) who = level.monsters[static_cast<size_t>(fi)].name;
         }
         std::string prompt = "Commanding " + who +
-                              " - move to a monster (attack) or a tile (hold), Enter to confirm, "
-                              "F to follow, Esc to cancel.";
-        tcod::print(console, {0, 2}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
-      } else {
-        // Always exactly the last MESSAGE_ROWS distinct messages, oldest on top, one per line —
-        // never wrapped or combined, even if several things happened on the same turn.
-        int total = static_cast<int>(message_log.size());
-        for (int row = 0; row < MESSAGE_ROWS; ++row) {
-          int idx = total - MESSAGE_ROWS + row;
-          if (idx < 0) continue;
-          tcod::print(console, {0, 2 + row}, message_log[static_cast<size_t>(idx)], tcod::ColorRGB{255, 255, 100},
-                      std::nullopt);
-        }
+                              " - move to a monster (attack), your own tile (follow), or elsewhere "
+                              "(hold), Enter to confirm, F to follow, Esc to cancel.";
+        tcod::print(console, {0, CONTEXT_ROW}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
+      } else if (mode == Mode::Look) {
+        tcod::print(console, {0, CONTEXT_ROW}, "Looking around - move the cursor to inspect, Esc to close.",
+                    tcod::ColorRGB{255, 255, 100}, std::nullopt);
       }
 
-      for (int y = 0; y < level.map.height(); ++y) {
-        for (int x = 0; x < level.map.width(); ++x) {
+      // --- Sidebar: character stats, then who's around ("at a glance") ---
+      draw_panel(console, SIDEBAR_X, SIDEBAR_Y, SIDEBAR_W, SIDEBAR_H, "Status");
+      int sb_x = SIDEBAR_X + 1;
+      int sb_row = SIDEBAR_Y + 1;
+      int sb_bottom = SIDEBAR_Y + SIDEBAR_H - 2;  // last usable interior row
+      // Appends one line and advances sb_row, silently dropping anything past the
+      // panel's interior instead of overflowing into its border. Also clips the text
+      // itself to the panel's interior width — the sidebar sits flush against the
+      // console's right edge with nothing beyond it, so an unclipped long line (e.g. a
+      // minion's status naming a long monster name) would run right off the window
+      // instead of just looking crowded.
+      int sb_max_width = SIDEBAR_W - 2;
+      auto sb_print = [&](const std::string& text, tcod::ColorRGB color) {
+        if (sb_row > sb_bottom) return;
+        std::string clipped = text;
+        if (static_cast<int>(clipped.size()) > sb_max_width) {
+          clipped = clipped.substr(0, static_cast<size_t>(std::max(0, sb_max_width - 3))) + "...";
+        }
+        tcod::print(console, {sb_x, sb_row}, clipped, color, std::nullopt);
+        ++sb_row;
+      };
+
+      sb_print("HP: " + std::to_string(player.hp) + "/" + std::to_string(player.max_hp),
+               tcod::ColorRGB{255, 255, 255});
+      sb_print("MP: " + std::to_string(player.mana) + "/" + std::to_string(player.max_mana),
+               tcod::ColorRGB{255, 255, 255});
+      sb_print("Lvl: " + std::to_string(player.level) + "  Floor: " + std::to_string(current_level + 1),
+               tcod::ColorRGB{255, 255, 255});
+
+      // Appends "+N" to a stat only while its temp buff is active, so the HUD reflects
+      // Potion of Strength/Dexterity/Intelligence without a separate buff tracker.
+      auto stat_str = [](int base, int bonus) {
+        return std::to_string(base) + (bonus > 0 ? "+" + std::to_string(bonus) : "");
+      };
+      sb_print("STR: " + stat_str(player.strength, player.temp_str_bonus), tcod::ColorRGB{200, 200, 200});
+      sb_print("DEX: " + stat_str(player.dexterity, player.temp_dex_bonus), tcod::ColorRGB{200, 200, 200});
+      sb_print("INT: " + stat_str(player.intelligence, player.temp_int_bonus), tcod::ColorRGB{200, 200, 200});
+      sb_print("Wpn: " + player.weapon.name, tcod::ColorRGB{200, 200, 200});
+      sb_print("  (" + describe_weapon(player.weapon) + ")", tcod::ColorRGB{150, 150, 150});
+      sb_print("Arm: " + player.armor.name, tcod::ColorRGB{200, 200, 200});
+      sb_print("  (" + describe_armor(player.armor) + ")", tcod::ColorRGB{150, 150, 150});
+      // A running toggle spell (e.g. Sandstorm) has no other on-screen presence besides
+      // its aura tile overlay — this tag is the only text indicator it's still active.
+      if (active_toggle_spell >= 0) {
+        sb_print("[" + kSpellTable[static_cast<size_t>(active_toggle_spell)].name + "]",
+                 tcod::ColorRGB{255, 255, 100});
+      }
+
+      // Placed ahead of Enemies/Minions (rather than after) so it can never get
+      // silently dropped by sb_print's bottom-of-panel clamp when the pack/enemy
+      // lists below run long — the thing you're actively examining is the more
+      // important thing to keep on screen right now.
+      if (mode == Mode::Look) {
+        ++sb_row;
+        sb_print("Looking:", tcod::ColorRGB{200, 200, 255});
+        bool explored = level.map.is_explored(target_x, target_y);
+        if (!explored && !reveal_mode) {
+          sb_print("  (unexplored)", tcod::ColorRGB{120, 120, 120});
+        } else {
+          bool tile_in_fov = level.map.is_in_fov(target_x, target_y);
+          bool is_stairs_down = (target_x == level.stairs_down_x && target_y == level.stairs_down_y);
+          bool is_stairs_up = level.has_stairs_up && (target_x == level.entry_x && target_y == level.entry_y);
+          std::string terrain = is_stairs_down    ? "Stairs down"
+                                 : is_stairs_up    ? "Stairs up"
+                                 : level.map.is_walkable(target_x, target_y) ? "Floor"
+                                                                              : "Wall";
+          sb_print("  " + terrain, tcod::ColorRGB{200, 200, 200});
+
+          if (!tile_in_fov && !reveal_mode) {
+            // Remembered terrain layout is fine to show, but not live occupant
+            // details — same rule the map rendering itself already follows (items/
+            // monsters only ever show up while actually in view).
+            sb_print("  (out of view)", tcod::ColorRGB{120, 120, 120});
+          } else {
+            bool found_anything = false;
+            int mi = monster_at(level.monsters, target_x, target_y);
+            if (mi >= 0) {
+              const Actor& m = level.monsters[static_cast<size_t>(mi)];
+              sb_print("  " + m.name, m.color);
+              sb_print("    HP: " + std::to_string(m.hp) + "/" + std::to_string(m.max_hp),
+                       tcod::ColorRGB{200, 200, 200});
+              sb_print("    Wpn: " + m.weapon.name + " (" + describe_weapon(m.weapon) + ")",
+                       tcod::ColorRGB{200, 200, 200});
+              if (m.allegiance == Allegiance::Player) {
+                sb_print("    " + describe_minion_order(m, level.monsters), tcod::ColorRGB{200, 200, 200});
+              }
+              found_anything = true;
+            }
+            for (const auto& gi : level.items) {
+              if (gi.x != target_x || gi.y != target_y) continue;
+              sb_print("  " + gi.weapon.name + " (" + describe_weapon(gi.weapon) + ")",
+                       tcod::ColorRGB{200, 200, 255});
+              found_anything = true;
+            }
+            for (const auto& ga : level.armor_items) {
+              if (ga.x != target_x || ga.y != target_y) continue;
+              sb_print("  " + ga.armor.name + " (" + describe_armor(ga.armor) + ")", tcod::ColorRGB{180, 220, 200});
+              found_anything = true;
+            }
+            for (const auto& gp : level.potions) {
+              if (gp.x != target_x || gp.y != target_y) continue;
+              sb_print("  " + gp.potion.name + " (" + describe_potion(gp.potion) + ")", gp.potion.color);
+              found_anything = true;
+            }
+            if (!found_anything) sb_print("  (nothing else here)", tcod::ColorRGB{120, 120, 120});
+          }
+        }
+        ++sb_row;
+      }
+
+      sb_print("Enemies:", tcod::ColorRGB{255, 150, 150});
+      bool any_enemy = false;
+      for (const auto& m : level.monsters) {
+        if (m.allegiance != Allegiance::Hostile || !m.is_alive()) continue;
+        if (!level.map.is_in_fov(m.x, m.y)) continue;
+        sb_print("  " + m.name + " (" + std::to_string(m.hp) + "/" + std::to_string(m.max_hp) + ")", m.color);
+        any_enemy = true;
+      }
+      if (!any_enemy) sb_print("  (none in view)", tcod::ColorRGB{120, 120, 120});
+
+      ++sb_row;
+      sb_print("Minions:", tcod::ColorRGB{150, 220, 255});
+      bool any_minion = false;
+      for (const auto& m : level.monsters) {
+        if (m.allegiance != Allegiance::Player || !m.is_alive()) continue;
+        bool focused = !commanding_all_minions && m.id == focused_minion_id;
+        tcod::ColorRGB color = focused ? tcod::ColorRGB{255, 255, 100} : m.color;
+        // [F]ollow / [H]old / [A]ttack — a flag instead of describe_minion_order()'s
+        // full sentence, which could run past the sidebar's width once it named an
+        // attack target (e.g. "attacking the Goblin Slinger").
+        sb_print("  " + std::string(focused ? "*" : " ") + m.name + " [" + minion_order_flag(m) + "]", color);
+        any_minion = true;
+      }
+      if (!any_minion) sb_print("  (none)", tcod::ColorRGB{120, 120, 120});
+
+      // --- Message log panel: always exactly the last MESSAGE_ROWS distinct
+      // messages, oldest on top, one per line — never wrapped or combined, even if
+      // several things happened on the same turn. (']' opens full scrollback.)
+      draw_panel(console, LOG_PANEL_X, LOG_PANEL_Y, LOG_PANEL_W, LOG_PANEL_H, "Log");
+      int log_total = static_cast<int>(message_log.size());
+      for (int row = 0; row < MESSAGE_ROWS; ++row) {
+        int idx = log_total - MESSAGE_ROWS + row;
+        if (idx < 0) continue;
+        tcod::print(console, {LOG_PANEL_X + 1, LOG_PANEL_Y + 1 + row}, message_log[static_cast<size_t>(idx)],
+                    tcod::ColorRGB{255, 255, 100}, std::nullopt);
+      }
+
+      // --- Map panel ---
+      // Camera: centers on the player, except while aiming or looking around
+      // (Targeting/MinionFocus/Look), where it centers on the cursor instead so a
+      // cursor that has wandered away from the player (MinionFocus and Look have no
+      // range limit, unlike a spell's Targeting) never drifts off-screen. Clamped so
+      // the viewport never scrolls past the map's edge — same clamp-to-bounds shape
+      // regardless of which point it's following.
+      int camera_focus_x = player.x;
+      int camera_focus_y = player.y;
+      if (mode == Mode::Targeting || mode == Mode::MinionFocus || mode == Mode::Look) {
+        camera_focus_x = target_x;
+        camera_focus_y = target_y;
+      }
+      int camera_x = std::clamp(camera_focus_x - MAP_VIEW_W / 2, 0, std::max(0, level.map.width() - MAP_VIEW_W));
+      int camera_y = std::clamp(camera_focus_y - MAP_VIEW_H / 2, 0, std::max(0, level.map.height() - MAP_VIEW_H));
+      // True for any dungeon tile currently inside the scrolled viewport — every
+      // entity draw below skips (rather than writes out of the map panel's bounds,
+      // or into the sidebar/log next to it) anything that fails this.
+      auto in_view = [&](int x, int y) {
+        return x >= camera_x && x < camera_x + MAP_VIEW_W && y >= camera_y && y < camera_y + MAP_VIEW_H;
+      };
+
+      draw_panel(console, MAP_PANEL_X, MAP_PANEL_Y, MAP_PANEL_W, MAP_PANEL_H,
+                 "Floor " + std::to_string(current_level + 1));
+
+      int view_x_end = std::min(camera_x + MAP_VIEW_W, level.map.width());
+      int view_y_end = std::min(camera_y + MAP_VIEW_H, level.map.height());
+      for (int y = camera_y; y < view_y_end; ++y) {
+        for (int x = camera_x; x < view_x_end; ++x) {
           // Never seen and not revealing: leave blank.
           if (!level.map.is_explored(x, y) && !reveal_mode) continue;
 
@@ -1926,7 +2165,7 @@ int main(int argc, char* argv[]) {
           bool is_stairs_down = (x == level.stairs_down_x && y == level.stairs_down_y);
           bool is_stairs_up = level.has_stairs_up && (x == level.entry_x && y == level.entry_y);
 
-          auto& cell = console.at(x, y + HUD_HEIGHT);
+          auto& cell = console.at(MAP_ORIGIN_X + x - camera_x, MAP_ORIGIN_Y + y - camera_y);
           if (is_stairs_down) {
             cell.ch = '>';
           } else if (is_stairs_up) {
@@ -1956,7 +2195,8 @@ int main(int argc, char* argv[]) {
       // (the live loop below draws anything actually visible, on top, at full brightness).
       for (const auto& remembered : level.remembered_monsters) {
         if (level.map.is_in_fov(remembered.x, remembered.y)) continue;
-        auto& cell = console.at(remembered.x, remembered.y + HUD_HEIGHT);
+        if (!in_view(remembered.x, remembered.y)) continue;
+        auto& cell = console.at(MAP_ORIGIN_X + remembered.x - camera_x, MAP_ORIGIN_Y + remembered.y - camera_y);
         cell.ch = remembered.glyph;
         cell.fg = dim_color(remembered.color);
       }
@@ -1967,7 +2207,8 @@ int main(int argc, char* argv[]) {
       for (const auto& item : level.items) {
         bool visible = level.map.is_in_fov(item.x, item.y);
         if (!visible && !reveal_mode) continue;
-        auto& cell = console.at(item.x, item.y + HUD_HEIGHT);
+        if (!in_view(item.x, item.y)) continue;
+        auto& cell = console.at(MAP_ORIGIN_X + item.x - camera_x, MAP_ORIGIN_Y + item.y - camera_y);
         cell.ch = '/';
         tcod::ColorRGB color{200, 200, 255};
         cell.fg = visible ? color : dim_color(color);
@@ -1976,7 +2217,8 @@ int main(int argc, char* argv[]) {
       for (const auto& armor_item : level.armor_items) {
         bool visible = level.map.is_in_fov(armor_item.x, armor_item.y);
         if (!visible && !reveal_mode) continue;
-        auto& cell = console.at(armor_item.x, armor_item.y + HUD_HEIGHT);
+        if (!in_view(armor_item.x, armor_item.y)) continue;
+        auto& cell = console.at(MAP_ORIGIN_X + armor_item.x - camera_x, MAP_ORIGIN_Y + armor_item.y - camera_y);
         cell.ch = '[';
         tcod::ColorRGB color{180, 220, 200};
         cell.fg = visible ? color : dim_color(color);
@@ -1985,7 +2227,9 @@ int main(int argc, char* argv[]) {
       for (const auto& ground_potion : level.potions) {
         bool visible = level.map.is_in_fov(ground_potion.x, ground_potion.y);
         if (!visible && !reveal_mode) continue;
-        auto& cell = console.at(ground_potion.x, ground_potion.y + HUD_HEIGHT);
+        if (!in_view(ground_potion.x, ground_potion.y)) continue;
+        auto& cell =
+            console.at(MAP_ORIGIN_X + ground_potion.x - camera_x, MAP_ORIGIN_Y + ground_potion.y - camera_y);
         cell.ch = ground_potion.potion.glyph;
         cell.fg = visible ? ground_potion.potion.color : dim_color(ground_potion.potion.color);
       }
@@ -1993,7 +2237,8 @@ int main(int argc, char* argv[]) {
       for (const auto& monster : level.monsters) {
         bool visible = level.map.is_in_fov(monster.x, monster.y);
         if (!visible && !reveal_mode) continue;
-        auto& cell = console.at(monster.x, monster.y + HUD_HEIGHT);
+        if (!in_view(monster.x, monster.y)) continue;
+        auto& cell = console.at(MAP_ORIGIN_X + monster.x - camera_x, MAP_ORIGIN_Y + monster.y - camera_y);
         cell.ch = monster.glyph;
         cell.fg = visible ? monster.color : dim_color(monster.color);
       }
@@ -2003,13 +2248,16 @@ int main(int argc, char* argv[]) {
         if (proj.path_index == 0 || proj.path_index > proj.path.size()) continue;
         auto [px, py] = proj.path[proj.path_index - 1];
         if (!level.map.is_in_fov(px, py)) continue;
-        auto& cell = console.at(px, py + HUD_HEIGHT);
+        if (!in_view(px, py)) continue;
+        auto& cell = console.at(MAP_ORIGIN_X + px - camera_x, MAP_ORIGIN_Y + py - camera_y);
         cell.ch = proj.glyph;
         cell.fg = proj.color;
       }
 
-      console.at(player.x, player.y + HUD_HEIGHT).ch = player.glyph;
-      console.at(player.x, player.y + HUD_HEIGHT).fg = player.color;
+      // The player is always inside the viewport by construction (the camera clamp
+      // keeps whatever it's centered on in view), so this is drawn unconditionally.
+      console.at(MAP_ORIGIN_X + player.x - camera_x, MAP_ORIGIN_Y + player.y - camera_y).ch = player.glyph;
+      console.at(MAP_ORIGIN_X + player.x - camera_x, MAP_ORIGIN_Y + player.y - camera_y).fg = player.color;
 
       // A running toggle spell (e.g. Sandstorm) gets a persistent highlight around the
       // player showing its current radius, recentered every frame since the aura
@@ -2023,11 +2271,12 @@ int main(int argc, char* argv[]) {
           for (int bx = player.x - storm.aoe_radius; bx <= player.x + storm.aoe_radius; ++bx) {
             if (bx < 0 || by < 0 || bx >= level.map.width() || by >= level.map.height()) continue;
             if (!level.map.is_explored(bx, by) && !reveal_mode) continue;
-            console.at(bx, by + HUD_HEIGHT).fg = storm.color;
+            if (!in_view(bx, by)) continue;
+            console.at(MAP_ORIGIN_X + bx - camera_x, MAP_ORIGIN_Y + by - camera_y).fg = storm.color;
           }
         }
         // Re-mark the player's own tile on top so they stay visible inside the tint.
-        console.at(player.x, player.y + HUD_HEIGHT).fg = player.color;
+        console.at(MAP_ORIGIN_X + player.x - camera_x, MAP_ORIGIN_Y + player.y - camera_y).fg = player.color;
       }
 
       if (mode == Mode::Targeting) {
@@ -2039,9 +2288,11 @@ int main(int argc, char* argv[]) {
           bool blocked = !level.map.is_walkable(x, y);
           bool has_monster = hostile_monster_at(level.monsters, x, y) >= 0;
           bool stops_here = blocked || has_monster || i + 1 == preview.size();
-          auto& cell = console.at(x, y + HUD_HEIGHT);
-          cell.ch = stops_here ? 'X' : '*';
-          cell.fg = stops_here ? tcod::ColorRGB{255, 60, 60} : tcod::ColorRGB{150, 60, 60};
+          if (in_view(x, y)) {
+            auto& cell = console.at(MAP_ORIGIN_X + x - camera_x, MAP_ORIGIN_Y + y - camera_y);
+            cell.ch = stops_here ? 'X' : '*';
+            cell.fg = stops_here ? tcod::ColorRGB{255, 60, 60} : tcod::ColorRGB{150, 60, 60};
+          }
           if (blocked || has_monster) break;
         }
 
@@ -2058,13 +2309,16 @@ int main(int argc, char* argv[]) {
             for (int bx = impact_x - radius; bx <= impact_x + radius; ++bx) {
               if (bx < 0 || by < 0 || bx >= level.map.width() || by >= level.map.height()) continue;
               if (!level.map.is_explored(bx, by) && !reveal_mode) continue;
-              console.at(bx, by + HUD_HEIGHT).fg = tcod::ColorRGB{255, 140, 60};
+              if (!in_view(bx, by)) continue;
+              console.at(MAP_ORIGIN_X + bx - camera_x, MAP_ORIGIN_Y + by - camera_y).fg = tcod::ColorRGB{255, 140, 60};
             }
           }
           // Re-mark the impact tile on top so the center stays visually distinct.
-          auto& impact_cell = console.at(impact_x, impact_y + HUD_HEIGHT);
-          impact_cell.ch = 'X';
-          impact_cell.fg = tcod::ColorRGB{255, 60, 60};
+          if (in_view(impact_x, impact_y)) {
+            auto& impact_cell = console.at(MAP_ORIGIN_X + impact_x - camera_x, MAP_ORIGIN_Y + impact_y - camera_y);
+            impact_cell.ch = 'X';
+            impact_cell.fg = tcod::ColorRGB{255, 60, 60};
+          }
         }
       }
 
@@ -2078,7 +2332,8 @@ int main(int argc, char* argv[]) {
           if (!commanding_all_minions && m.id != focused_minion_id) continue;
           bool visible = level.map.is_in_fov(m.x, m.y);
           if (!visible && !reveal_mode) continue;  // not drawn at all this frame either way
-          console.at(m.x, m.y + HUD_HEIGHT).fg = tcod::ColorRGB{255, 255, 100};
+          if (!in_view(m.x, m.y)) continue;
+          console.at(MAP_ORIGIN_X + m.x - camera_x, MAP_ORIGIN_Y + m.y - camera_y).fg = tcod::ColorRGB{255, 255, 100};
         }
 
         // No line trace or AoE like a spell — confirming here either attacks (a
@@ -2086,18 +2341,32 @@ int main(int argc, char* argv[]) {
         // the Enter handler below, so the cursor color previews which one: red for
         // attack (the monster's own glyph stays visible, just tinted, same as the
         // spell-targeting cursor above), green for hold, dim grey for an invalid tile
-        // (a wall, or something already standing there that isn't a valid target).
-        auto& cell = console.at(target_x, target_y + HUD_HEIGHT);
-        bool walkable = level.map.is_walkable(target_x, target_y);
-        int hostile_hit = hostile_monster_at(level.monsters, target_x, target_y);
-        if (hostile_hit >= 0) {
-          cell.fg = tcod::ColorRGB{255, 60, 60};
-        } else if (walkable && monster_at(level.monsters, target_x, target_y) < 0) {
-          cell.ch = 'X';
-          cell.fg = tcod::ColorRGB{100, 220, 140};
-        } else {
-          cell.ch = 'X';
-          cell.fg = tcod::ColorRGB{120, 120, 120};
+        // (a wall, or something already standing there that isn't a valid target). The
+        // camera follows this cursor (see camera_focus_x/y above) so it's always in
+        // view, unlike a spell's range-limited targeting cursor.
+        if (in_view(target_x, target_y)) {
+          auto& cell = console.at(MAP_ORIGIN_X + target_x - camera_x, MAP_ORIGIN_Y + target_y - camera_y);
+          bool walkable = level.map.is_walkable(target_x, target_y);
+          int hostile_hit = hostile_monster_at(level.monsters, target_x, target_y);
+          if (hostile_hit >= 0) {
+            cell.fg = tcod::ColorRGB{255, 60, 60};
+          } else if (walkable && monster_at(level.monsters, target_x, target_y) < 0) {
+            cell.ch = 'X';
+            cell.fg = tcod::ColorRGB{100, 220, 140};
+          } else {
+            cell.ch = 'X';
+            cell.fg = tcod::ColorRGB{120, 120, 120};
+          }
+        }
+      }
+
+      if (mode == Mode::Look) {
+        // Plain recolor, no glyph override — unlike Targeting/MinionFocus there's no
+        // action being previewed here, just "this is what the cursor is on", so
+        // whatever's actually there (terrain/item/monster) should stay fully visible.
+        if (in_view(target_x, target_y)) {
+          console.at(MAP_ORIGIN_X + target_x - camera_x, MAP_ORIGIN_Y + target_y - camera_y).fg =
+              tcod::ColorRGB{255, 255, 255};
         }
       }
     }
@@ -2430,9 +2699,20 @@ int main(int argc, char* argv[]) {
           mode = Mode::Playing;
           continue;
         }
+        if (event.key.key == SDLK_A && (event.key.mod & SDL_KMOD_SHIFT) != 0) {
+          // Shift+A always means "All", regardless of which letter it actually landed
+          // on this frame (that shifts with the pack's current size) — a fast path so
+          // you don't have to read the list to find the right letter every time.
+          commanding_all_minions = true;
+          target_x = player.x;
+          target_y = player.y;
+          mode = Mode::MinionFocus;
+          continue;
+        }
         if (event.key.key >= SDLK_A && event.key.key <= SDLK_Z) {
           // Same ordering as the roster's render: a letter per living minion, in
-          // level.monsters order, then one more letter for "All".
+          // level.monsters order ("All" is the fixed Shift+A hotkey above, not a
+          // letter in this range — see the check above this one).
           std::vector<int> minion_ids;
           for (const auto& m : level.monsters) {
             if (m.allegiance == Allegiance::Player && m.is_alive()) minion_ids.push_back(m.id);
@@ -2444,11 +2724,6 @@ int main(int argc, char* argv[]) {
             int fi = actor_index_by_id(level.monsters, focused_minion_id);
             target_x = level.monsters[static_cast<size_t>(fi)].x;
             target_y = level.monsters[static_cast<size_t>(fi)].y;
-            mode = Mode::MinionFocus;
-          } else if (idx == minion_ids.size()) {
-            commanding_all_minions = true;
-            target_x = player.x;
-            target_y = player.y;
             mode = Mode::MinionFocus;
           }
         }
@@ -2517,6 +2792,19 @@ int main(int argc, char* argv[]) {
             });
             add_message((ordered == 1 ? "Your minion attacks the " : "Your minions attack the ") + target_name +
                         "!");
+            commanding_all_minions = false;
+            mode = Mode::Playing;
+            continue;
+          }
+          if (target_x == player.x && target_y == player.y) {
+            // Targeting yourself reads as "come back to me" — the same Follow order
+            // 'F' gives directly, just reachable without moving the cursor off your
+            // own tile first. (Previously this fell through to the tile_free/Hold
+            // check below, which — since the player isn't in level.monsters and thus
+            // invisible to monster_at() — would silently issue a Hold planted on the
+            // player's exact tile instead of anything resembling a rejection.)
+            int ordered = for_each_commanded_minion([](Actor& m) { m.order = MinionOrder::Follow; });
+            add_message(ordered == 1 ? "Your minion returns to your side." : "Your minions return to your side.");
             commanding_all_minions = false;
             mode = Mode::Playing;
             continue;
@@ -2687,6 +2975,63 @@ int main(int argc, char* argv[]) {
         continue;
       }
 
+      if (mode == Mode::Look) {
+        if (event.key.key == SDLK_ESCAPE || event.key.key == SDLK_X) {
+          mode = Mode::Playing;
+          continue;
+        }
+
+        // Movement keys move the cursor — no range limit and no confirm action, just
+        // look around and back out with Esc/'x' (no turn spent either way).
+        int tdx = 0;
+        int tdy = 0;
+        switch (event.key.key) {
+          case SDLK_UP:
+          case SDLK_K:
+            tdy = -1;
+            break;
+          case SDLK_DOWN:
+          case SDLK_J:
+            tdy = 1;
+            break;
+          case SDLK_LEFT:
+          case SDLK_H:
+            tdx = -1;
+            break;
+          case SDLK_RIGHT:
+          case SDLK_L:
+            tdx = 1;
+            break;
+          case SDLK_Y:
+            tdx = -1;
+            tdy = -1;
+            break;
+          case SDLK_U:
+            tdx = 1;
+            tdy = -1;
+            break;
+          case SDLK_B:
+            tdx = -1;
+            tdy = 1;
+            break;
+          case SDLK_N:
+            tdx = 1;
+            tdy = 1;
+            break;
+          default:
+            break;
+        }
+        if (tdx != 0 || tdy != 0) {
+          int nx = target_x + tdx;
+          int ny = target_y + tdy;
+          if (level.map.in_bounds(nx, ny)) {
+            target_x = nx;
+            target_y = ny;
+          }
+        }
+        continue;
+      }
+
       if (mode == Mode::Drop) {
         if (event.key.key == SDLK_ESCAPE) {
           mode = Mode::Playing;
@@ -2829,6 +3174,14 @@ int main(int argc, char* argv[]) {
       if (event.key.key == SDLK_RIGHTBRACKET) {
         mode = Mode::MessageLog;
         log_scroll = 0;  // always open showing the most recent messages
+        continue;
+      }
+      if (event.key.key == SDLK_X) {
+        // Starts the look cursor on the player's own tile, same as Targeting/
+        // MinionFocus do — free to open/close, no turn spent either way.
+        mode = Mode::Look;
+        target_x = player.x;
+        target_y = player.y;
         continue;
       }
       // '?' is Shift+/ on a US layout, so check both the dedicated keycode and the

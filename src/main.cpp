@@ -2336,6 +2336,24 @@ int main(int argc, char* argv[]) {
           console.at(MAP_ORIGIN_X + m.x - camera_x, MAP_ORIGIN_Y + m.y - camera_y).fg = tcod::ColorRGB{255, 255, 100};
         }
 
+        // If any commanded minion currently has an AttackTarget order, highlight that
+        // monster too, in a color distinct from the minion tint above — with more than
+        // one of the same monster type in view (two Goblins, say) there's otherwise no
+        // way to tell which one is actually assigned versus just standing nearby.
+        for (const auto& m : level.monsters) {
+          if (m.allegiance != Allegiance::Player || !m.is_alive()) continue;
+          if (!commanding_all_minions && m.id != focused_minion_id) continue;
+          if (m.order != MinionOrder::AttackTarget) continue;
+          int ti = actor_index_by_id(level.monsters, m.attack_target_id);
+          if (ti < 0) continue;  // target died/gone; the minion will revert to Follow on its own
+          const Actor& target = level.monsters[static_cast<size_t>(ti)];
+          bool target_visible = level.map.is_in_fov(target.x, target.y);
+          if (!target_visible && !reveal_mode) continue;
+          if (!in_view(target.x, target.y)) continue;
+          console.at(MAP_ORIGIN_X + target.x - camera_x, MAP_ORIGIN_Y + target.y - camera_y).fg =
+              tcod::ColorRGB{255, 60, 255};
+        }
+
         // No line trace or AoE like a spell — confirming here either attacks (a
         // hostile monster under the cursor) or holds (any other walkable tile), see
         // the Enter handler below, so the cursor color previews which one: red for

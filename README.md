@@ -63,7 +63,10 @@ step 1.
 ## Controls
 
 - Arrow keys, `h j k l`, or `y u b n` (vim-style, including diagonals) to move
-- Walk into an enemy to attack it
+- Walk into an enemy to attack it (melee only, whatever you have equipped)
+- `f` to fire an equipped ranged weapon (a Bow) — movement steers a targeting
+  cursor clamped to the weapon's range, with a preview line showing what the
+  shot would hit, `Enter` looses it, `Esc` cancels for free
 - `.` to wait a turn
 - `>` / `<` to take stairs down/up (must be standing on them); this costs a
   turn, and anything next to you gets a parting shot as you go
@@ -81,17 +84,24 @@ step 1.
   toggled spell (like Sandstorm) instead turns on/off immediately, no aiming;
   a summon spell raises a minion next to you immediately, no aiming either
 - Commanding minions, if you have any: `o` / `p` cycle command focus to the
-  next/previous minion, or `m` opens a roster menu to pick one (or "All")
-  by letter — either way drops you into one cursor with no range limit.
+  next/previous minion, or `m` opens a roster menu to pick one by letter —
+  or `Shift+A` there to command the whole pack at once, however many you
+  have. Either way drops you into one cursor with no range limit.
   Move it onto a monster and press `Enter` to send the minion(s) to attack
-  it, or onto empty ground to send them to hold that position (still
-  defending themselves if something comes into range); `f` instead tells
-  them to follow you, no aiming needed; `Esc` cancels. `Shift+P` snaps
+  it, onto empty ground to send them to hold that position (still
+  defending themselves if something comes into range), or back onto
+  yourself to call them off and have them follow you again; `f` gives that
+  same follow order from wherever the cursor is, no aiming needed; `Esc`
+  cancels. `Shift+P` snaps
   command focus back to yourself. The minion(s) you're currently
   commanding are highlighted so you don't lose track while aiming.
   Walking into your own minion swaps places with it instead of attacking
 - On leveling up, `Shift+S` / `Shift+D` / `Shift+I` to put your point into
   Strength / Dexterity / Intelligence
+- `x` to look around: move a cursor over the map without spending a turn or
+  moving, and the side panel describes what's under it — remembered terrain
+  anywhere you've explored, and for anything actually in view, the item or
+  the monster's weapon, armor, evasion and pack
 - `]` to open the full message log (scroll with `j`/`k` or arrows, `Esc` or
   `]` to close); the HUD always shows the last few messages anyway
 - `?` to open a controls reference screen (`?` or `Esc` to close)
@@ -109,9 +119,10 @@ These are for development/testing, not normal play:
 - `--reveal` — show the entire current floor's terrain/monsters/items
   regardless of exploration or line of sight (dimmed where not actually in
   view), for eyeballing spawns without exploring first
-- `--dump-loot` — print every weapon/armor/potion/monster on the floor
-  reached via `--floor=N` to the console and exit immediately, without
-  opening a window
+- `--dump-loot` — print every weapon/armor/potion on the floor reached via
+  `--floor=N`, plus every monster with its stats and everything it's
+  carrying (which is real loot, since it drops), then exit immediately
+  without opening a window
 - `--give=<name>[,<name>...]` — add items straight to your carried
   inventory at startup (not equipped), by exact name across weapons,
   armor, and potions, e.g. `--give="Dagger,Potion of Teleportation"`;
@@ -168,6 +179,14 @@ roguelike/
       monsters don't heal, so wounds you inflict stick and chip-and-retreat
       tactics work. It's a per-monster toggle, ready for boss-type enemies
 - [x] Multi-line message log with scrollback (`]`), repeat-message coalescing
+- [x] Sectioned HUD: three bordered ASCII panels — the dungeon, a message log,
+      and a status sidebar listing your stats plus the enemies and minions
+      currently in view. The dungeon is bigger than the panel showing it, so
+      the view scrolls to follow you (or your cursor while aiming)
+- [x] Look around (`x`): inspect any explored tile without spending a turn
+- [x] Ranged weapons for the player: a Bow fired with `f` instead of bumping,
+      reusing the same travelling-projectile machinery spells use. Damage and
+      hit chance both scale with Dexterity; ammo is unlimited for now
 - [x] First distinct monster AI: Goblin Slinger (floors 1-4) and its tougher
       floor-5+ counterpart Orc Archer snipe from range without approaching,
       but permanently switch to a more accurate melee weapon and start

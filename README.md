@@ -65,8 +65,10 @@ step 1.
 - Arrow keys, `h j k l`, or `y u b n` (vim-style, including diagonals) to move
 - Walk into an enemy to attack it
 - `.` to wait a turn
-- `>` / `<` to take stairs down/up (must be standing on them)
-- `g` to pick up whatever's on your tile (nothing is picked up automatically)
+- `>` / `<` to take stairs down/up (must be standing on them); this costs a
+  turn, and anything next to you gets a parting shot as you go
+- `g` to pick up everything on your tile, in one turn (nothing is picked up
+  automatically)
 - `w` to open the weapon menu and equip a carried weapon (or bare fists)
 - `a` to open the armor menu and equip a carried piece (or bare skin)
 - `q` to open the potion menu and drink one (heal, a temporary stat boost, or
@@ -140,11 +142,12 @@ roguelike/
 - [x] Permadeath + restart flow
 - [x] Multi-level dungeon (stairs up/down, floors persist as you leave/return)
 - [x] Player attributes & leveling (Strength/Dexterity/Intelligence, XP)
-- [x] Armor & evasion: monster attacks against the player are a live Dexterity
-      contest (attacker vs. defender); the player's own weapons and spells
-      against monsters instead roll their own accuracy ("hit-dice") against
-      the target's flat evasion, so a fast dagger or a wide-area Fireball are
-      harder to dodge than a heavy axe or a precise Magic Dart
+- [x] Armor & evasion, on one formula shared by everything that fights: an
+      attack's accuracy (the attacker's Dexterity, plus a roll of the weapon
+      or spell's own "hit-dice") is subtracted from the defender's evasion
+      rating, and armor soaks a flat amount off whatever lands. A fast dagger
+      or a wide-area Fireball are harder to dodge than a heavy axe or a
+      precise Magic Dart, whoever is swinging them
 - [x] Spells (Intelligence unlocks them): Magic Dart (single-target),
       Fireball (slow-moving orb, explodes into a 3x3 blast on impact —
       including on the caster, if cast too close), and Sandstorm (a
@@ -161,7 +164,9 @@ roguelike/
 - [x] Potions: healing, temporary (+5, 15-turn) Strength/Dexterity/
       Intelligence boosts, and teleportation (random spot on the current floor)
 - [x] Weapon/armor/potion variety also scales with depth, mirroring monsters
-- [x] Passive HP regeneration (slow, scales with max HP)
+- [x] Passive HP regeneration (slow, scales with max HP) — the player only;
+      monsters don't heal, so wounds you inflict stick and chip-and-retreat
+      tactics work. It's a per-monster toggle, ready for boss-type enemies
 - [x] Multi-line message log with scrollback (`]`), repeat-message coalescing
 - [x] First distinct monster AI: Goblin Slinger (floors 1-4) and its tougher
       floor-5+ counterpart Orc Archer snipe from range without approaching,
@@ -169,6 +174,16 @@ roguelike/
       chasing like an ordinary monster the moment they're touched once —
       every other monster still shares the plain wander/chase/remember
       behavior
+- [x] Monsters and the player run on one shared foundation: the same Actor,
+      the same attack/dodge/damage math, the same per-turn upkeep and stat
+      timers. Monsters carry an inventory — they wear armor that soaks your
+      hits (an Orc starts in Leather Armor) and swap between carried weapons
+      depending on how far away you are. Every non-natural item they were
+      carrying drops on the floor when they die, and it's the same item you'd
+      have found lying there. `x` (look) shows what a monster is wearing and
+      carrying before you commit to the fight. Monsters can drink potions
+      through the same code you do, but no monster is given any right now —
+      it turned the floor into a consumables buffet
 - [x] Summoner playstyle, phase 1: a spell raises a temporary minion that
       fights at your side; hostile monsters can target minions instead of
       always going after you, so they're real meat-shields; minions are

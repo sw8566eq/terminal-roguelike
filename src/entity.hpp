@@ -2,6 +2,7 @@
 
 #include <libtcod.hpp>
 #include <string>
+#include <vector>
 
 // A melee weapon: damage is dice_count dice of dice_sides sides each, plus a
 // flat bonus. E.g. {"Short Sword", 1, 6, 0} is a 1d6.
@@ -18,22 +19,22 @@ struct Weapon {
   // your pack doesn't vanish if you walk back to floor 1). max_depth -1 means no cap.
   int min_depth = 1;
   int max_depth = -1;
-  // This weapon's accuracy against a monster's evasion (see monster_dodge_chance() in
-  // main.cpp) — rolled and subtracted from the target's evasion, so a bigger hit-dice
-  // roll makes the attack harder to dodge. Only meaningful for the player's own
-  // weapon; monster weapons (Bite, Claws, ...) don't use this — monster attacks
-  // against the player go through the unrelated dodge_chance_vs() Dexterity contest —
-  // so they're left at these defaults rather than given real values. Trailing fields
-  // with defaults so existing positional literals (monster weapons, kFists) that don't
-  // mention them keep compiling unchanged.
+  // This weapon's accuracy contribution: rolled and subtracted from the defender's
+  // evasion rating every time it swings (see dodge_chance() in main.cpp), so a bigger
+  // hit-dice roll makes the attack harder to dodge. This applies to *whoever* is
+  // holding the weapon — the player, a monster, or a minion all roll the same way, so
+  // a monster's Bite/Rock is exactly as much of an accuracy stat as the player's
+  // Dagger. Trailing fields with defaults so positional literals that don't mention
+  // them keep compiling unchanged.
   int hit_dice_count = 1;
   int hit_dice_sides = 4;
   // How many tiles away (Chebyshev distance) this weapon can attack from. 1 (the
-  // default) is melee/adjacency-only, same convention as MonsterTemplate/
-  // Actor::attack_range on the monster side. >1 marks a player-usable ranged weapon
-  // (e.g. a Bow) — firing one goes through Mode::RangedAttack in main.cpp (aim with a
-  // cursor like a spell, Enter to loose a Projectile) instead of the bump-to-attack
-  // path, which stays melee-only.
+  // default) is melee/adjacency-only. This is the *only* source of an Actor's attack
+  // range — a monster with a range-5 Rock and the player with a range-8 Bow are the
+  // same case, and swapping weapons changes reach for either of them. The player fires
+  // a range>1 weapon via Mode::RangedAttack in main.cpp (aim with a cursor like a
+  // spell, Enter to loose a Projectile); monsters just attack from range directly. The
+  // bump-to-attack path stays melee-only regardless of what's equipped.
   int attack_range = 1;
 };
 
@@ -95,9 +96,22 @@ enum class Allegiance { Hostile, Player };
 // fighting anything that comes into range — "guard this spot" rather than "sit idle."
 enum class MinionOrder { Follow, AttackTarget, Hold };
 
-// A living thing on the map: the player or a monster. Combat is symmetric
-// (same stats, same roll_damage call on both sides), so both share this one
-// representation for now rather than separate Player/Monster types.
+// A living thing on the map: the player, a hostile monster, or a player-owned minion.
+// There is exactly one of these types, deliberately: every one of them equips a weapon
+// and armor, carries an inventory, rolls the same accuracy/damage/dodge math
+// (resolve_attack() in main.cpp), regenerates, and can be under a temporary stat buff.
+// A monster is not a reduced Actor — it's a full one whose numbers happen to come from
+// a content table instead of from level-ups.
+//
+// The handful of things that genuinely aren't symmetric are called out per-field below,
+// and they're all *content* differences rather than mechanical ones:
+//   - derived vs. authored: the player's max_hp/evasion are computed from their
+//     attributes (max_hp_for_level_and_strength/evasion_for_dexterity); a monster's are
+//     written directly in its table row. Both end up as the same two numbers feeding
+//     the same formulas.
+//   - progression (xp/level/xp_reward) and mana only ever move for the player today,
+//     because nothing grants a monster XP and no monster casts — not because the fields
+//     mean anything different on them.
 struct Actor {
   int x = 0;
   int y = 0;
@@ -106,8 +120,21 @@ struct Actor {
   char glyph = '?';
   tcod::ColorRGB color{255, 255, 255};
   std::string name;
+
+  // Equipped gear. Everyone has both: armor's flat reduction applies to any hit that
+  // lands on this Actor whoever threw it, and the equipped weapon supplies damage
+  // dice, accuracy hit-dice, and attack range.
   Weapon weapon;
   Armor armor;
+
+  // Carried but not equipped — the same inventory the player's w/a/q/d menus operate
+  // on, and the same one a monster swaps weapons out of, drinks potions from, and
+  // drops on death (see drop_actor_gear() in main.cpp). A monster with an empty
+  // inventory behaves exactly like a monster did before inventories existed, so this
+  // costs nothing for the plain ones.
+  std::vector<Weapon> weapons;
+  std::vector<Armor> armors;
+  std::vector<Potion> potions;
 
   // Stable identity, assigned once at spawn (see next_actor_id in main()) and never
   // reused — level.monsters erases in place on death, which shifts a std::vector's
@@ -117,8 +144,17 @@ struct Actor {
   // The player's own Actor doesn't need one (nothing ever targets it by id).
   int id = 0;
 
-  // Monsters only: which side this Actor is on. See Allegiance above.
+  // Which side this Actor is on. See Allegiance above.
   Allegiance allegiance = Allegiance::Hostile;
+
+  // True only for the one Actor the human is driving. Nothing mechanical branches on
+  // this — combat, gear, potions, regen and buffs all run the identical code either
+  // way. It exists so the message log can be written in second person ("You hit the
+  // Rat" vs. "The Rat hits your Skeletal Minion"), and so a death or an XP award can be
+  // routed into the UI (death screen / level-up prompt) instead of just removing an
+  // Actor. If you find yourself adding a rule that reads this, that rule is probably
+  // the asymmetry worth questioning.
+  bool is_player = false;
 
   // Minions only (Allegiance::Player): the order the player last gave this unit —
   // while order == AttackTarget, which enemy's id it's fighting (reverts to Follow on
@@ -136,69 +172,72 @@ struct Actor {
   // not a death) at 0.
   int duration_turns = -1;
 
-  // Player-progression stats; monsters set dexterity from their template (see below)
-  // and leave strength/intelligence at their defaults. Strength drives both max HP and
-  // melee damage (no separate Vitality stat). Dexterity drives dodge chance on both
-  // sides of a fight (see dodge_chance_vs() in main.cpp) — on a monster it doubles as
-  // its "accuracy": a low-Dexterity monster is easy for the player to dodge, a
-  // high-Dexterity one much less so. Intelligence drives spell unlocks/damage and max
-  // mana (max_mana_for_intelligence() in main.cpp, mirroring max_hp_for_strength()).
-  int strength = 1;
+  // Attributes, and they mean the same thing on everyone. Strength is the flat melee
+  // damage bonus (and, for the player, also drives max HP — see the struct comment on
+  // derived-vs-authored). Dexterity is the accuracy an attacker brings to every swing
+  // (kAccuracyPerDexPoint in main.cpp) and, for the player, what evasion is derived
+  // from. Intelligence drives spell unlocks/damage and max mana. Monsters read all
+  // three from their table row, so a Troll hits hard because it has Strength, not
+  // because monster damage is computed differently.
+  int strength = 0;
   int dexterity = 1;
   int intelligence = 1;
   int level = 1;
   int xp = 0;
 
-  int xp_reward = 0;  // monsters only: XP granted to the player on kill
+  int xp_reward = 0;  // XP this Actor grants its killer; only monsters set it today
 
-  // Monsters only: fixed percent chance (0-100) to dodge the player's attack, set from
-  // its template at spawn (monsters don't wear armor, so this is their only defense).
-  // The player has no equivalent flat value — their dodge chance against an incoming
-  // attack is computed live from both sides' Dexterity (dodge_chance_vs()), since it
-  // depends on which monster is swinging, not just the player's own stats.
+  // This Actor's dodge rating: how much of an incoming attack's accuracy roll it soaks
+  // before the attack lands (see dodge_chance() in main.cpp). Everyone has one. The
+  // player's is derived from Dexterity (evasion_for_dexterity(), recomputed whenever
+  // DEX changes, exactly like max_hp is recomputed when STR does); a monster's is
+  // written straight into its table row, so "how hard is this thing to hit" stays a
+  // single authored knob per monster instead of falling out of its other stats.
   int evasion = 0;
 
-  // Monsters only: how many tiles away (Chebyshev distance) this monster can attack
-  // from, set from its template at spawn. 1 = adjacency-only (melee), same as every
-  // monster before ranged attackers existed. See MonsterTemplate::attack_range and the
-  // in_range/can_attack check in end_turn() (main.cpp).
-  int attack_range = 1;
-
-  // Monsters only: optional fallback weapon+accuracy used instead of weapon/dexterity
-  // once this monster is actually adjacent to the player, set from
-  // MonsterTemplate::melee_weapon/melee_accuracy at spawn. Empty name (the default) =
-  // no separate melee weapon, just always use weapon/dexterity as normal.
-  Weapon melee_weapon;
-  int melee_dexterity = 0;
-
-  // Monsters only: one-way flip, set the first time this monster ever lands (or takes
-  // its turn) adjacent to the player while it has a melee_weapon. A ranged monster
-  // (e.g. Goblin Slinger) snipes from attack_range tiles away and never has to
-  // approach — right up until the player actually reaches it, at which point it
-  // commits to melee for good: from then on it behaves exactly like an ordinary
-  // melee-only monster (chasing when not adjacent, attacking with melee_weapon when it
-  // is), never going back to sniping. See the in_range/can_attack check in end_turn().
+  // One-way flip, set the first time this Actor attacks from an adjacent tile with a
+  // melee (attack_range 1) weapon while also carrying a longer-ranged one. A ranged
+  // monster (e.g. Goblin Slinger) snipes with its Rock and never has to approach —
+  // right up until its target actually reaches it, at which point it draws its Dagger
+  // and commits for good: from then on choose_weapon_for_range() refuses to hand it
+  // back the ranged weapon, so it behaves exactly like an ordinary melee-only monster
+  // (chasing when not adjacent) for the rest of its life.
   bool melee_engaged = false;
 
-  // Player only: fractional HP banked toward the next point of passive regen (HP/turn
-  // is usually not a whole number, so this carries the remainder between turns).
+  // How many turns this Actor takes to regenerate from 0 HP to full, or **0 for an
+  // Actor that doesn't regenerate at all** — which is every monster and minion today
+  // (the player is set to kHpRegenTurns in start_new_game()). Authored per table row
+  // like max_hp and evasion are, so a future boss or elite can simply switch it on, and
+  // at its own rate rather than being locked to the player's: a slow-healing troll-king
+  // is `hp_regen_turns = 400`, not a special case.
+  //
+  // Regen is deliberately off by default because wounds on an ordinary monster should
+  // stick — chip-and-retreat tactics stop working if everything you walk away from
+  // quietly heals up.
+  int hp_regen_turns = 0;
+
+  // Fractional HP banked toward the next point of passive regen (HP/turn is usually not
+  // a whole number, so this carries the remainder between turns).
   float hp_regen_accumulator = 0.0f;
 
-  // Player only: mana, spent to cast spells (see Spell::mana_cost in main.cpp) and
-  // regenerated passively the same way HP is. max_mana comes from
-  // max_mana_for_intelligence(); mana_regen_accumulator is the same fractional-banking
-  // trick as hp_regen_accumulator above.
+  // Mana, spent to cast spells (see Spell::mana_cost in main.cpp) and regenerated
+  // passively the same way HP is. max_mana comes from max_mana_for_intelligence();
+  // mana_regen_accumulator is the same fractional-banking trick as
+  // hp_regen_accumulator above. Only the player casts today, so on a monster these
+  // stay 0 and the regen loop no-ops on its own — no special case needed.
   int mana = 0;
   int max_mana = 0;
   float mana_regen_accumulator = 0.0f;
 
-  // Player only: temporary stat bonuses from stat potions (Potion of Strength/
-  // Dexterity/Intelligence), and turns remaining before each reverts. Ticked down once
-  // per turn in end_turn(); drinking another potion of the same stat while one is
-  // already active just refreshes the timer rather than stacking the bonus. Strength's
-  // bonus feeds max_hp_for_strength() and melee damage the same as the permanent stat —
-  // but unlike leveling up, gaining or losing it never changes current HP, only the
-  // ceiling. Intelligence's bonus feeds spell damage, but deliberately NOT
+  // Temporary stat bonuses from stat potions (Potion of Strength/Dexterity/
+  // Intelligence), and turns remaining before each reverts. Ticked down once per turn
+  // for every Actor in end_turn(); drinking another potion of the same stat while one
+  // is already active just refreshes the timer rather than stacking the bonus. A
+  // buff's knock-on ceilings (STR's max HP, DEX's evasion, INT's max mana) are applied
+  // and removed as a *delta* in apply_potion()/end_turn() rather than by recomputing
+  // from the attribute, so the exact same code works for the player (whose ceilings are
+  // derived) and for a monster that drinks the same potion (whose are authored).
+  // Intelligence's bonus feeds spell damage, but deliberately NOT
   // known_spell_indices() — only permanent, unmodified intelligence unlocks new spells.
   int temp_str_bonus = 0;
   int temp_str_turns = 0;

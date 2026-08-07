@@ -21,6 +21,18 @@ constexpr int NUM_ITEMS = 4;     // per floor
 constexpr int NUM_ARMOR = 3;     // per floor
 constexpr int NUM_POTIONS = 2;   // per floor
 
+// The default, always-available unarmed attack. Not a real pickup, so it's never added
+// to the ground or to an inventory — an Actor whose weapon is_intrinsic simply has
+// nothing to drop from that slot (see drop_actor_gear()). Monsters' natural weapons
+// (Bite, Claws, ...) are marked intrinsic for exactly the same reason.
+const Weapon kFists = Weapon{"Fists",       1,  2,  0, /*is_intrinsic=*/true, /*min_depth=*/1, /*max_depth=*/-1,
+                              /*hit_dice_count=*/2, /*hit_dice_sides=*/4};
+
+// The default, always-available "armor" (bare skin, no defense). Not a real pickup,
+// same idea as kFists — and the default every monster wears unless its table row says
+// otherwise.
+const Armor kNoArmor = Armor{"Nothing", 0, /*is_intrinsic=*/true};
+
 // Melee weapons that can be found lying on the floor. Depth-gated the same shape as
 // kMonsterTable: rough tiers, not a strict per-floor curve. Placeholder ranges — the
 // actual balance (exactly which floor a Mace should start showing up on, etc.) is a
@@ -28,7 +40,7 @@ constexpr int NUM_POTIONS = 2;   // per floor
 //
 // hit_dice trails off as the weapons get heavier: a fast/light Dagger is hardest to
 // dodge, a massive Battle Axe easiest — a tradeoff against the heavier weapons' bigger
-// damage dice, not a strict upgrade path (see monster_dodge_chance()).
+// damage dice, not a strict upgrade path (see dodge_chance()).
 const std::vector<Weapon> kWeaponTable = {
     {"Dagger", 1, 4, 0, /*is_intrinsic=*/false, /*min_depth=*/1, /*max_depth=*/3,
      /*hit_dice_count=*/3, /*hit_dice_sides=*/4},
@@ -85,80 +97,110 @@ std::string describe_potion(const Potion& potion) {
          " turns)";
 }
 
+// One monster species. Every field here maps onto a plain Actor field of the same name
+// — there is no monster-specific mechanic left, only monster-specific *numbers*. A row
+// is just "an Actor, pre-filled": spawn_actor_from_template() copies it across and the
+// result fights, regenerates, swaps gear, and drinks potions through the exact same
+// code the player does.
 struct MonsterTemplate {
   std::string name;
   char glyph;
   tcod::ColorRGB color;
-  int max_hp;
-  Weapon weapon;
+  int max_hp;    // authored rather than derived from strength — see the Actor comment
+  Weapon weapon;  // starting equipped weapon; its attack_range is this monster's reach
   int xp_reward;
-  int evasion;    // percent chance to dodge the player's attack; monsters wear no armor
-  int accuracy;   // Dexterity-equivalent used against the player's own dodge chance (see dodge_chance_vs)
+  int evasion;    // authored dodge rating (the player's comes from evasion_for_dexterity)
+  int dexterity;  // accuracy this monster brings to every swing, same stat the player uses
+  int strength;   // flat melee damage on top of the weapon's dice, same as the player's
   int min_depth;  // first floor (1-indexed) this monster can spawn on
   int max_depth;  // last floor it can spawn on; -1 means no upper limit
-  // How many tiles away (Chebyshev distance) this monster can attack from — see the
-  // in_range/can_attack check in end_turn(). 1 means adjacency-only (melee), same as
-  // every monster before this field existed; a bigger value plus a real weapon lets a
-  // monster attack from a distance (e.g. Goblin Slinger) using the exact same
-  // dodge_chance_vs()/roll_damage() combat code melee already uses, just from farther
-  // away — still blocked by walls (line_clear()).
-  int attack_range;
-  // Optional fallback weapon+accuracy used instead of weapon/accuracy above whenever
-  // this monster is actually adjacent to the player, regardless of attack_range — e.g.
-  // Goblin Slinger closes to a more-accurate Dagger instead of its Rock once you're
-  // right next to it. Left at these defaults (empty name = "no separate melee
-  // weapon") for every monster that doesn't need the distinction, which just always
-  // uses weapon/accuracy the way every monster did before this field existed.
-  Weapon melee_weapon = Weapon{};
-  int melee_accuracy = 0;
+  // Carried gear, all optional and all trailing-with-defaults so a plain monster's row
+  // just omits them. armor is worn from spawn (flat damage reduction against anything
+  // that hits it, the same Armor the player wears); extra_weapons are alternatives it
+  // switches between by range (see equip_best_weapon_for_range() — this is what replaced
+  // the old bespoke melee_weapon/melee_accuracy pair). Anything non-intrinsic here drops
+  // as loot when the monster dies.
+  //
+  // `potions` is deliberately empty on every row today: monsters drinking their own
+  // potions worked, but the drops flooded the player with consumables. The machinery is
+  // intact and unconditional (try_actor_use_potion() runs for every monster and minion,
+  // through the same apply_potion() the player's q menu calls), so re-enabling it for a
+  // species is just putting a kPotionTable entry back in its row — but weigh the loot
+  // economy first, since a carried potion the monster never drinks becomes floor loot.
+  Armor armor = kNoArmor;
+  std::vector<Weapon> extra_weapons = {};
+  std::vector<Potion> potions = {};
+  // Turns to regenerate from 0 HP to full, or 0 (every row today) for a monster that
+  // doesn't heal at all — see Actor::hp_regen_turns. Reserved for boss/elite rows that
+  // should shrug off chip damage; ordinary monsters keep their wounds.
+  int hp_regen_turns = 0;
 };
+
+// Natural weapons: part of the monster, not loot, so they're marked intrinsic exactly
+// like the player's kFists and never drop. Their hit-dice follow the same light-is-
+// accurate / heavy-is-not convention as kWeaponTable, and a thrown Rock carries its
+// range on the weapon rather than on the monster (see MonsterTemplate::weapon).
+//
+// Naming convention for any *non*-intrinsic monster weapon (Rusty Sword, Short Bow,
+// Orc Axe, Massive Club, ...): its name must be unique across kWeaponTable, because
+// once it drops the player can only tell items apart by name. The Orc Archer's weapon
+// is a "Short Bow" (range 5) rather than a second "Bow" for exactly this reason — a
+// dropped one was otherwise indistinguishable from kWeaponTable's range-8 Bow.
+const Weapon kBite = Weapon{"Bite", 1, 3, 0, /*is_intrinsic=*/true, 1, -1, /*hit_dice=*/2, 3};
+const Weapon kClaws = Weapon{"Claws", 1, 3, 0, /*is_intrinsic=*/true, 1, -1, /*hit_dice=*/2, 3};
+const Weapon kThrownRock =
+    Weapon{"Rock", 1, 4, 0, /*is_intrinsic=*/true, 1, -1, /*hit_dice=*/1, 2, /*attack_range=*/5};
 
 // Roughly increasing toughness/reward with min_depth, so descending gets harder. Each
 // "tier" fully replaces the previous one at its cutover rather than overlapping: Rat
 // and Goblin stop past floor 4, and Skeleton/Orc pick up as the new baseline exactly
 // where they leave off, same idea Troll will hand off to whatever comes after it.
-// `accuracy` climbs with the same tiers as everything else, so a weak early monster is
-// genuinely easy to dodge (especially for a Dexterity-buffed player) and a deep one is
-// genuinely hard to.
+// Both offensive knobs climb with the tiers: `dexterity` (how accurate its swings are)
+// and `strength` (flat damage on top of its weapon dice) — the same two stats that do
+// the same two jobs for the player.
 const std::vector<MonsterTemplate> kMonsterTable = {
-    {"Rat", 'r', tcod::ColorRGB{150, 100, 60}, 4, Weapon{"Bite", 1, 3, 0}, /*xp_reward=*/5, /*evasion=*/15,
-     /*accuracy=*/1, /*min_depth=*/1, /*max_depth=*/4, /*attack_range=*/1},
-    {"Goblin", 'g', tcod::ColorRGB{80, 180, 80}, 7, Weapon{"Claws", 1, 4, 0}, /*xp_reward=*/10, /*evasion=*/5,
-     /*accuracy=*/2, /*min_depth=*/1, /*max_depth=*/4, /*attack_range=*/1},
+    {"Rat", 'r', tcod::ColorRGB{150, 100, 60}, 4, kBite, /*xp_reward=*/5, /*evasion=*/15,
+     /*dexterity=*/2, /*strength=*/0, /*min_depth=*/1, /*max_depth=*/4},
+    {"Goblin", 'g', tcod::ColorRGB{80, 180, 80}, 7, kClaws, /*xp_reward=*/10, /*evasion=*/5,
+     /*dexterity=*/4, /*strength=*/1, /*min_depth=*/1, /*max_depth=*/4},
     // A squishier, ranged relative of the melee Goblin above — glass cannon: less HP,
-    // same damage tier, but can fight from range instead of closing to melee. Reuses
-    // the exact same attack code as every other monster (see the
-    // MonsterTemplate::attack_range comment). accuracy=1 (down from an initial 2)
-    // since getting pelted for real damage this early stung more than intended.
-    // attack_range=5 so it snipes with its Rock from well across a room without
-    // needing to approach at all — but only until the player actually reaches it: the
-    // first time it's adjacent it draws its more-accurate Dagger (melee_weapon/
-    // melee_accuracy) and permanently commits to melee from then on
-    // (Actor::melee_engaged), behaving exactly like an ordinary chasing Goblin for the
-    // rest of the fight rather than backing off to snipe again. The hit message names
-    // whichever weapon actually landed.
-    {"Goblin Slinger", 'G', tcod::ColorRGB{150, 150, 70}, 5, Weapon{"Rock", 1, 4, 0}, /*xp_reward=*/8,
-     /*evasion=*/8, /*accuracy=*/1, /*min_depth=*/1, /*max_depth=*/4, /*attack_range=*/5,
-     /*melee_weapon=*/Weapon{"Dagger", 1, 4, 0}, /*melee_accuracy=*/3},
-    {"Skeleton", 's', tcod::ColorRGB{220, 220, 200}, 10, Weapon{"Rusty Sword", 1, 6, 0}, /*xp_reward=*/15,
-     /*evasion=*/8, /*accuracy=*/3, /*min_depth=*/5, /*max_depth=*/-1, /*attack_range=*/1},
-    {"Orc", 'o', tcod::ColorRGB{60, 120, 60}, 14, Weapon{"Orc Axe", 1, 8, 0}, /*xp_reward=*/22, /*evasion=*/5,
-     /*accuracy=*/4, /*min_depth=*/5, /*max_depth=*/-1, /*attack_range=*/1},
-    // Orc Archer: the same ranged-then-permanently-melee behavior as Goblin Slinger
-    // (attack_range/melee_weapon/melee_accuracy, see those comments and
-    // Actor::melee_engaged), just with every stat scaled up to match this floor-5+
-    // tier — same relationship Orc already has to Goblin.
-    {"Orc Archer", 'O', tcod::ColorRGB{110, 130, 60}, 10, Weapon{"Bow", 1, 8, 0}, /*xp_reward=*/18,
-     /*evasion=*/6, /*accuracy=*/2, /*min_depth=*/5, /*max_depth=*/-1, /*attack_range=*/5,
-     /*melee_weapon=*/Weapon{"Short Sword", 1, 8, 0}, /*melee_accuracy=*/5},
-    {"Troll", 'T', tcod::ColorRGB{100, 110, 80}, 22, Weapon{"Massive Club", 2, 6, 0}, /*xp_reward=*/40,
-     /*evasion=*/2, /*accuracy=*/5, /*min_depth=*/8, /*max_depth=*/-1, /*attack_range=*/1},
+    // same damage tier, but can fight from range instead of closing to melee. Its Rock
+    // has attack_range 5, so it snipes from well across a room without needing to
+    // approach at all — but only until the player actually reaches it: it carries a
+    // real Dagger (the same one out of kWeaponTable the player can find and use) in
+    // extra_weapons, switches to it the moment it's adjacent, and permanently commits
+    // to melee from then on (Actor::melee_engaged), behaving exactly like an ordinary
+    // chasing Goblin for the rest of the fight rather than backing off to snipe again.
+    // The Dagger is much more accurate than the Rock purely because of its hit-dice,
+    // and it drops as loot when the Slinger dies.
+    {"Goblin Slinger", 'G', tcod::ColorRGB{150, 150, 70}, 5, kThrownRock, /*xp_reward=*/8,
+     /*evasion=*/8, /*dexterity=*/2, /*strength=*/1, /*min_depth=*/1, /*max_depth=*/4, /*armor=*/kNoArmor,
+     /*extra_weapons=*/{kWeaponTable[0]}},
+    {"Skeleton", 's', tcod::ColorRGB{220, 220, 200}, 10,
+     Weapon{"Rusty Sword", 1, 4, 0, false, 1, -1, /*hit_dice=*/2, 4}, /*xp_reward=*/15,
+     /*evasion=*/8, /*dexterity=*/6, /*strength=*/2, /*min_depth=*/5, /*max_depth=*/-1},
+    // Wears real armor — the same Leather Armor the player can find, soaking 1 off
+    // every hit that lands on it, and dropped when it dies. Nothing about the damage
+    // math is orc-specific: defender.armor.defense is subtracted for whoever is being
+    // hit (see resolve_attack()).
+    {"Orc", 'o', tcod::ColorRGB{60, 120, 60}, 14, Weapon{"Orc Axe", 1, 6, 0, false, 1, -1, /*hit_dice=*/1, 4},
+     /*xp_reward=*/22, /*evasion=*/5, /*dexterity=*/8, /*strength=*/2, /*min_depth=*/5, /*max_depth=*/-1,
+     /*armor=*/kArmorTable[0]},
+    // Orc Archer: the same snipe-then-permanently-melee behavior as Goblin Slinger,
+    // just with every stat scaled up to match this floor-5+ tier — the same
+    // relationship Orc already has to Goblin.
+    {"Orc Archer", 'O', tcod::ColorRGB{110, 130, 60}, 10,
+     Weapon{"Short Bow", 1, 6, 0, false, 1, -1, /*hit_dice=*/2, 4, /*attack_range=*/5}, /*xp_reward=*/18,
+     /*evasion=*/6, /*dexterity=*/4, /*strength=*/2, /*min_depth=*/5, /*max_depth=*/-1, /*armor=*/kNoArmor,
+     /*extra_weapons=*/{kWeaponTable[1]}},
+    {"Troll", 'T', tcod::ColorRGB{100, 110, 80}, 22,
+     Weapon{"Massive Club", 1, 8, 0, false, 1, -1, /*hit_dice=*/1, 3}, /*xp_reward=*/40,
+     /*evasion=*/2, /*dexterity=*/10, /*strength=*/3, /*min_depth=*/8, /*max_depth=*/-1},
 };
 
 // A player-summoned minion (Allegiance::Player) — same shape as MonsterTemplate where
-// they overlap (name/glyph/color/max_hp/weapon/evasion/accuracy/attack_range,
-// optional melee_weapon/melee_accuracy for a ranged-then-engage minion later), but a
-// deliberately separate table: which row is available is gated by which summon spell
+// they overlap (name/glyph/color/max_hp/weapon/evasion/dexterity/strength, plus the
+// same optional armor/extra_weapons/potions), but a deliberately separate table: which row is available is gated by which summon spell
 // unlocked it (Spell::summon_template_index), not by depth, so it doesn't share
 // kMonsterTable's min_depth/max_depth/available_at_depth() machinery. No xp_reward
 // either — the player doesn't earn XP for a minion dying (see the hostile-monster
@@ -170,15 +212,19 @@ struct MinionTemplate {
   int max_hp;
   Weapon weapon;
   int evasion;
-  int accuracy;  // dexterity-equivalent, same as MonsterTemplate::accuracy — combat
-                 // between any two Actors (minion-vs-hostile or hostile-vs-minion)
-                 // reuses dodge_chance_vs(), never the player's own hit-dice system.
-  int attack_range;
-  Weapon melee_weapon = Weapon{};
-  int melee_accuracy = 0;
+  int dexterity;  // accuracy, exactly as on MonsterTemplate and the player
+  int strength;   // flat melee damage, exactly as on MonsterTemplate and the player
   // Turns until this minion expires on its own, or -1 for permanent (only dies in
   // combat). See Actor::duration_turns.
   int duration_turns = -1;
+  // Same optional carried gear as MonsterTemplate — a minion is an Actor too, so it
+  // wears armor, switches weapons by range, and drinks potions through the same code.
+  Armor armor = kNoArmor;
+  std::vector<Weapon> extra_weapons = {};
+  std::vector<Potion> potions = {};
+  // Same regeneration toggle as MonsterTemplate — 0 (today's only row) means a minion
+  // doesn't heal either. See Actor::hp_regen_turns.
+  int hp_regen_turns = 0;
 };
 
 const std::vector<MinionTemplate> kMinionTable = {
@@ -187,9 +233,9 @@ const std::vector<MinionTemplate> kMinionTable = {
     // Weaker than a real (hostile) Skeleton and time-limited, reflecting that this is
     // an early, low-commitment summon rather than true necromancy (see the roadmap's
     // Phase 3 for permanently reanimating a specific slain monster).
-    {"Skeletal Minion", 'u', tcod::ColorRGB{100, 200, 220}, /*max_hp=*/8, Weapon{"Bone Claws", 1, 5, 0},
-     /*evasion=*/6, /*accuracy=*/3, /*attack_range=*/1, /*melee_weapon=*/Weapon{}, /*melee_accuracy=*/0,
-     /*duration_turns=*/40},
+    {"Skeletal Minion", 'u', tcod::ColorRGB{100, 200, 220}, /*max_hp=*/8,
+     Weapon{"Bone Claws", 1, 4, 0, /*is_intrinsic=*/true, 1, -1, /*hit_dice=*/2, 4},
+     /*evasion=*/6, /*dexterity=*/6, /*strength=*/1, /*duration_turns=*/40},
 };
 
 // How many minions the player can have active at once, checked when casting a summon
@@ -237,59 +283,94 @@ int max_hp_for_level_and_strength(int level, int strength) {
 // points.
 int max_mana_for_intelligence(int intelligence) { return 4 + static_cast<int>(std::ceil(1.8 * intelligence)); }
 
-// Turns for passive HP regen to heal from 0 to full. Regen scales with max HP (see
-// end_turn()) so this stays constant regardless of build — a tankier character heals
-// more HP per turn, but takes the same number of turns to fully recover.
+// Turns for the *player's* passive HP regen to heal from 0 to full — assigned to
+// player.hp_regen_turns in start_new_game(). Regen scales with max HP (see end_turn())
+// so this stays constant regardless of build: a tankier character heals more HP per
+// turn, but takes the same number of turns to fully recover. Monsters and minions have
+// their own per-row hp_regen_turns, left at 0 (no regen) on every table row today.
 constexpr int kHpRegenTurns = 150;
 
 // Same idea as kHpRegenTurns, but for mana (see end_turn()). Independent constant so
 // the two regen rates can be tuned separately later.
 constexpr int kManaRegenTurns = 150;
 
-// Percent chance to dodge an attack entirely, as a straight Dexterity contest between
-// defender and attacker (on a monster, its Dexterity doubles as "accuracy" — see
-// MonsterTemplate::accuracy). Every point of relative Dexterity is worth
-// kDodgePerDexPoint%, on top of kDodgeBaseline for an even match; the min/max keep
-// either side from ever hitting a guaranteed hit or a guaranteed miss, even against a
-// wildly mismatched Dexterity (e.g. a Dexterity-buffed player vs. a Rat).
+// How badly hurt a monster/minion has to be before it spends a turn drinking a healing
+// (or escape) potion it's carrying — see try_actor_use_potion(). The player has no
+// equivalent threshold because they decide for themselves.
+constexpr int kAiDrinkHealBelowPercent = 45;
+
+// How close an enemy has to be before a monster/minion decides a fight is on and pops a
+// combat buff potion (a Troll's Potion of Strength). Slightly wider than any melee reach
+// so it drinks as you close rather than after you're already hitting it.
+constexpr int kAiBuffPotionRange = 4;
+
+// --- One combat formula, used by every attack in the game ---
+//
+// This replaced three separate ones (a Dexterity contest for monster-vs-player, an
+// evasion-minus-hit-dice roll for player-vs-monster, and a third variant for
+// minion-vs-monster). There is now exactly one question — "how likely is the defender
+// to dodge this?" — and one answer:
+//
+//     dodge% = kDodgeBaseline + defender's evasion rating - attacker's accuracy roll
+//
+// Both sides of that come from plain Actor/Weapon fields that mean the same thing on
+// everybody, which is what makes a monster and the player balanceable against each
+// other: raising a monster's evasion by 8 is worth exactly as much as giving the player
+// one more point of Dexterity.
+//
+// The two per-point knobs are deliberately different sizes, and that asymmetry is
+// between *offense and defense*, not between player and monster — everyone uses both:
+//   - kDodgePerDexPoint (defense): what one point of Dexterity is worth as evasion.
+//   - kAccuracyPerDexPoint (offense): what one point of Dexterity is worth as accuracy.
+// The floor/ceiling keep either side from ever reaching a guaranteed hit or a
+// guaranteed miss, however lopsided the matchup.
 constexpr int kDodgePerDexPoint = 8;
+constexpr int kAccuracyPerDexPoint = 4;
 constexpr int kDodgeBaseline = 10;
 constexpr int kDodgeFloor = 5;
 constexpr int kDodgeCeiling = 85;
-int dodge_chance_vs(int defender_dex, int attacker_dex) {
-  int chance = (defender_dex - attacker_dex) * kDodgePerDexPoint + kDodgeBaseline;
-  return std::clamp(chance, kDodgeFloor, kDodgeCeiling);
+
+// The player's evasion rating, derived from Dexterity — the exact counterpart of
+// max_hp_for_level_and_strength() deriving their HP from Strength. A monster's evasion
+// is authored in its table row instead (see MonsterTemplate::evasion); both end up in
+// the same Actor::evasion field feeding the same formula below.
+int evasion_for_dexterity(int dexterity) { return dexterity * kDodgePerDexPoint; }
+
+// What an attacker contributes to landing a hit: their Dexterity plus a roll of
+// whatever they're swinging/casting. The weapon (or spell) hit-dice is the "this
+// particular attack is hard to dodge" term — a fast Dagger or a wide Fireball rolls
+// high, a heavy Battle Axe or a lobbed Rock rolls low.
+int accuracy_roll(const Actor& attacker, int hit_dice_count, int hit_dice_sides) {
+  return (attacker.dexterity + attacker.temp_dex_bonus) * kAccuracyPerDexPoint +
+         roll_dice(hit_dice_count, hit_dice_sides);
 }
 
-// The player-attacks-monster equivalent of dodge_chance_vs() above, for the other
-// direction of combat: the player has no symmetric "evasion" stat of their own to
-// contest against (monsters wear no armor, so their flat evasion is their only
-// defense), so instead of a live Dexterity contest, the attack's own accuracy —
-// hit-dice, on Weapon/Spell — is rolled and subtracted from the target's evasion. A
-// bigger roll (a more accurate weapon/spell — a fast dagger, an AoE Fireball) cuts
-// further into evasion, making the attack harder to dodge. Reuses the same
-// kDodgeFloor/kDodgeCeiling clamp as dodge_chance_vs since "always some chance, never
-// a certainty" is a property of any dodge roll in this game, not just the Dexterity
-// contest. accuracy_bonus is a flat addition to the roll, defaulting to 0 for every
-// existing caller (melee, spells) — only a ranged weapon shot (Mode::RangedAttack)
-// sets it, to a Dexterity-derived value, so "hit chance scales with Dexterity" is
-// specific to ranged weapons rather than changing how melee/spell accuracy works.
-int monster_dodge_chance(int target_evasion, int hit_dice_count, int hit_dice_sides, int accuracy_bonus = 0) {
-  int chance = target_evasion - (roll_dice(hit_dice_count, hit_dice_sides) + accuracy_bonus);
-  return std::clamp(chance, kDodgeFloor, kDodgeCeiling);
+// Percent chance the defender dodges entirely, given an already-rolled accuracy. Split
+// out from dodge_chance() below so a Projectile — which locks its caster's accuracy in
+// at cast time and only meets its target several turns later — can use the same math.
+int dodge_chance_vs_accuracy(const Actor& defender, int accuracy) {
+  return std::clamp(kDodgeBaseline + defender.evasion - accuracy, kDodgeFloor, kDodgeCeiling);
+}
+
+// Percent chance `defender` dodges `attacker` swinging `weapon`. Every melee/ranged
+// attack in the game — player, hostile monster, or minion, in any combination — goes
+// through this one call.
+int dodge_chance(const Actor& defender, const Actor& attacker, const Weapon& weapon) {
+  return dodge_chance_vs_accuracy(defender, accuracy_roll(attacker, weapon.hit_dice_count, weapon.hit_dice_sides));
+}
+
+// Flat damage an attacker adds on top of their weapon's dice. Melee scales with
+// Strength, ranged with Dexterity (the same /3 rate the Bow already used) — the
+// distinction is the weapon's, not the wielder's, so a Troll swinging a club and the
+// player swinging a club both get Strength, and an Orc Archer and the player both get
+// Dexterity out of a bow.
+int damage_bonus_for(const Actor& attacker, const Weapon& weapon) {
+  if (weapon.attack_range > 1) return (attacker.dexterity + attacker.temp_dex_bonus) / 3;
+  return attacker.strength + attacker.temp_str_bonus;
 }
 
 // XP required to advance from the given level to the next one.
 int xp_needed_for_level(int level) { return level * 20; }
-
-// The player's default, always-available unarmed attack. Not a real pickup, so it's
-// never added to the ground or the inventory list.
-const Weapon kFists = Weapon{"Fists",       1,  2,  0, /*is_intrinsic=*/true, /*min_depth=*/1, /*max_depth=*/-1,
-                              /*hit_dice_count=*/2, /*hit_dice_sides=*/4};
-
-// The player's default, always-available "armor" (bare skin, no defense). Not a real
-// pickup, same idea as kFists.
-const Armor kNoArmor = Armor{"Nothing", 0, /*is_intrinsic=*/true};
 
 // A ranged spell: damage is dice_count dice of dice_sides each, plus floor(INT/3).
 // Known automatically once the player's Intelligence reaches unlock_int — nothing to
@@ -317,7 +398,7 @@ const Armor kNoArmor = Armor{"Nothing", 0, /*is_intrinsic=*/true};
 // end_turn(). See known_spell_indices below for what "known" means either way.
 //
 // hit_dice: this spell's accuracy against a monster's evasion, same shape and same
-// monster_dodge_chance() formula as Weapon::hit_dice_count/sides — a bigger roll is
+// dodge_chance() formula as Weapon::hit_dice_count/sides — a bigger roll is
 // harder to dodge. An AoE spell should generally roll much higher than a precise
 // single-target one (see kSpellTable below): "wide" is its own kind of hard-to-dodge,
 // same as "fast" is for a weapon.
@@ -424,11 +505,12 @@ struct Projectile {
   int dice_count = 1;
   int dice_sides = 2;
   int bonus = 0;  // locked in at cast/fire time (e.g. floor(INT/3), floor(DEX/3)), not re-read later
-  int hit_dice_count = 1;  // locked in from the spell/weapon at cast/fire time, see monster_dodge_chance()
+  int hit_dice_count = 1;  // locked in from the spell/weapon at cast/fire time, see dodge_chance()
   int hit_dice_sides = 4;
-  // Flat addition to the accuracy roll (see monster_dodge_chance()) — 0 for every
-  // spell (their accuracy is purely hit-dice, unaffected by INT), set to a
-  // Dexterity-derived value only for a ranged weapon shot (Mode::RangedAttack).
+  // The caster's own accuracy contribution (their Dexterity term, see accuracy_roll()),
+  // locked in at cast/fire time because a slow projectile may not reach anything for
+  // several turns. The hit-dice above are still rolled fresh per target on impact, so
+  // together these reconstruct exactly the accuracy any melee swing would have had.
   int accuracy_bonus = 0;
   int aoe_radius = 0;  // 0 = single-target hit only; >0 = explode in a square blast on impact
   int prev_x = 0;  // last tile actually entered so far (seeded at the caster's tile at cast
@@ -453,7 +535,10 @@ std::vector<std::pair<int, int>> trace_path(int from_x, int from_y, int to_x, in
 // where a shot would land) so both agree on what counts as "occupied."
 int monster_at(const std::vector<Actor>& monsters, int x, int y) {
   for (size_t i = 0; i < monsters.size(); ++i) {
-    if (monsters[i].x == x && monsters[i].y == y) return static_cast<int>(i);
+    // is_alive() matters because a killed Actor isn't erased until the sweep at the end
+    // of the turn (see on_actor_killed()) — a corpse must not keep blocking its tile
+    // for the rest of that turn's projectiles and pathing.
+    if (monsters[i].is_alive() && monsters[i].x == x && monsters[i].y == y) return static_cast<int>(i);
   }
   return -1;
 }
@@ -465,7 +550,8 @@ int monster_at(const std::vector<Actor>& monsters, int x, int y) {
 // never blocking the shot, never accidentally the thing a Magic Dart fizzles against.
 int hostile_monster_at(const std::vector<Actor>& monsters, int x, int y) {
   for (size_t i = 0; i < monsters.size(); ++i) {
-    if (monsters[i].allegiance == Allegiance::Hostile && monsters[i].x == x && monsters[i].y == y) {
+    if (monsters[i].allegiance == Allegiance::Hostile && monsters[i].is_alive() && monsters[i].x == x &&
+        monsters[i].y == y) {
       return static_cast<int>(i);
     }
   }
@@ -570,6 +656,72 @@ tcod::ColorRGB dim_color(tcod::ColorRGB c) {
   return tcod::ColorRGB{static_cast<uint8_t>(c.r / 3), static_cast<uint8_t>(c.g / 3), static_cast<uint8_t>(c.b / 3)};
 }
 
+// --- Message phrasing ---
+//
+// Second person for the player, "your X" for a minion, "the X" for a hostile. Every
+// combat message is one template built from these, rather than each call site writing
+// its own — that's what lets a single resolve_attack() narrate all nine
+// attacker/defender combinations correctly.
+std::string actor_subject(const Actor& a) {
+  if (a.is_player) return "You";
+  return (a.allegiance == Allegiance::Player ? "Your " : "The ") + a.name;
+}
+std::string actor_object(const Actor& a) {
+  if (a.is_player) return "you";
+  return (a.allegiance == Allegiance::Player ? "your " : "the ") + a.name;
+}
+std::string actor_possessive(const Actor& a) {
+  if (a.is_player) return "your";
+  return (a.allegiance == Allegiance::Player ? "your " : "the ") + a.name + "'s";
+}
+// English verb agreement for the templates above: "you hit", but "the Rat hits".
+std::string actor_verb(const Actor& a, const std::string& base) { return a.is_player ? base : base + "s"; }
+
+// Average damage this Actor would do with this weapon, used only to rank the weapons
+// it's carrying (see equip_best_weapon_for_range) — never for actual damage, which is
+// always rolled.
+double expected_damage(const Actor& actor, const Weapon& weapon) {
+  return weapon.dice_count * (weapon.dice_sides + 1) / 2.0 + damage_bonus_for(actor, weapon);
+}
+
+// Equips the best weapon this Actor is carrying for a target `distance` tiles away,
+// swapping whatever was equipped back into the inventory. "Best" is the highest average
+// damage among those that can actually reach that far. This is what replaced the old
+// bespoke MonsterTemplate::melee_weapon pair: a Goblin Slinger lobs its Rock (range 5)
+// across the room and draws its Dagger the instant you close, purely because the Dagger
+// scores higher at distance 1 — no special-cased "melee weapon" slot involved.
+//
+// Drawing a melee weapon while adjacent sets melee_engaged for good (see Actor), after
+// which only range-1 weapons are ever considered again — so a ranged monster that has
+// been reached commits to the brawl instead of backing off to snipe. An Actor carrying
+// no spare weapons (most monsters, and the player, whose swaps are manual through the
+// 'w' menu) returns immediately and is completely unaffected.
+void equip_best_weapon_for_range(Actor& actor, int distance) {
+  if (actor.weapons.empty()) return;
+  auto usable = [&](const Weapon& w) {
+    if (actor.melee_engaged && w.attack_range > 1) return false;
+    return w.attack_range >= distance;
+  };
+
+  int best = -1;  // -1 means "nothing carried beats what's already equipped"
+  double best_score = usable(actor.weapon) ? expected_damage(actor, actor.weapon) : -1.0;
+  for (size_t i = 0; i < actor.weapons.size(); ++i) {
+    if (!usable(actor.weapons[i])) continue;
+    double score = expected_damage(actor, actor.weapons[i]);
+    if (score > best_score) {
+      best_score = score;
+      best = static_cast<int>(i);
+    }
+  }
+  if (best >= 0) std::swap(actor.weapon, actor.weapons[static_cast<size_t>(best)]);
+
+  // Latched from whatever ends up equipped, whether or not a swap actually happened —
+  // an Actor whose *starting* weapon is already the melee one (while it also carries a
+  // longer-ranged one) reaches here with best < 0, and used to slip past this and never
+  // commit to melee. No current table row is built that way, but the next one might be.
+  if (actor.weapon.attack_range <= 1 && distance <= 1) actor.melee_engaged = true;
+}
+
 // Formats a weapon as e.g. "1d6" or "2d6+1", for the HUD.
 std::string describe_weapon(const Weapon& weapon) {
   std::string desc = std::to_string(weapon.dice_count) + "d" + std::to_string(weapon.dice_sides);
@@ -619,7 +771,7 @@ enum class ItemKind { Weapon, Armor, Potion };
 
 // One selectable row in the equip or drop screen. index == -1 means the intrinsic
 // default (Fists / Nothing) for Weapon/Armor respectively; otherwise it's an index
-// into `inventory`, `armor_inventory`, or `potion_inventory`. Potions have no
+// into the Actor's weapons, armors, or potions inventory. Potions have no
 // intrinsic/equipped state, so -1 never appears for ItemKind::Potion.
 struct ItemSlot {
   ItemKind kind;
@@ -627,16 +779,16 @@ struct ItemSlot {
 };
 
 // The droppable list: the currently equipped weapon/armor (omitted if intrinsic),
-// followed by everything carried of each kind, including potions.
-std::vector<ItemSlot> drop_slots(const Actor& player, const std::vector<Weapon>& inventory,
-                                  const std::vector<Armor>& armor_inventory,
-                                  const std::vector<Potion>& potion_inventory) {
+// followed by everything carried of each kind, including potions. Reads straight off
+// the Actor now that the inventory lives there, so this would work just as well for a
+// monster's pack if anything ever needed to list one.
+std::vector<ItemSlot> drop_slots(const Actor& actor) {
   std::vector<ItemSlot> slots;
-  if (!player.weapon.is_intrinsic) slots.push_back({ItemKind::Weapon, -1});
-  for (size_t i = 0; i < inventory.size(); ++i) slots.push_back({ItemKind::Weapon, static_cast<int>(i)});
-  if (!player.armor.is_intrinsic) slots.push_back({ItemKind::Armor, -1});
-  for (size_t i = 0; i < armor_inventory.size(); ++i) slots.push_back({ItemKind::Armor, static_cast<int>(i)});
-  for (size_t i = 0; i < potion_inventory.size(); ++i) slots.push_back({ItemKind::Potion, static_cast<int>(i)});
+  if (!actor.weapon.is_intrinsic) slots.push_back({ItemKind::Weapon, -1});
+  for (size_t i = 0; i < actor.weapons.size(); ++i) slots.push_back({ItemKind::Weapon, static_cast<int>(i)});
+  if (!actor.armor.is_intrinsic) slots.push_back({ItemKind::Armor, -1});
+  for (size_t i = 0; i < actor.armors.size(); ++i) slots.push_back({ItemKind::Armor, static_cast<int>(i)});
+  for (size_t i = 0; i < actor.potions.size(); ++i) slots.push_back({ItemKind::Potion, static_cast<int>(i)});
   return slots;
 }
 
@@ -703,6 +855,74 @@ int allocate_actor_id() {
   return next_id++;
 }
 
+// Builds a hostile monster from a table row. Every assignment here is a straight copy
+// into the identically-named Actor field — there's no monster-specific derivation left,
+// which is the point: the result is an ordinary Actor that the combat, gear, potion and
+// regen code can't tell apart from the player's.
+Actor spawn_monster(const MonsterTemplate& tmpl, int x, int y) {
+  Actor monster;
+  monster.id = allocate_actor_id();
+  monster.x = x;
+  monster.y = y;
+  monster.hp = monster.max_hp = tmpl.max_hp;
+  monster.glyph = tmpl.glyph;
+  monster.color = tmpl.color;
+  monster.name = tmpl.name;
+  monster.weapon = tmpl.weapon;
+  monster.armor = tmpl.armor;
+  monster.weapons = tmpl.extra_weapons;
+  monster.potions = tmpl.potions;
+  monster.xp_reward = tmpl.xp_reward;
+  monster.evasion = tmpl.evasion;
+  monster.dexterity = tmpl.dexterity;
+  monster.strength = tmpl.strength;
+  monster.hp_regen_turns = tmpl.hp_regen_turns;
+  return monster;
+}
+
+// The minion counterpart of spawn_monster() — same shape, and the only differences are
+// the allegiance, the expiry timer, and having no XP bounty.
+Actor spawn_minion(const MinionTemplate& tmpl, int x, int y) {
+  Actor minion;
+  minion.id = allocate_actor_id();
+  minion.x = x;
+  minion.y = y;
+  minion.hp = minion.max_hp = tmpl.max_hp;
+  minion.glyph = tmpl.glyph;
+  minion.color = tmpl.color;
+  minion.name = tmpl.name;
+  minion.weapon = tmpl.weapon;
+  minion.armor = tmpl.armor;
+  minion.weapons = tmpl.extra_weapons;
+  minion.potions = tmpl.potions;
+  minion.evasion = tmpl.evasion;
+  minion.dexterity = tmpl.dexterity;
+  minion.strength = tmpl.strength;
+  minion.hp_regen_turns = tmpl.hp_regen_turns;
+  minion.duration_turns = tmpl.duration_turns;
+  minion.allegiance = Allegiance::Player;
+  return minion;
+}
+
+// Spills everything an Actor was carrying onto its tile when it dies. Intrinsic gear
+// (Fists, a Rat's Bite, bare skin) is part of the creature rather than equipment, so it
+// leaves nothing behind — the same is_intrinsic rule that already kept the player's
+// fists out of their own inventory. This is what makes a monster's inventory visible
+// from the player's side: an Orc's Leather Armor and a Goblin Slinger's Dagger are the
+// exact same items out of kArmorTable/kWeaponTable the floor spawns, so they can be
+// picked up and used immediately.
+void drop_actor_gear(Level& level, const Actor& actor) {
+  if (!actor.weapon.is_intrinsic) level.items.push_back(GroundItem{actor.x, actor.y, actor.weapon});
+  for (const auto& w : actor.weapons) {
+    if (!w.is_intrinsic) level.items.push_back(GroundItem{actor.x, actor.y, w});
+  }
+  if (!actor.armor.is_intrinsic) level.armor_items.push_back(GroundArmor{actor.x, actor.y, actor.armor});
+  for (const auto& a : actor.armors) {
+    if (!a.is_intrinsic) level.armor_items.push_back(GroundArmor{actor.x, actor.y, a});
+  }
+  for (const auto& p : actor.potions) level.potions.push_back(GroundPotion{actor.x, actor.y, p});
+}
+
 // Builds and populates a fresh floor. depth is 1-indexed (matches the "Floor:N" HUD)
 // and gates which monsters can spawn here, plus how many.
 Level generate_level(int width, int height, bool has_stairs_up, int depth) {
@@ -727,23 +947,7 @@ Level generate_level(int width, int height, bool has_stairs_up, int depth) {
     occupied.push_back({mx, my});
 
     int table_index = available_monsters[static_cast<size_t>(random_int(0, static_cast<int>(available_monsters.size()) - 1))];
-    const MonsterTemplate& tmpl = kMonsterTable[static_cast<size_t>(table_index)];
-    Actor monster;
-    monster.id = allocate_actor_id();
-    monster.x = mx;
-    monster.y = my;
-    monster.hp = monster.max_hp = tmpl.max_hp;
-    monster.glyph = tmpl.glyph;
-    monster.color = tmpl.color;
-    monster.name = tmpl.name;
-    monster.weapon = tmpl.weapon;
-    monster.xp_reward = tmpl.xp_reward;
-    monster.evasion = tmpl.evasion;
-    monster.dexterity = tmpl.accuracy;  // read by dodge_chance_vs() when this monster attacks the player
-    monster.attack_range = tmpl.attack_range;
-    monster.melee_weapon = tmpl.melee_weapon;
-    monster.melee_dexterity = tmpl.melee_accuracy;
-    level.monsters.push_back(monster);
+    level.monsters.push_back(spawn_monster(kMonsterTable[static_cast<size_t>(table_index)], mx, my));
   }
 
   auto available_weapons = weapons_available_at_depth(depth);
@@ -803,23 +1007,22 @@ tcod::TilesetPtr load_best_tileset(int tile_size) {
 // doing nothing — unlike the other debug flags, a silent no-op here would be
 // confusing for the one thing this flag exists to do (set up a specific test
 // scenario).
-bool give_starting_item(const std::string& name, std::vector<Weapon>& inventory, std::vector<Armor>& armor_inventory,
-                         std::vector<Potion>& potion_inventory) {
+bool give_starting_item(const std::string& name, Actor& actor) {
   for (const auto& w : kWeaponTable) {
     if (w.name == name) {
-      inventory.push_back(w);
+      actor.weapons.push_back(w);
       return true;
     }
   }
   for (const auto& a : kArmorTable) {
     if (a.name == name) {
-      armor_inventory.push_back(a);
+      actor.armors.push_back(a);
       return true;
     }
   }
   for (const auto& p : kPotionTable) {
     if (p.name == name) {
-      potion_inventory.push_back(p);
+      actor.potions.push_back(p);
       return true;
     }
   }
@@ -928,14 +1131,15 @@ int main(int argc, char* argv[]) {
 
   auto context = tcod::Context(params);
 
+  // Just an Actor, with the same fields a Rat gets — is_player only affects how
+  // messages are phrased and where death/XP are routed (see Actor::is_player).
   Actor player;
   player.glyph = '@';
   player.color = tcod::ColorRGB{255, 255, 0};
   player.name = "Player";
+  player.is_player = true;
+  player.id = allocate_actor_id();
 
-  std::vector<Weapon> inventory;
-  std::vector<Armor> armor_inventory;
-  std::vector<Potion> potion_inventory;
   std::vector<std::string> message_log;  // full history; the HUD shows the last MESSAGE_ROWS entries
   int log_scroll = 0;  // lines scrolled up from the bottom, while Mode::MessageLog
   std::string death_cause;  // name of whatever last killed the player, for the death screen
@@ -1033,7 +1237,11 @@ int main(int argc, char* argv[]) {
     // "current-jump" convention every other permanent max_hp increase already uses
     // (e.g. the LevelUp Shift+S handler below): current HP rises by the same delta,
     // not just the ceiling.
-    int new_max_hp = max_hp_for_level_and_strength(player.level, player.strength);
+    // Any active temp Strength buff contributed its HP as a delta (see apply_potion),
+    // so it has to be re-added on top of the recomputed base or leveling up mid-buff
+    // would silently cancel the potion.
+    int new_max_hp = max_hp_for_level_and_strength(player.level, player.strength) +
+                     player.temp_str_bonus * kHpPerStrength;
     player.hp += new_max_hp - player.max_hp;
     player.max_hp = new_max_hp;
   };
@@ -1046,7 +1254,174 @@ int main(int argc, char* argv[]) {
       player.xp -= xp_needed_for_level(player.level);
       level_up_once();
     }
-    if (pending_attribute_points > 0) mode = Mode::LevelUp;
+    // Only surface the prompt if the player is still standing. A kill can land *after*
+    // the player has already died this same turn — you die to your own Fireball in
+    // advance_projectiles(), and the Sandstorm tick that runs next finishes off a
+    // monster — and without this check the resulting level-up would overwrite
+    // Mode::Dead, taking the death screen away and letting play continue at <=0 HP.
+    // XP itself still accrues; only the mode transition is suppressed.
+    if (pending_attribute_points > 0 && player.is_alive()) mode = Mode::LevelUp;
+  };
+
+  // Drinking a potion, for anybody. The player's q menu and a monster deciding it's
+  // hurt enough to quaff its Heal Potion both land here, so an item's effect is defined
+  // exactly once and can't drift between "what it does for you" and "what it does for
+  // them".
+  //
+  // A buff's knock-on ceiling (Strength's max HP, Dexterity's evasion, Intelligence's
+  // max mana) is applied as a *delta* rather than by recomputing from the attribute.
+  // That's what lets one function serve both sides: the player's ceilings are derived
+  // from their attributes and a monster's are authored in its table row, but "+5 STR is
+  // worth +35 max HP" is true either way. Ceiling only, deliberately — unlike a
+  // level-up, current HP/mana don't jump with it.
+  auto apply_potion = [&](Actor& actor, const Potion& potion) {
+    Level& level = levels[static_cast<size_t>(current_level)];
+    // The player narrates each effect in first person below; for anyone else, one line
+    // saying what they drank is enough — and only if you can actually see them do it.
+    if (!actor.is_player && level.map.is_in_fov(actor.x, actor.y)) {
+      add_message(actor_subject(actor) + " drinks a " + potion.name + ".");
+    }
+
+    if (potion.heal_percent > 0) {
+      int heal_amount = actor.max_hp * potion.heal_percent / 100;
+      int before = actor.hp;
+      actor.hp = std::min(actor.hp + heal_amount, actor.max_hp);
+      if (actor.is_player) {
+        add_message("You drink the " + potion.name + " and recover " + std::to_string(actor.hp - before) + " HP.");
+      }
+      return;
+    }
+    if (potion.buff_stat == StatKind::Strength) {
+      // Re-drinking while already buffed just refreshes the timer, rather than stacking
+      // the bonus indefinitely.
+      if (actor.temp_str_turns <= 0) {
+        actor.temp_str_bonus = potion.buff_amount;
+        actor.max_hp += potion.buff_amount * kHpPerStrength;
+      }
+      actor.temp_str_turns = potion.buff_turns;
+      if (actor.is_player) {
+        add_message("You feel mighty! STR +" + std::to_string(potion.buff_amount) + " for " +
+                    std::to_string(potion.buff_turns) + " turns.");
+      }
+      return;
+    }
+    if (potion.buff_stat == StatKind::Dexterity) {
+      if (actor.temp_dex_turns <= 0) {
+        actor.temp_dex_bonus = potion.buff_amount;
+        actor.evasion += potion.buff_amount * kDodgePerDexPoint;
+      }
+      actor.temp_dex_turns = potion.buff_turns;
+      if (actor.is_player) {
+        add_message("You feel nimble! DEX +" + std::to_string(potion.buff_amount) + " for " +
+                    std::to_string(potion.buff_turns) + " turns.");
+      }
+      return;
+    }
+    if (potion.buff_stat == StatKind::Intelligence) {
+      if (actor.temp_int_turns <= 0) {
+        actor.temp_int_bonus = potion.buff_amount;
+        actor.max_mana += max_mana_for_intelligence(actor.intelligence + potion.buff_amount) -
+                          max_mana_for_intelligence(actor.intelligence);
+      }
+      actor.temp_int_turns = potion.buff_turns;
+      if (actor.is_player) {
+        add_message("You feel sharp! INT +" + std::to_string(potion.buff_amount) + " for " +
+                    std::to_string(potion.buff_turns) + " turns.");
+      }
+      return;
+    }
+    if (potion.teleports) {
+      std::vector<std::pair<int, int>> occupied;
+      for (const auto& m : level.monsters) occupied.push_back({m.x, m.y});
+      occupied.push_back({player.x, player.y});
+      auto [tx, ty] = random_free_tile(level.map, occupied);
+      actor.x = tx;
+      actor.y = ty;
+      if (actor.is_player) {
+        // Not an incremental step, so (unlike normal movement) FOV needs an explicit
+        // recompute — same as descend()/ascend() after a floor change.
+        level.map.update_fov(player.x, player.y, FOV_RADIUS);
+        add_message("You vanish and reappear elsewhere!");
+      }
+    }
+  };
+
+  // Whether this Actor decides to spend its turn drinking something. Deliberately
+  // simple, matching the "keep the same AI" brief: gulp a heal when badly hurt, pop a
+  // buff when a fight is actually on. The player never routes through this — they pick
+  // potions themselves from the q menu — but it calls the same apply_potion() they do.
+  // Returns true if a potion was drunk, in which case the caller skips the rest of that
+  // Actor's turn (drinking costs a turn for a monster exactly as it does for you).
+  auto try_actor_use_potion = [&](Actor& actor, bool enemy_near) -> bool {
+    if (actor.potions.empty()) return false;
+    bool badly_hurt = actor.hp * 100 < actor.max_hp * kAiDrinkHealBelowPercent;
+    for (size_t i = 0; i < actor.potions.size(); ++i) {
+      const Potion& potion = actor.potions[i];
+      bool want = false;
+      if (potion.heal_percent > 0) {
+        want = badly_hurt;
+      } else if (potion.buff_stat == StatKind::Strength) {
+        want = enemy_near && actor.temp_str_turns <= 0;
+      } else if (potion.buff_stat == StatKind::Dexterity) {
+        want = enemy_near && actor.temp_dex_turns <= 0;
+      } else if (potion.buff_stat == StatKind::Intelligence) {
+        want = false;  // nothing but the player casts, so INT does nothing for a monster
+      } else if (potion.teleports) {
+        want = badly_hurt;  // a last-ditch escape, same as a cornered player would use it
+      }
+      if (!want) continue;
+      Potion chosen = actor.potions[i];  // copy before erase invalidates the reference
+      actor.potions.erase(actor.potions.begin() + static_cast<long>(i));
+      apply_potion(actor, chosen);
+      return true;
+    }
+    return false;
+  };
+
+  // Everything that happens when an Actor's HP reaches 0, wherever the killing blow
+  // came from — a melee swing, a spell, an aura tick. Deliberately does NOT erase the
+  // victim: a single deferred sweep at the end of end_turn() does that, so no loop can
+  // have the vector shift out from under it mid-turn (see that sweep's comment).
+  //
+  // The two things here that only make sense for one side are exactly the two flagged
+  // on Actor::is_player: a dead player becomes a death screen instead of a corpse, and
+  // XP only flows to the player (including from a minion's kill — your minion's kill is
+  // still your kill).
+  auto on_actor_killed = [&](Actor& victim, bool killed_by_player_side, const std::string& cause) {
+    if (victim.is_player) {
+      death_cause = cause;
+      mode = Mode::Dead;
+      return;
+    }
+    drop_actor_gear(levels[static_cast<size_t>(current_level)], victim);
+    if (killed_by_player_side) grant_xp(victim.xp_reward);
+  };
+
+  // The one and only melee/ranged attack resolution, for every possible pairing: you
+  // hitting a Goblin, a Goblin hitting you, a Goblin hitting your minion, your minion
+  // hitting the Goblin. Dodge, damage, armor and death are computed identically in all
+  // four cases; only the wording of the log line differs, and that comes out of the
+  // actor_subject()/actor_object() helpers rather than from a branch here.
+  auto resolve_attack = [&](Actor& attacker, Actor& defender, const Weapon& weapon) {
+    if (random_int(1, 100) <= dodge_chance(defender, attacker, weapon)) {
+      add_message(actor_subject(defender) + actor_verb(defender, " dodge") + " " + actor_possessive(attacker) +
+                  " attack!");
+      return;
+    }
+
+    int raw_damage = roll_damage(weapon) + damage_bonus_for(attacker, weapon);
+    int damage = std::max(raw_damage - defender.armor.defense, 0);
+    defender.hp -= damage;
+
+    std::string wielder = attacker.is_player ? "your " : "its ";
+    if (defender.is_alive()) {
+      add_message(actor_subject(attacker) + actor_verb(attacker, " hit") + " " + actor_object(defender) + " with " +
+                  wielder + weapon.name + " for " + std::to_string(damage) + ".");
+      return;
+    }
+    add_message(actor_subject(attacker) + actor_verb(attacker, " slay") + " " + actor_object(defender) + " with " +
+                wielder + weapon.name + "!");
+    on_actor_killed(defender, attacker.is_player || attacker.allegiance == Allegiance::Player, attacker.name);
   };
 
   // Advances every in-flight projectile on the current floor by its speed (in tiles),
@@ -1064,37 +1439,30 @@ int main(int argc, char* argv[]) {
     // The caster isn't exempt: if the player is within radius of the blast too (a point-
     // blank cast, or a wall/monster close enough that the impact lands next to them),
     // they take the same roll. This is the actual deterrent against casting an AoE on
-    // something adjacent — unlike the monster hits above, armor still reduces it, same
-    // as any other landed hit (see the player's melee-damage-taken code above).
+    // something adjacent. Their armor soaks it like anyone else's would, but they get no
+    // dodge roll — you can't evade your own point-blank explosion.
     auto explode = [&](Projectile& proj, int cx, int cy) {
       add_message("Your " + proj.name + " explodes!");
-      for (size_t m = 0; m < level.monsters.size();) {
-        Actor& target = level.monsters[m];
+      for (auto& target : level.monsters) {
         // Minions are immune to the player's own AoE splash — only hostile monsters
         // are ever caught in it. (The player themself is still at risk, below.)
-        if (target.allegiance == Allegiance::Player) {
-          ++m;
+        if (target.allegiance == Allegiance::Player || !target.is_alive()) continue;
+        if (std::abs(target.x - cx) > proj.aoe_radius || std::abs(target.y - cy) > proj.aoe_radius) continue;
+
+        int dodge = dodge_chance_vs_accuracy(
+            target, proj.accuracy_bonus + roll_dice(proj.hit_dice_count, proj.hit_dice_sides));
+        if (random_int(1, 100) <= dodge) {
+          add_message("The " + target.name + " dodges the blast!");
           continue;
         }
-        if (std::abs(target.x - cx) <= proj.aoe_radius && std::abs(target.y - cy) <= proj.aoe_radius) {
-          int dodge_chance = monster_dodge_chance(target.evasion, proj.hit_dice_count, proj.hit_dice_sides);
-          if (random_int(1, 100) <= dodge_chance) {
-            add_message("The " + target.name + " dodges the blast!");
-            ++m;
-            continue;
-          }
-          int damage = roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus;
-          target.hp -= damage;
-          if (!target.is_alive()) {
-            add_message("The blast kills the " + target.name + "!");
-            int xp_reward = target.xp_reward;  // read before erase invalidates `target`
-            level.monsters.erase(level.monsters.begin() + static_cast<long>(m));
-            grant_xp(xp_reward);
-            continue;  // next monster has shifted down into slot m; don't advance past it
-          }
-          add_message("The blast hits the " + target.name + " for " + std::to_string(damage) + ".");
+        int damage = std::max(roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus - target.armor.defense, 0);
+        target.hp -= damage;
+        if (!target.is_alive()) {
+          add_message("The blast kills the " + target.name + "!");
+          on_actor_killed(target, /*killed_by_player_side=*/true, proj.name);
+          continue;
         }
-        ++m;
+        add_message("The blast hits the " + target.name + " for " + std::to_string(damage) + ".");
       }
 
       if (player.is_alive() && std::abs(player.x - cx) <= proj.aoe_radius && std::abs(player.y - cy) <= proj.aoe_radius) {
@@ -1102,10 +1470,7 @@ int main(int argc, char* argv[]) {
         int damage = std::max(raw_damage - player.armor.defense, 0);
         player.hp -= damage;
         add_message("You're caught in your own " + proj.name + " for " + std::to_string(damage) + "!");
-        if (!player.is_alive()) {
-          death_cause = proj.name + " you cast";
-          mode = Mode::Dead;
-        }
+        if (!player.is_alive()) on_actor_killed(player, /*killed_by_player_side=*/false, proj.name + " you cast");
       }
     };
 
@@ -1141,18 +1506,17 @@ int main(int argc, char* argv[]) {
             explode(proj, x, y);  // the monster's own tile is a valid, walkable center
           } else {
             Actor& target = level.monsters[static_cast<size_t>(target_index)];
-            int dodge_chance =
-                monster_dodge_chance(target.evasion, proj.hit_dice_count, proj.hit_dice_sides, proj.accuracy_bonus);
-            if (random_int(1, 100) <= dodge_chance) {
+            int dodge = dodge_chance_vs_accuracy(
+                target, proj.accuracy_bonus + roll_dice(proj.hit_dice_count, proj.hit_dice_sides));
+            if (random_int(1, 100) <= dodge) {
               add_message("The " + target.name + " dodges your " + proj.name + "!");
             } else {
-              int damage = roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus;
+              int damage =
+                  std::max(roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus - target.armor.defense, 0);
               target.hp -= damage;
               if (!target.is_alive()) {
                 add_message("Your " + proj.name + " kills the " + target.name + "!");
-                int xp_reward = target.xp_reward;  // read before erase invalidates `target`
-                level.monsters.erase(level.monsters.begin() + target_index);
-                grant_xp(xp_reward);
+                on_actor_killed(target, /*killed_by_player_side=*/true, proj.name);
               } else {
                 add_message("Your " + proj.name + " hits the " + target.name + " for " + std::to_string(damage) + ".");
               }
@@ -1179,57 +1543,69 @@ int main(int argc, char* argv[]) {
   // Runs after the player's turn: every living monster still adjacent to the player
   // gets to attack. (Movement/chasing AI will plug into this same turn boundary later.)
   auto end_turn = [&]() {
-    // Passive HP regen: scales with max HP (see kHpRegenTurns) so a full heal takes
-    // roughly the same number of turns regardless of build. Silent — no log message —
-    // since it ticks often enough that logging it would just spam the message log.
-    if (player.is_alive() && player.hp < player.max_hp) {
-      player.hp_regen_accumulator += static_cast<float>(player.max_hp) / static_cast<float>(kHpRegenTurns);
-      while (player.hp_regen_accumulator >= 1.0f && player.hp < player.max_hp) {
-        player.hp_regen_accumulator -= 1.0f;
-        player.hp += 1;
-      }
-    }
+    Level& level = levels[static_cast<size_t>(current_level)];
 
-    // Passive mana regen: identical shape to the HP regen above (see kManaRegenTurns).
-    if (player.is_alive() && player.mana < player.max_mana) {
-      player.mana_regen_accumulator += static_cast<float>(player.max_mana) / static_cast<float>(kManaRegenTurns);
-      while (player.mana_regen_accumulator >= 1.0f && player.mana < player.max_mana) {
-        player.mana_regen_accumulator -= 1.0f;
-        player.mana += 1;
-      }
-    }
+    // Per-turn upkeep, run identically for every living Actor on the floor: passive HP
+    // and mana regen, then any temporary stat buff counting down. A monster that drank a
+    // Potion of Strength loses it on exactly the same schedule the player would.
+    //
+    // Regen is per-Actor and opt-in (Actor::hp_regen_turns, 0 = doesn't regenerate):
+    // only the player heals today, so an ordinary monster's wounds stick. The rate
+    // scales with max HP, so a full heal takes hp_regen_turns turns regardless of how
+    // big the pool is. Silent — no log message — since it ticks often enough that
+    // logging it would just spam. Mana needs no equivalent gate: only the player has any
+    // (max_mana stays 0 on a monster), so that loop no-ops on its own.
+    //
+    // Note this only runs for Actors on the *current* floor, which is invisible today
+    // since nothing but the player regenerates. If a regenerating boss is ever added, it
+    // won't heal while you're on another floor — consistent with it not acting either.
+    //
+    // Each expiring buff removes exactly the delta apply_potion() added, rather than
+    // recomputing a ceiling from the attribute — that's what lets the same code undo a
+    // buff on the player (whose ceilings are derived from attributes) and on a monster
+    // (whose are authored in its table row).
+    auto tick_upkeep = [&](Actor& actor) {
+      if (!actor.is_alive()) return;
 
-    // Temporary stat buffs (Potion of Strength/Dexterity/Intelligence) count down every
-    // turn and revert automatically the instant they expire.
-    if (player.temp_str_turns > 0) {
-      player.temp_str_turns -= 1;
-      if (player.temp_str_turns == 0) {
-        player.temp_str_bonus = 0;
-        player.max_hp = max_hp_for_level_and_strength(player.level, player.strength);
-        player.hp = std::min(player.hp, player.max_hp);  // clamp in case regen filled past the new, lower ceiling
-        add_message("Your surge of strength fades.");
+      if (actor.hp_regen_turns > 0 && actor.hp < actor.max_hp) {
+        actor.hp_regen_accumulator += static_cast<float>(actor.max_hp) / static_cast<float>(actor.hp_regen_turns);
+        while (actor.hp_regen_accumulator >= 1.0f && actor.hp < actor.max_hp) {
+          actor.hp_regen_accumulator -= 1.0f;
+          actor.hp += 1;
+        }
       }
-    }
-    if (player.temp_dex_turns > 0) {
-      player.temp_dex_turns -= 1;
-      if (player.temp_dex_turns == 0) {
-        player.temp_dex_bonus = 0;
-        add_message("Your surge of agility fades.");
+      if (actor.mana < actor.max_mana) {
+        actor.mana_regen_accumulator += static_cast<float>(actor.max_mana) / static_cast<float>(kManaRegenTurns);
+        while (actor.mana_regen_accumulator >= 1.0f && actor.mana < actor.max_mana) {
+          actor.mana_regen_accumulator -= 1.0f;
+          actor.mana += 1;
+        }
       }
-    }
-    if (player.temp_int_turns > 0) {
-      player.temp_int_turns -= 1;
-      if (player.temp_int_turns == 0) {
-        player.temp_int_bonus = 0;
-        player.max_mana = max_mana_for_intelligence(player.intelligence);
-        player.mana = std::min(player.mana, player.max_mana);  // clamp past the new, lower ceiling
-        add_message("Your surge of insight fades.");
+
+      if (actor.temp_str_turns > 0 && --actor.temp_str_turns == 0) {
+        actor.max_hp -= actor.temp_str_bonus * kHpPerStrength;
+        actor.hp = std::min(actor.hp, actor.max_hp);  // clamp in case regen filled past the new, lower ceiling
+        actor.temp_str_bonus = 0;
+        if (actor.is_player) add_message("Your surge of strength fades.");
       }
-    }
+      if (actor.temp_dex_turns > 0 && --actor.temp_dex_turns == 0) {
+        actor.evasion -= actor.temp_dex_bonus * kDodgePerDexPoint;
+        actor.temp_dex_bonus = 0;
+        if (actor.is_player) add_message("Your surge of agility fades.");
+      }
+      if (actor.temp_int_turns > 0 && --actor.temp_int_turns == 0) {
+        actor.max_mana -= max_mana_for_intelligence(actor.intelligence + actor.temp_int_bonus) -
+                          max_mana_for_intelligence(actor.intelligence);
+        actor.mana = std::min(actor.mana, actor.max_mana);  // clamp past the new, lower ceiling
+        actor.temp_int_bonus = 0;
+        if (actor.is_player) add_message("Your surge of insight fades.");
+      }
+    };
+
+    tick_upkeep(player);
+    for (auto& actor : level.monsters) tick_upkeep(actor);
 
     advance_projectiles();
-
-    Level& level = levels[static_cast<size_t>(current_level)];
 
     // Minion duration: a timed minion (duration_turns > 0, see MinionTemplate) expires
     // on its own once it hits 0, same "tick down, then resolve" shape as the temp stat
@@ -1243,6 +1619,7 @@ int main(int argc, char* argv[]) {
       if (m.duration_turns == 0) {
         add_message("Your " + m.name + " collapses into dust.");
         m.hp = 0;
+        drop_actor_gear(level, m);  // anything it was carrying outlives it, same as a kill
       }
     }
 
@@ -1254,41 +1631,38 @@ int main(int argc, char* argv[]) {
     // the player can no longer afford the drain. The turn a storm is first turned on
     // pays a flat activation cost instead of this tick — active_toggle_spell isn't set
     // until after that turn's end_turn() call (see the SpellMenu toggle handler), so
-    // this only starts draining/damaging on the turn after.
-    if (active_toggle_spell >= 0) {
+    // this only starts draining/damaging on the turn after. Skipped entirely once the
+    // player is dead — they can die earlier in this same turn (their own Fireball, in
+    // advance_projectiles() above), and a corpse's aura shouldn't keep draining mana and
+    // killing things. The two AI loops below carry the same guard.
+    if (active_toggle_spell >= 0 && mode != Mode::Dead) {
       const Spell& storm = kSpellTable[static_cast<size_t>(active_toggle_spell)];
       if (player.mana < storm.tick_mana_cost) {
         add_message("Your " + storm.name + " dies down - out of mana.");
         active_toggle_spell = -1;
       } else {
         player.mana -= storm.tick_mana_cost;
-        for (size_t m = 0; m < level.monsters.size();) {
-          Actor& target = level.monsters[m];
+        for (auto& target : level.monsters) {
           // Minions stand in the storm untouched — see explode()'s identical
           // exemption for Fireball's blast.
-          if (target.allegiance == Allegiance::Player) {
-            ++m;
+          if (target.allegiance == Allegiance::Player || !target.is_alive()) continue;
+          if (std::abs(target.x - player.x) > storm.aoe_radius || std::abs(target.y - player.y) > storm.aoe_radius) {
             continue;
           }
-          if (std::abs(target.x - player.x) <= storm.aoe_radius && std::abs(target.y - player.y) <= storm.aoe_radius) {
-            int dodge_chance = monster_dodge_chance(target.evasion, storm.hit_dice_count, storm.hit_dice_sides);
-            if (random_int(1, 100) <= dodge_chance) {
-              add_message("The " + target.name + " dodges the " + storm.name + "!");
-              ++m;
-              continue;
-            }
-            target.hp -= storm.tick_damage;
-            if (!target.is_alive()) {
-              add_message("Your " + storm.name + " kills the " + target.name + "!");
-              int xp_reward = target.xp_reward;  // read before erase invalidates `target`
-              level.monsters.erase(level.monsters.begin() + static_cast<long>(m));
-              grant_xp(xp_reward);
-              continue;  // next monster has shifted down into slot m; don't advance past it
-            }
-            add_message("Your " + storm.name + " hits the " + target.name + " for " +
-                        std::to_string(storm.tick_damage) + ".");
+          int dodge = dodge_chance_vs_accuracy(
+              target, accuracy_roll(player, storm.hit_dice_count, storm.hit_dice_sides));
+          if (random_int(1, 100) <= dodge) {
+            add_message("The " + target.name + " dodges the " + storm.name + "!");
+            continue;
           }
-          ++m;
+          int damage = std::max(storm.tick_damage - target.armor.defense, 0);
+          target.hp -= damage;
+          if (!target.is_alive()) {
+            add_message("Your " + storm.name + " kills the " + target.name + "!");
+            on_actor_killed(target, /*killed_by_player_side=*/true, storm.name);
+            continue;
+          }
+          add_message("Your " + storm.name + " hits the " + target.name + " for " + std::to_string(damage) + ".");
         }
       }
     }
@@ -1312,43 +1686,10 @@ int main(int argc, char* argv[]) {
       return true;
     };
 
-    // Resolves `attacker` attacking `defender`, where defender is anything other than
-    // the player (the player has armor and a death screen — handled inline in the
-    // hostile-monster loop below instead). Works symmetrically whichever direction:
-    // a hostile monster attacking a minion, or a minion attacking a hostile monster —
-    // both are monster-shaped Actors with the same dexterity/weapon/optional
-    // melee_weapon fields, so this is the exact combat math every monster-vs-player
-    // attack already used, just re-pointed at another Actor and phrased for whichever
-    // side is "yours". No armor reduction (only the player wears armor). Grants XP if
-    // the attacker is one of the player's minions and the kill is a hostile monster —
-    // a minion's kill still furthers the player — never for a hostile monster's kill
-    // (killing a minion isn't a player achievement). Doesn't erase a dead defender;
-    // see the deferred sweep after both AI loops below for why.
-    auto resolve_actor_attack = [&](Actor& attacker, Actor& defender) {
-      bool adjacent = std::abs(defender.x - attacker.x) <= 1 && std::abs(defender.y - attacker.y) <= 1;
-      bool use_melee_weapon = adjacent && !attacker.melee_weapon.name.empty();
-      if (use_melee_weapon) attacker.melee_engaged = true;
-      const Weapon& weapon_used = use_melee_weapon ? attacker.melee_weapon : attacker.weapon;
-      int attacker_dex = use_melee_weapon ? attacker.melee_dexterity : attacker.dexterity;
-
-      std::string attacker_subject = (attacker.allegiance == Allegiance::Player ? "Your " : "The ") + attacker.name;
-      std::string attacker_lower = (attacker.allegiance == Allegiance::Player ? "your " : "the ") + attacker.name;
-      std::string defender_subject = (defender.allegiance == Allegiance::Player ? "Your " : "The ") + defender.name;
-      std::string defender_lower = (defender.allegiance == Allegiance::Player ? "your " : "the ") + defender.name;
-
-      if (random_int(1, 100) <= dodge_chance_vs(defender.dexterity, attacker_dex)) {
-        add_message(defender_subject + " dodges " + attacker_lower + "'s attack!");
-        return;
-      }
-      int damage = roll_damage(weapon_used);
-      defender.hp -= damage;
-      if (!defender.is_alive()) {
-        add_message(attacker_subject + " kills " + defender_lower + "!");
-        if (attacker.allegiance == Allegiance::Player) grant_xp(defender.xp_reward);
-      } else {
-        add_message(attacker_subject + " hits " + defender_lower + " with its " + weapon_used.name + " for " +
-                    std::to_string(damage) + ".");
-      }
+    // Chebyshev distance, the "how far apart are these two" measure used everywhere
+    // reach is decided (attack range, aura radius, weapon selection).
+    auto distance_between = [](const Actor& a, const Actor& b) {
+      return std::max(std::abs(a.x - b.x), std::abs(a.y - b.y));
     };
 
     for (auto& monster : level.monsters) {
@@ -1363,78 +1704,41 @@ int main(int argc, char* argv[]) {
       // last position" the way the player does (last_seen_player_x/y below is still
       // player-specific) — a Phase 1 simplification. With zero minions on the floor
       // this always resolves to the player, so solo-player behavior is unchanged.
-      bool target_is_player = true;
-      int target_minion_index = -1;
-      int target_x = player.x;
-      int target_y = player.y;
-      int best_dist = std::max(std::abs(player.x - monster.x), std::abs(player.y - monster.y));
-      for (size_t ti = 0; ti < level.monsters.size(); ++ti) {
-        const Actor& candidate = level.monsters[ti];
+      Actor* target = &player;
+      int best_dist = distance_between(monster, player);
+      for (auto& candidate : level.monsters) {
         if (candidate.allegiance != Allegiance::Player || !candidate.is_alive()) continue;
         if (!level.map.is_in_fov(candidate.x, candidate.y)) continue;
-        int dist = std::max(std::abs(candidate.x - monster.x), std::abs(candidate.y - monster.y));
+        int dist = distance_between(monster, candidate);
         if (dist < best_dist) {
           best_dist = dist;
-          target_is_player = false;
-          target_minion_index = static_cast<int>(ti);
-          target_x = candidate.x;
-          target_y = candidate.y;
+          target = &candidate;
         }
       }
 
-      int dx = target_x - monster.x;
-      int dy = target_y - monster.y;
-      int abs_dx = dx < 0 ? -dx : dx;
-      int abs_dy = dy < 0 ? -dy : dy;
-      // Generalizes "adjacent" (melee) into "within this monster's attack_range" —
-      // attack_range=1 (every monster before ranged attackers existed) makes this
-      // exactly today's adjacency check. A wall between the two still blocks it
-      // (line_clear()), which for attack_range=1 is always trivially true (see its
-      // comment) — melee behavior is completely unchanged.
-      //
-      // Once melee_engaged (see Actor::melee_engaged), a ranged monster permanently
-      // stops using its full attack_range and behaves as if it were 1 — it snipes from
-      // range right up until it reaches its target, and from then on it's just a
-      // melee-only monster (chasing when out of reach, same as any other), never going
-      // back to sniping.
-      int effective_range = monster.melee_engaged ? 1 : monster.attack_range;
-      bool in_range = std::max(abs_dx, abs_dy) <= effective_range && (dx != 0 || dy != 0);
-      bool can_attack = in_range && line_clear(monster.x, monster.y, target_x, target_y, level.map);
+      // Gear and consumables, decided before anything else this turn and using the same
+      // code the player's own menus drive. Swapping to whichever carried weapon suits
+      // the current distance is free (it's a draw, not a turn); actually drinking
+      // something costs the turn, exactly as it does for the player.
+      equip_best_weapon_for_range(monster, best_dist);
+      if (try_actor_use_potion(monster, /*enemy_near=*/best_dist <= kAiBuffPotionRange)) continue;
 
-      if (can_attack) {
-        if (!target_is_player) {
-          resolve_actor_attack(monster, level.monsters[static_cast<size_t>(target_minion_index)]);
-          continue;
-        }
-        // Some monsters (e.g. Goblin Slinger) fall back to a separate, more accurate
-        // melee weapon once you're actually adjacent, rather than using their ranged
-        // one at point-blank range — see MonsterTemplate::melee_weapon. Every other
-        // monster's melee_weapon is left empty, so this is always false for them and
-        // they just always use weapon/dexterity, same as before this existed. This is
-        // also the trigger that flips melee_engaged for good, above.
-        bool in_melee = abs_dx <= 1 && abs_dy <= 1;
-        bool use_melee_weapon = in_melee && !monster.melee_weapon.name.empty();
-        if (use_melee_weapon) monster.melee_engaged = true;
-        const Weapon& weapon_used = use_melee_weapon ? monster.melee_weapon : monster.weapon;
-        int attacker_dex = use_melee_weapon ? monster.melee_dexterity : monster.dexterity;
-
-        int player_dex = player.dexterity + player.temp_dex_bonus;
-        if (random_int(1, 100) <= dodge_chance_vs(player_dex, attacker_dex)) {
-          add_message("You dodge the " + monster.name + "'s attack!");
-          continue;
-        }
-
-        int raw_damage = roll_damage(weapon_used);
-        int damage = std::max(raw_damage - player.armor.defense, 0);
-        player.hp -= damage;
-        add_message("The " + monster.name + " hits you with its " + weapon_used.name + " for " +
-                    std::to_string(damage) + ".");
-        if (!player.is_alive()) {
-          death_cause = monster.name;
-          mode = Mode::Dead;
-        }
+      // "In range" is just the equipped weapon's reach — the same field that decides
+      // whether the player can fire what they're holding. A wall between the two still
+      // blocks it (line_clear()), which at range 1 is always trivially true, so melee is
+      // unaffected by that check. Once melee_engaged (see Actor), a ranged monster's
+      // reach permanently collapses to 1: it snipes right up until its target reaches
+      // it, then fights like any other melee monster for good.
+      int effective_range = monster.melee_engaged ? 1 : monster.weapon.attack_range;
+      bool in_range = best_dist <= effective_range && best_dist > 0;
+      if (in_range && line_clear(monster.x, monster.y, target->x, target->y, level.map)) {
+        resolve_attack(monster, *target, monster.weapon);
         continue;
       }
+
+      int target_x = target->x;
+      int target_y = target->y;
+      bool target_is_player = target->is_player;
 
       // Out of range (or no line of sight): chase toward the chosen target if it's
       // currently visible — for the player specifically, "visible" still means the
@@ -1492,28 +1796,38 @@ int main(int argc, char* argv[]) {
       }
     }
 
-    // Attacks the closest hostile within minion.attack_range (line_clear()'d), if any
-    // — the "still defend yourself" half of Follow and Hold, so a minion doing either
-    // isn't a free hit for anything that wanders adjacent. Returns whether it attacked
-    // (the caller should skip movement for the turn if so).
-    auto try_minion_auto_defend = [&](Actor& minion) -> bool {
-      int best_hostile = -1;
-      int best_dist = 0;
-      for (size_t hi = 0; hi < level.monsters.size(); ++hi) {
-        const Actor& hostile = level.monsters[hi];
+    // Distance to the nearest living hostile, or -1 if there are none left on the floor.
+    // Used to decide whether a minion should draw a melee weapon or pop a buff potion,
+    // the same two questions the hostile loop above asks about its own target.
+    auto nearest_hostile_distance = [&](const Actor& minion) {
+      int best = -1;
+      for (const auto& hostile : level.monsters) {
         if (hostile.allegiance != Allegiance::Hostile || !hostile.is_alive()) continue;
-        int hdx = std::abs(hostile.x - minion.x);
-        int hdy = std::abs(hostile.y - minion.y);
-        int dist = std::max(hdx, hdy);
-        if (dist > minion.attack_range) continue;
+        int dist = distance_between(minion, hostile);
+        if (best < 0 || dist < best) best = dist;
+      }
+      return best;
+    };
+
+    // Attacks the closest hostile within reach of the minion's equipped weapon
+    // (line_clear()'d), if any — the "still defend yourself" half of Follow and Hold, so
+    // a minion doing either isn't a free hit for anything that wanders adjacent. Returns
+    // whether it attacked (the caller should skip movement for the turn if so).
+    auto try_minion_auto_defend = [&](Actor& minion) -> bool {
+      Actor* best_hostile = nullptr;
+      int best_dist = 0;
+      for (auto& hostile : level.monsters) {
+        if (hostile.allegiance != Allegiance::Hostile || !hostile.is_alive()) continue;
+        int dist = distance_between(minion, hostile);
+        if (dist > minion.weapon.attack_range) continue;
         if (!line_clear(minion.x, minion.y, hostile.x, hostile.y, level.map)) continue;
-        if (best_hostile < 0 || dist < best_dist) {
-          best_hostile = static_cast<int>(hi);
+        if (best_hostile == nullptr || dist < best_dist) {
+          best_hostile = &hostile;
           best_dist = dist;
         }
       }
-      if (best_hostile < 0) return false;
-      resolve_actor_attack(minion, level.monsters[static_cast<size_t>(best_hostile)]);
+      if (best_hostile == nullptr) return false;
+      resolve_attack(minion, *best_hostile, minion.weapon);
       return true;
     };
 
@@ -1530,6 +1844,15 @@ int main(int argc, char* argv[]) {
       if (mode == Mode::Dead) break;
       if (!minion.is_alive() || minion.allegiance != Allegiance::Player) continue;
 
+      // Same gear/consumable upkeep the hostile loop runs, through the same helpers —
+      // a minion carrying a spare weapon or a potion uses it on exactly the same terms
+      // a monster does.
+      int hostile_dist = nearest_hostile_distance(minion);
+      if (hostile_dist >= 0) equip_best_weapon_for_range(minion, hostile_dist);
+      if (try_actor_use_potion(minion, /*enemy_near=*/hostile_dist >= 0 && hostile_dist <= kAiBuffPotionRange)) {
+        continue;
+      }
+
       if (minion.order == MinionOrder::AttackTarget) {
         int ti = actor_index_by_id(level.monsters, minion.attack_target_id);
         if (ti < 0) {
@@ -1537,11 +1860,9 @@ int main(int argc, char* argv[]) {
           continue;
         }
         Actor& target = level.monsters[static_cast<size_t>(ti)];
-        int tdx = std::abs(target.x - minion.x);
-        int tdy = std::abs(target.y - minion.y);
-        bool in_range = std::max(tdx, tdy) <= minion.attack_range;
+        bool in_range = distance_between(minion, target) <= minion.weapon.attack_range;
         if (in_range && line_clear(minion.x, minion.y, target.x, target.y, level.map)) {
-          resolve_actor_attack(minion, target);
+          resolve_attack(minion, target, minion.weapon);
           continue;
         }
         auto path = level.map.find_path(minion.x, minion.y, target.x, target.y);
@@ -1582,16 +1903,19 @@ int main(int argc, char* argv[]) {
       }
     }
 
-    // Deferred cleanup: remove anything that died during either AI loop above (a
-    // minion killed by a hostile monster, or a hostile monster killed by a minion).
-    // Deferred rather than erased in-place during either loop above, since both loops
-    // iterate over this same vector and can each kill something the *other* loop
-    // still needs to reference later in the same turn (e.g. monster #2 kills a minion
-    // that monster #5 is also currently targeting) — erasing immediately would shift
-    // indices out from under whichever loop hadn't gotten there yet. Contrast with
-    // explode()/advance_projectiles(), which erase immediately — those are
-    // self-contained single-purpose loops, not two loops that can each kill something
-    // the other is also indexing into.
+    // Deferred cleanup: the single place anything that died this turn is actually
+    // removed, wherever the killing blow came from — a projectile, an AoE blast, the
+    // Sandstorm tick, either AI loop, the player's own bump attack, or a minion's
+    // duration expiring. Every one of those only zeroes HP (see on_actor_killed()) and
+    // leaves the erase to here.
+    //
+    // It has to work this way because several of those loops iterate this same vector
+    // and can each kill something *another* one is still holding a reference or index
+    // into during the same turn (e.g. monster #2 kills a minion that monster #5 is also
+    // targeting) — erasing in place would shift elements out from under whichever loop
+    // hadn't gotten there yet. This is also why monster_at()/hostile_monster_at() filter
+    // on is_alive(): between the killing blow and this sweep, a corpse is still sitting
+    // in the vector and must not keep blocking its tile.
     for (size_t i = 0; i < level.monsters.size();) {
       if (!level.monsters[i].is_alive()) {
         level.monsters.erase(level.monsters.begin() + static_cast<long>(i));
@@ -1618,6 +1942,13 @@ int main(int argc, char* argv[]) {
     player.xp = 0;
     player.max_hp = max_hp_for_level_and_strength(player.level, player.strength);
     player.hp = player.max_hp;
+    // Derived from Dexterity, where a monster's is read straight off its table row —
+    // both land in the same Actor::evasion the one dodge formula reads.
+    player.evasion = evasion_for_dexterity(player.dexterity);
+    player.melee_engaged = false;
+    // The player is the one Actor that regenerates; every monster/minion table row
+    // leaves hp_regen_turns at 0. See Actor::hp_regen_turns.
+    player.hp_regen_turns = kHpRegenTurns;
     player.hp_regen_accumulator = 0.0f;
     player.max_mana = max_mana_for_intelligence(player.intelligence);
     player.mana = player.max_mana;
@@ -1632,9 +1963,9 @@ int main(int argc, char* argv[]) {
     player.temp_int_turns = 0;
     level.map.update_fov(player.x, player.y, FOV_RADIUS);
 
-    inventory.clear();
-    armor_inventory.clear();
-    potion_inventory.clear();
+    player.weapons.clear();
+    player.armors.clear();
+    player.potions.clear();
     pending_attribute_points = 0;
     active_toggle_spell = -1;
     message_log.clear();
@@ -1764,7 +2095,7 @@ int main(int argc, char* argv[]) {
         size_t comma = names.find(',', pos);
         std::string name = names.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
         if (!name.empty()) {
-          if (give_starting_item(name, inventory, armor_inventory, potion_inventory)) {
+          if (give_starting_item(name, player)) {
             add_message("Debug: added " + name + " to inventory.");
           } else {
             add_message("Debug: no item named \"" + name + "\" found.");
@@ -1792,9 +2123,18 @@ int main(int argc, char* argv[]) {
       std::cout << "  potion: " << ground_potion.potion.name << " (" << describe_potion(ground_potion.potion)
                  << ")\n";
     }
+    // Monsters carry gear now, and everything non-intrinsic here is what they'll drop —
+    // worth printing, since that's a real part of a floor's loot.
     std::cout << "Floor " << (current_level + 1) << " monsters:\n";
     for (const auto& monster : level.monsters) {
-      std::cout << "  " << monster.name << "\n";
+      std::cout << "  " << monster.name << " (" << monster.hp << " HP, " << monster.weapon.name << " "
+                << describe_weapon(monster.weapon) << ", STR " << monster.strength << ", DEX " << monster.dexterity
+                << ", evasion " << monster.evasion;
+      if (!monster.armor.is_intrinsic) std::cout << ", " << monster.armor.name;
+      std::cout << ")\n";
+      for (const auto& w : monster.weapons) std::cout << "      carries weapon: " << w.name << "\n";
+      for (const auto& a : monster.armors) std::cout << "      carries armor: " << a.name << "\n";
+      for (const auto& p : monster.potions) std::cout << "      carries potion: " << p.name << "\n";
     }
     return 0;
   }
@@ -1819,9 +2159,9 @@ int main(int argc, char* argv[]) {
       if (player.weapon.is_intrinsic) fists_line += " [equipped]";
       tcod::print(console, {0, 3}, fists_line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
 
-      for (size_t i = 0; i < inventory.size(); ++i) {
-        std::string line = std::string(1, static_cast<char>('b' + i)) + ") " + inventory[i].name + " (" +
-                            describe_weapon(inventory[i]) + ")";
+      for (size_t i = 0; i < player.weapons.size(); ++i) {
+        std::string line = std::string(1, static_cast<char>('b' + i)) + ") " + player.weapons[i].name + " (" +
+                            describe_weapon(player.weapons[i]) + ")";
         tcod::print(console, {0, 4 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
       }
     } else if (mode == Mode::ArmorMenu) {
@@ -1836,21 +2176,21 @@ int main(int argc, char* argv[]) {
       if (player.armor.is_intrinsic) none_line += " [equipped]";
       tcod::print(console, {0, 3}, none_line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
 
-      for (size_t i = 0; i < armor_inventory.size(); ++i) {
-        std::string line = std::string(1, static_cast<char>('b' + i)) + ") " + armor_inventory[i].name + " (" +
-                            describe_armor(armor_inventory[i]) + ")";
+      for (size_t i = 0; i < player.armors.size(); ++i) {
+        std::string line = std::string(1, static_cast<char>('b' + i)) + ") " + player.armors[i].name + " (" +
+                            describe_armor(player.armors[i]) + ")";
         tcod::print(console, {0, 4 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
       }
     } else if (mode == Mode::PotionMenu) {
       tcod::print(console, {0, 0}, "Potions - press a letter to drink, Esc to close", tcod::ColorRGB{255, 255, 255},
                   std::nullopt);
 
-      if (potion_inventory.empty()) {
+      if (player.potions.empty()) {
         tcod::print(console, {0, 2}, "(no potions carried)", tcod::ColorRGB{120, 120, 120}, std::nullopt);
       }
-      for (size_t i = 0; i < potion_inventory.size(); ++i) {
-        std::string line = std::string(1, static_cast<char>('a' + i)) + ") " + potion_inventory[i].name + " (" +
-                            describe_potion(potion_inventory[i]) + ")";
+      for (size_t i = 0; i < player.potions.size(); ++i) {
+        std::string line = std::string(1, static_cast<char>('a' + i)) + ") " + player.potions[i].name + " (" +
+                            describe_potion(player.potions[i]) + ")";
         tcod::print(console, {0, 2 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
       }
     } else if (mode == Mode::SpellMenu) {
@@ -1893,7 +2233,7 @@ int main(int argc, char* argv[]) {
       tcod::print(console, {0, 0}, "Drop - press a letter to drop, Esc to cancel", tcod::ColorRGB{255, 255, 255},
                   std::nullopt);
 
-      auto slots = drop_slots(player, inventory, armor_inventory, potion_inventory);
+      auto slots = drop_slots(player);
       if (slots.empty()) {
         tcod::print(console, {0, 2}, "(nothing to drop)", tcod::ColorRGB{120, 120, 120}, std::nullopt);
       }
@@ -1901,15 +2241,15 @@ int main(int argc, char* argv[]) {
         char letter = static_cast<char>('a' + i);
         std::string line;
         if (slots[i].kind == ItemKind::Weapon) {
-          const Weapon& w = (slots[i].index == -1) ? player.weapon : inventory[static_cast<size_t>(slots[i].index)];
+          const Weapon& w = (slots[i].index == -1) ? player.weapon : player.weapons[static_cast<size_t>(slots[i].index)];
           line = std::string(1, letter) + ") " + w.name + " (" + describe_weapon(w) + ")";
           if (slots[i].index == -1) line += " [equipped]";
         } else if (slots[i].kind == ItemKind::Armor) {
-          const Armor& a = (slots[i].index == -1) ? player.armor : armor_inventory[static_cast<size_t>(slots[i].index)];
+          const Armor& a = (slots[i].index == -1) ? player.armor : player.armors[static_cast<size_t>(slots[i].index)];
           line = std::string(1, letter) + ") " + a.name + " (" + describe_armor(a) + ")";
           if (slots[i].index == -1) line += " [equipped]";
         } else {
-          const Potion& p = potion_inventory[static_cast<size_t>(slots[i].index)];
+          const Potion& p = player.potions[static_cast<size_t>(slots[i].index)];
           line = std::string(1, letter) + ") " + p.name + " (" + describe_potion(p) + ")";
         }
         tcod::print(console, {0, 2 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
@@ -2063,6 +2403,9 @@ int main(int argc, char* argv[]) {
       sb_print("STR: " + stat_str(player.strength, player.temp_str_bonus), tcod::ColorRGB{200, 200, 200});
       sb_print("DEX: " + stat_str(player.dexterity, player.temp_dex_bonus), tcod::ColorRGB{200, 200, 200});
       sb_print("INT: " + stat_str(player.intelligence, player.temp_int_bonus), tcod::ColorRGB{200, 200, 200});
+      // Evasion is a real, comparable number now — the same rating a monster's table row
+      // authors — so it's worth showing rather than leaving DEX's effect implicit.
+      sb_print("Eva: " + std::to_string(player.evasion), tcod::ColorRGB{200, 200, 200});
       sb_print("Wpn: " + player.weapon.name, tcod::ColorRGB{200, 200, 200});
       sb_print("  (" + describe_weapon(player.weapon) + ")", tcod::ColorRGB{150, 150, 150});
       sb_print("Arm: " + player.armor.name, tcod::ColorRGB{200, 200, 200});
@@ -2109,6 +2452,16 @@ int main(int argc, char* argv[]) {
                        tcod::ColorRGB{200, 200, 200});
               sb_print("    Wpn: " + m.weapon.name + " (" + describe_weapon(m.weapon) + ")",
                        tcod::ColorRGB{200, 200, 200});
+              // Monsters wear armor and carry packs now, so 'x' is the way to see what
+              // a fight is actually going to cost you — and what it'll drop.
+              if (!m.armor.is_intrinsic) {
+                sb_print("    Arm: " + m.armor.name + " (" + describe_armor(m.armor) + ")",
+                         tcod::ColorRGB{200, 200, 200});
+              }
+              sb_print("    Eva: " + std::to_string(m.evasion) + "  STR: " + std::to_string(m.strength),
+                       tcod::ColorRGB{150, 150, 150});
+              for (const auto& carried : m.weapons) sb_print("    - " + carried.name, tcod::ColorRGB{170, 170, 200});
+              for (const auto& carried : m.potions) sb_print("    - " + carried.name, carried.color);
               if (m.allegiance == Allegiance::Player) {
                 sb_print("    " + describe_minion_order(m, level.monsters), tcod::ColorRGB{200, 200, 200});
               }
@@ -2550,24 +2903,32 @@ int main(int argc, char* argv[]) {
         bool shift_held = (event.key.mod & SDL_KMOD_SHIFT) != 0;
         if (event.key.key == SDLK_ESCAPE) {
           running = false;
+        // Each of these raises the attribute and then applies that point's knock-on
+        // ceiling as a delta, rather than recomputing the ceiling from the attribute —
+        // the same rule apply_potion() follows, so spending a level-up point while a
+        // stat potion is running doesn't quietly cancel the potion. Current HP/mana rise
+        // with the ceiling here (unlike a temporary buff, which only lifts the ceiling).
         } else if (shift_held && event.key.key == SDLK_S) {
           player.strength += 1;
-          int new_max_hp = max_hp_for_level_and_strength(player.level, player.strength);
-          player.hp += new_max_hp - player.max_hp;
-          player.max_hp = new_max_hp;
+          player.max_hp += kHpPerStrength;
+          player.hp += kHpPerStrength;
           add_message("Strength increased to " + std::to_string(player.strength) + "!");
           pending_attribute_points -= 1;
         } else if (shift_held && event.key.key == SDLK_D) {
+          // Dexterity is now worth accuracy on every attack as well as evasion — see
+          // the combat-formula block at the top of this file.
           player.dexterity += 1;
+          player.evasion += kDodgePerDexPoint;
           add_message("Dexterity increased to " + std::to_string(player.dexterity) + "!");
           pending_attribute_points -= 1;
         } else if (shift_held && event.key.key == SDLK_I) {
           auto known_before = known_spell_indices(player.intelligence);
+          int mana_delta =
+              max_mana_for_intelligence(player.intelligence + 1) - max_mana_for_intelligence(player.intelligence);
           player.intelligence += 1;
           auto known_after = known_spell_indices(player.intelligence);
-          int new_max_mana = max_mana_for_intelligence(player.intelligence);
-          player.mana += new_max_mana - player.max_mana;
-          player.max_mana = new_max_mana;
+          player.max_mana += mana_delta;
+          player.mana += mana_delta;
           add_message("Intelligence increased to " + std::to_string(player.intelligence) + "!");
           for (int spell_idx : known_after) {
             bool already_known = std::find(known_before.begin(), known_before.end(), spell_idx) != known_before.end();
@@ -2590,15 +2951,15 @@ int main(int argc, char* argv[]) {
           if (idx == 0) {
             chosen = kFists;
             valid = true;
-          } else if (idx - 1 < inventory.size()) {
-            chosen = inventory[idx - 1];
-            inventory.erase(inventory.begin() + static_cast<long>(idx - 1));
+          } else if (idx - 1 < player.weapons.size()) {
+            chosen = player.weapons[idx - 1];
+            player.weapons.erase(player.weapons.begin() + static_cast<long>(idx - 1));
             valid = true;
           }
           if (valid) {
             // Swap the old weapon back into the pack, unless it's an intrinsic one
             // like bare fists, which isn't a real item.
-            if (!player.weapon.is_intrinsic) inventory.push_back(player.weapon);
+            if (!player.weapon.is_intrinsic) player.weapons.push_back(player.weapon);
             player.weapon = chosen;
             add_message("You equip the " + chosen.name + ".");
             mode = Mode::Playing;
@@ -2619,13 +2980,13 @@ int main(int argc, char* argv[]) {
           if (idx == 0) {
             chosen = kNoArmor;
             valid = true;
-          } else if (idx - 1 < armor_inventory.size()) {
-            chosen = armor_inventory[idx - 1];
-            armor_inventory.erase(armor_inventory.begin() + static_cast<long>(idx - 1));
+          } else if (idx - 1 < player.armors.size()) {
+            chosen = player.armors[idx - 1];
+            player.armors.erase(player.armors.begin() + static_cast<long>(idx - 1));
             valid = true;
           }
           if (valid) {
-            if (!player.armor.is_intrinsic) armor_inventory.push_back(player.armor);
+            if (!player.armor.is_intrinsic) player.armors.push_back(player.armor);
             player.armor = chosen;
             add_message("You equip the " + chosen.name + ".");
             mode = Mode::Playing;
@@ -2640,49 +3001,12 @@ int main(int argc, char* argv[]) {
           mode = Mode::Playing;
         } else if (event.key.key >= SDLK_A && event.key.key <= SDLK_Z) {
           size_t idx = static_cast<size_t>(event.key.key - SDLK_A);
-          if (idx < potion_inventory.size()) {
-            Potion chosen = potion_inventory[idx];
-            potion_inventory.erase(potion_inventory.begin() + static_cast<long>(idx));
-            if (chosen.heal_percent > 0) {
-              int heal_amount = player.max_hp * chosen.heal_percent / 100;
-              player.hp = std::min(player.hp + heal_amount, player.max_hp);
-              add_message("You drink the " + chosen.name + " and recover " + std::to_string(heal_amount) + " HP.");
-            } else if (chosen.buff_stat == StatKind::Strength) {
-              // Re-drinking while already buffed just refreshes the timer, rather than
-              // stacking the bonus indefinitely.
-              if (player.temp_str_turns <= 0) {
-                player.temp_str_bonus = chosen.buff_amount;
-                player.max_hp = max_hp_for_level_and_strength(player.level, player.strength + player.temp_str_bonus);
-                // Ceiling only, unlike leveling up: current HP doesn't jump with it.
-              }
-              player.temp_str_turns = chosen.buff_turns;
-              add_message("You feel mighty! STR +" + std::to_string(chosen.buff_amount) + " for " +
-                          std::to_string(chosen.buff_turns) + " turns.");
-            } else if (chosen.buff_stat == StatKind::Dexterity) {
-              if (player.temp_dex_turns <= 0) player.temp_dex_bonus = chosen.buff_amount;
-              player.temp_dex_turns = chosen.buff_turns;
-              add_message("You feel nimble! DEX +" + std::to_string(chosen.buff_amount) + " for " +
-                          std::to_string(chosen.buff_turns) + " turns.");
-            } else if (chosen.buff_stat == StatKind::Intelligence) {
-              if (player.temp_int_turns <= 0) {
-                player.temp_int_bonus = chosen.buff_amount;
-                player.max_mana = max_mana_for_intelligence(player.intelligence + player.temp_int_bonus);
-                // Ceiling only, unlike leveling up: current mana doesn't jump with it.
-              }
-              player.temp_int_turns = chosen.buff_turns;
-              add_message("You feel sharp! INT +" + std::to_string(chosen.buff_amount) + " for " +
-                          std::to_string(chosen.buff_turns) + " turns.");
-            } else if (chosen.teleports) {
-              std::vector<std::pair<int, int>> occupied;
-              for (const auto& m : level.monsters) occupied.push_back({m.x, m.y});
-              auto [tx, ty] = random_free_tile(level.map, occupied);
-              player.x = tx;
-              player.y = ty;
-              // Not an incremental step, so (unlike normal movement) FOV needs an
-              // explicit recompute — same as descend()/ascend() after a floor change.
-              level.map.update_fov(player.x, player.y, FOV_RADIUS);
-              add_message("You vanish and reappear elsewhere!");
-            }
+          if (idx < player.potions.size()) {
+            // Same call an Orc Archer makes when it decides to quaff its own Heal
+            // Potion — see apply_potion(), where every potion effect is defined once.
+            Potion chosen = player.potions[idx];
+            player.potions.erase(player.potions.begin() + static_cast<long>(idx));
+            apply_potion(player, chosen);
             mode = Mode::Playing;
             end_turn();  // drinking takes a moment; adjacent monsters get a free hit
           }
@@ -2732,22 +3056,7 @@ int main(int argc, char* argv[]) {
               } else {
                 player.mana -= spell.mana_cost;
                 const MinionTemplate& tmpl = kMinionTable[static_cast<size_t>(spell.summon_template_index)];
-                Actor minion;
-                minion.id = allocate_actor_id();
-                minion.allegiance = Allegiance::Player;
-                minion.x = spawn_x;
-                minion.y = spawn_y;
-                minion.hp = minion.max_hp = tmpl.max_hp;
-                minion.glyph = tmpl.glyph;
-                minion.color = tmpl.color;
-                minion.name = tmpl.name;
-                minion.weapon = tmpl.weapon;
-                minion.evasion = tmpl.evasion;
-                minion.dexterity = tmpl.accuracy;  // read by dodge_chance_vs(), same as a hostile monster
-                minion.attack_range = tmpl.attack_range;
-                minion.melee_weapon = tmpl.melee_weapon;
-                minion.melee_dexterity = tmpl.melee_accuracy;
-                minion.duration_turns = tmpl.duration_turns;
+                Actor minion = spawn_minion(tmpl, spawn_x, spawn_y);
                 // Joins the pack's current stance rather than always defaulting to
                 // Follow — if an existing minion is already off attacking something,
                 // the new recruit should too, not stand around while its allies
@@ -2993,6 +3302,12 @@ int main(int argc, char* argv[]) {
           // Intelligence) boosts this the same as permanent INT would — only spell
           // *unlocking* (known_spell_indices, above) ignores the temporary bonus.
           proj.bonus = (player.intelligence + player.temp_int_bonus) / 3;
+          // A spell's accuracy is built the same way a weapon swing's is: the caster's
+          // Dexterity term plus the spell's own hit-dice, rolled on impact. Locking the
+          // Dexterity half in here (rather than reading it when the projectile lands
+          // several turns later) is what makes a slow Fireball as accurate as the moment
+          // it was thrown.
+          proj.accuracy_bonus = (player.dexterity + player.temp_dex_bonus) * kAccuracyPerDexPoint;
           proj.name = spell.name;
           proj.glyph = spell.glyph;
           proj.color = spell.color;
@@ -3067,10 +3382,12 @@ int main(int argc, char* argv[]) {
         }
         if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER) {
           // Same shape as a spell cast (Mode::Targeting above), just sourced from the
-          // weapon instead of a Spell, no mana cost, and the accuracy/damage bonus is
-          // Dexterity-derived instead of Intelligence-derived (see monster_dodge_chance()
-          // and Projectile::accuracy_bonus) — every 3 points of Dexterity adds +1 to
-          // both, same divisor Intelligence already uses for spell damage.
+          // weapon instead of a Spell and with no mana cost. Both bonuses come from the
+          // shared helpers, so a fired Bow lands with exactly the accuracy and damage
+          // that same Bow would have if a monster were shooting it at you:
+          // damage_bonus_for() gives a ranged weapon the Dexterity bonus, and
+          // accuracy_bonus carries the caster's Dexterity accuracy term (the weapon's
+          // own hit-dice are still rolled fresh on impact).
           Projectile proj;
           proj.path = trace_path(player.x, player.y, target_x, target_y);
           proj.speed = kInstantSpellSpeed;
@@ -3080,9 +3397,8 @@ int main(int argc, char* argv[]) {
           proj.hit_dice_sides = weapon.hit_dice_sides;
           proj.prev_x = player.x;
           proj.prev_y = player.y;
-          int dex_bonus = (player.dexterity + player.temp_dex_bonus) / 3;
-          proj.bonus = weapon.bonus + dex_bonus;
-          proj.accuracy_bonus = dex_bonus;
+          proj.bonus = weapon.bonus + damage_bonus_for(player, weapon);
+          proj.accuracy_bonus = (player.dexterity + player.temp_dex_bonus) * kAccuracyPerDexPoint;
           proj.name = weapon.name;
           proj.glyph = '-';
           proj.color = tcod::ColorRGB{200, 170, 100};
@@ -3209,7 +3525,7 @@ int main(int argc, char* argv[]) {
         if (event.key.key == SDLK_ESCAPE) {
           mode = Mode::Playing;
         } else if (event.key.key >= SDLK_A && event.key.key <= SDLK_Z) {
-          auto slots = drop_slots(player, inventory, armor_inventory, potion_inventory);
+          auto slots = drop_slots(player);
           size_t idx = static_cast<size_t>(event.key.key - SDLK_A);
           if (idx < slots.size()) {
             const ItemSlot& slot = slots[idx];
@@ -3221,8 +3537,8 @@ int main(int argc, char* argv[]) {
                 player.weapon = kFists;
               } else {
                 size_t inv_idx = static_cast<size_t>(slot.index);
-                dropped = inventory[inv_idx];
-                inventory.erase(inventory.begin() + static_cast<long>(inv_idx));
+                dropped = player.weapons[inv_idx];
+                player.weapons.erase(player.weapons.begin() + static_cast<long>(inv_idx));
               }
               level.items.push_back(GroundItem{player.x, player.y, dropped});
               dropped_name = dropped.name;
@@ -3233,15 +3549,15 @@ int main(int argc, char* argv[]) {
                 player.armor = kNoArmor;
               } else {
                 size_t inv_idx = static_cast<size_t>(slot.index);
-                dropped = armor_inventory[inv_idx];
-                armor_inventory.erase(armor_inventory.begin() + static_cast<long>(inv_idx));
+                dropped = player.armors[inv_idx];
+                player.armors.erase(player.armors.begin() + static_cast<long>(inv_idx));
               }
               level.armor_items.push_back(GroundArmor{player.x, player.y, dropped});
               dropped_name = dropped.name;
             } else {
               size_t inv_idx = static_cast<size_t>(slot.index);
-              Potion dropped = potion_inventory[inv_idx];
-              potion_inventory.erase(potion_inventory.begin() + static_cast<long>(inv_idx));
+              Potion dropped = player.potions[inv_idx];
+              player.potions.erase(player.potions.begin() + static_cast<long>(inv_idx));
               level.potions.push_back(GroundPotion{player.x, player.y, dropped});
               dropped_name = dropped.name;
             }
@@ -3276,36 +3592,40 @@ int main(int argc, char* argv[]) {
         continue;
       }
       if (event.key.key == SDLK_G) {
-        // Picks up whatever's on the player's current tile (no more auto-pickup on
-        // step). Picks up one of each kind if several happen to be here, each as its
-        // own message rather than one combined line.
+        // Picks up *everything* on the player's current tile (no auto-pickup on step),
+        // each as its own message rather than one combined line. This used to take only
+        // the first item of each kind, which was fine when the floor was the only source
+        // of loot — but a dead monster now drops its whole pack on one tile (an Orc
+        // Archer leaves both a Short Bow and a Short Sword), and leaving half of it
+        // behind with no indication anything remained was just confusing. One turn
+        // total, however much is here.
+        //
+        // Each loop walks backwards so erasing the current element can't shift an
+        // unvisited one out from under the index.
         bool picked_up_anything = false;
-        for (auto it = level.items.begin(); it != level.items.end(); ++it) {
-          if (it->x == player.x && it->y == player.y) {
-            add_message("You pick up a " + it->weapon.name + ". Press 'w' to equip.");
-            inventory.push_back(it->weapon);
-            level.items.erase(it);
-            picked_up_anything = true;
-            break;
-          }
+        for (int i = static_cast<int>(level.items.size()) - 1; i >= 0; --i) {
+          const GroundItem& ground = level.items[static_cast<size_t>(i)];
+          if (ground.x != player.x || ground.y != player.y) continue;
+          add_message("You pick up a " + ground.weapon.name + ". Press 'w' to equip.");
+          player.weapons.push_back(ground.weapon);
+          level.items.erase(level.items.begin() + i);
+          picked_up_anything = true;
         }
-        for (auto it = level.armor_items.begin(); it != level.armor_items.end(); ++it) {
-          if (it->x == player.x && it->y == player.y) {
-            add_message("You pick up a " + it->armor.name + ". Press 'a' to equip.");
-            armor_inventory.push_back(it->armor);
-            level.armor_items.erase(it);
-            picked_up_anything = true;
-            break;
-          }
+        for (int i = static_cast<int>(level.armor_items.size()) - 1; i >= 0; --i) {
+          const GroundArmor& ground = level.armor_items[static_cast<size_t>(i)];
+          if (ground.x != player.x || ground.y != player.y) continue;
+          add_message("You pick up a " + ground.armor.name + ". Press 'a' to equip.");
+          player.armors.push_back(ground.armor);
+          level.armor_items.erase(level.armor_items.begin() + i);
+          picked_up_anything = true;
         }
-        for (auto it = level.potions.begin(); it != level.potions.end(); ++it) {
-          if (it->x == player.x && it->y == player.y) {
-            add_message("You pick up a " + it->potion.name + ". Press 'q' to drink.");
-            potion_inventory.push_back(it->potion);
-            level.potions.erase(it);
-            picked_up_anything = true;
-            break;
-          }
+        for (int i = static_cast<int>(level.potions.size()) - 1; i >= 0; --i) {
+          const GroundPotion& ground = level.potions[static_cast<size_t>(i)];
+          if (ground.x != player.x || ground.y != player.y) continue;
+          add_message("You pick up a " + ground.potion.name + ". Press 'q' to drink.");
+          player.potions.push_back(ground.potion);
+          level.potions.erase(level.potions.begin() + i);
+          picked_up_anything = true;
         }
         if (picked_up_anything) {
           end_turn();
@@ -3385,9 +3705,20 @@ int main(int argc, char* argv[]) {
       bool pressed_stairs_up =
           event.key.key == SDLK_LESS || (event.key.key == SDLK_COMMA && (event.key.mod & SDL_KMOD_SHIFT));
 
+      // Taking stairs costs a turn like any other action. end_turn() runs *before* the
+      // transition, so the floor you're leaving gets one parting action — anything
+      // adjacent to the stairs gets a swing in as you go, rather than the stairs being a
+      // free escape from a losing fight. That also means you can die on the way out,
+      // hence the mode check before actually moving floors.
+      //
+      // Deliberately called here rather than inside descend()/ascend(): the --floor=N
+      // debug flag replays descend() in a loop at startup, and running a full turn of
+      // monster AI on every intermediate floor before the game even opens would be
+      // wrong.
       if (pressed_stairs_down) {
         if (player.x == level.stairs_down_x && player.y == level.stairs_down_y) {
-          descend();
+          end_turn();
+          if (mode != Mode::Dead) descend();
         } else {
           add_message("There are no stairs down here.");
         }
@@ -3395,7 +3726,8 @@ int main(int argc, char* argv[]) {
       }
       if (pressed_stairs_up) {
         if (level.has_stairs_up && player.x == level.entry_x && player.y == level.entry_y) {
-          ascend();
+          end_turn();
+          if (mode != Mode::Dead) ascend();
         } else {
           add_message("There are no stairs up here.");
         }
@@ -3470,25 +3802,10 @@ int main(int argc, char* argv[]) {
         level.map.update_fov(player.x, player.y, FOV_RADIUS);
         end_turn();
       } else if (target_index >= 0) {
-        // Bump attack: walking into a monster attacks it instead of moving.
-        Actor& target = level.monsters[static_cast<size_t>(target_index)];
-
-        int dodge_chance = monster_dodge_chance(target.evasion, player.weapon.hit_dice_count, player.weapon.hit_dice_sides);
-        if (random_int(1, 100) <= dodge_chance) {
-          add_message("The " + target.name + " dodges your attack!");
-        } else {
-          int damage = roll_damage(player.weapon) + player.strength + player.temp_str_bonus;
-          target.hp -= damage;
-
-          if (!target.is_alive()) {
-            add_message("You slay the " + target.name + " with your " + player.weapon.name + "!");
-            int xp_reward = target.xp_reward;  // read before erase invalidates `target`
-            level.monsters.erase(level.monsters.begin() + target_index);
-            grant_xp(xp_reward);
-          } else {
-            add_message("You hit the " + target.name + " for " + std::to_string(damage) + ".");
-          }
-        }
+        // Bump attack: walking into a monster attacks it instead of moving. Exactly the
+        // same call a monster makes when it swings at you — the dodge roll, the armor
+        // reduction, the XP and the loot drop all live in resolve_attack(), not here.
+        resolve_attack(player, level.monsters[static_cast<size_t>(target_index)], player.weapon);
         end_turn();  // any monster(s) still adjacent (including the one just hit) get to act
       } else if (level.map.is_walkable(new_x, new_y)) {
         player.x = new_x;

@@ -38,6 +38,14 @@ const std::vector<Weapon> kWeaponTable = {
      /*hit_dice_count=*/1, /*hit_dice_sides=*/4},
     {"Battle Axe", 2, 6, 0, /*is_intrinsic=*/false, /*min_depth=*/5, /*max_depth=*/-1,
      /*hit_dice_count=*/1, /*hit_dice_sides=*/3},
+    // The player's first ranged weapon (see Weapon::attack_range) — fired via
+    // Mode::RangedAttack ('f'), not bump-to-attack. Deliberately modest dice (matching
+    // Short Sword) since, unlike melee, its damage AND accuracy also get a flat
+    // Dexterity-derived bonus on top (see the 'f' handler) — plus the range and safety
+    // of not needing to close to melee. Ammo is unlimited for now; flagged as a
+    // balance question to revisit once it's actually been played with.
+    {"Bow", 1, 6, 0, /*is_intrinsic=*/false, /*min_depth=*/1, /*max_depth=*/-1,
+     /*hit_dice_count=*/2, /*hit_dice_sides=*/4, /*attack_range=*/8},
 };
 
 // Armor that can be found lying on the floor. Same depth-gating shape as kWeaponTable.
@@ -210,12 +218,23 @@ std::vector<int> weapons_available_at_depth(int depth) { return available_at_dep
 std::vector<int> armor_available_at_depth(int depth) { return available_at_depth(kArmorTable, depth); }
 std::vector<int> potions_available_at_depth(int depth) { return available_at_depth(kPotionTable, depth); }
 
-// Max HP scales with Strength, so there's no need for a separate Vitality stat.
-int max_hp_for_strength(int strength) { return 10 + strength * 5; }
+// Max HP scales with both level and Strength — no separate Vitality stat. Leveling up
+// alone (regardless of which attribute the point actually goes to) grants a flat
+// kHpPerLevel per level past the first, so HP always grows with depth/XP even across a
+// run that never touches Strength; Strength then adds even more on top per point
+// invested (kHpPerStrength > kHpPerLevel), since it's the stat actually themed around
+// survivability. (level - 1) so a fresh level-1 character's starting HP is unaffected —
+// the level term only kicks in once they've actually leveled up at least once.
+constexpr int kHpPerLevel = 3;
+constexpr int kHpPerStrength = 7;
+int max_hp_for_level_and_strength(int level, int strength) {
+  return 10 + (level - 1) * kHpPerLevel + strength * kHpPerStrength;
+}
 
-// Max mana scales with Intelligence. Deliberately not shaped like max_hp_for_strength
-// above — mana costs are small (1-3 per cast, see kSpellTable) so the pool only needs
-// to be a handful of casts deep, not hundreds of points.
+// Max mana scales with Intelligence only, not level, unlike
+// max_hp_for_level_and_strength above — mana costs are small (1-3 per cast, see
+// kSpellTable) so the pool only needs to be a handful of casts deep, not hundreds of
+// points.
 int max_mana_for_intelligence(int intelligence) { return 4 + static_cast<int>(std::ceil(1.8 * intelligence)); }
 
 // Turns for passive HP regen to heal from 0 to full. Regen scales with max HP (see
@@ -251,9 +270,12 @@ int dodge_chance_vs(int defender_dex, int attacker_dex) {
 // further into evasion, making the attack harder to dodge. Reuses the same
 // kDodgeFloor/kDodgeCeiling clamp as dodge_chance_vs since "always some chance, never
 // a certainty" is a property of any dodge roll in this game, not just the Dexterity
-// contest.
-int monster_dodge_chance(int target_evasion, int hit_dice_count, int hit_dice_sides) {
-  int chance = target_evasion - roll_dice(hit_dice_count, hit_dice_sides);
+// contest. accuracy_bonus is a flat addition to the roll, defaulting to 0 for every
+// existing caller (melee, spells) — only a ranged weapon shot (Mode::RangedAttack)
+// sets it, to a Dexterity-derived value, so "hit chance scales with Dexterity" is
+// specific to ranged weapons rather than changing how melee/spell accuracy works.
+int monster_dodge_chance(int target_evasion, int hit_dice_count, int hit_dice_sides, int accuracy_bonus = 0) {
+  int chance = target_evasion - (roll_dice(hit_dice_count, hit_dice_sides) + accuracy_bonus);
   return std::clamp(chance, kDodgeFloor, kDodgeCeiling);
 }
 
@@ -391,17 +413,23 @@ struct GroundPotion {
   Potion potion;
 };
 
-// A spell in flight: advances along a precomputed path by `speed` tiles every player
-// turn (see advance_projectiles), hitting the first wall or monster it reaches.
+// A spell (or, via Mode::RangedAttack, a fired weapon shot — same struct, same
+// resolution code, just sourced from a Weapon instead of a Spell at fire time) in
+// flight: advances along a precomputed path by `speed` tiles every player turn (see
+// advance_projectiles), hitting the first wall or monster it reaches.
 struct Projectile {
   std::vector<std::pair<int, int>> path;  // tiles from just past the caster through the target
   size_t path_index = 0;                  // how many tiles of the path have been consumed so far
   int speed = 1;
   int dice_count = 1;
   int dice_sides = 2;
-  int bonus = 0;  // locked in at cast time (e.g. floor(INT/3)), not re-read later
-  int hit_dice_count = 1;  // locked in from the spell at cast time, see monster_dodge_chance()
+  int bonus = 0;  // locked in at cast/fire time (e.g. floor(INT/3), floor(DEX/3)), not re-read later
+  int hit_dice_count = 1;  // locked in from the spell/weapon at cast/fire time, see monster_dodge_chance()
   int hit_dice_sides = 4;
+  // Flat addition to the accuracy roll (see monster_dodge_chance()) — 0 for every
+  // spell (their accuracy is purely hit-dice, unaffected by INT), set to a
+  // Dexterity-derived value only for a ranged weapon shot (Mode::RangedAttack).
+  int accuracy_bonus = 0;
   int aoe_radius = 0;  // 0 = single-target hit only; >0 = explode in a square blast on impact
   int prev_x = 0;  // last tile actually entered so far (seeded at the caster's tile at cast
   int prev_y = 0;  // time) — where an aoe_radius>0 spell explodes if the next tile is a wall
@@ -546,6 +574,7 @@ tcod::ColorRGB dim_color(tcod::ColorRGB c) {
 std::string describe_weapon(const Weapon& weapon) {
   std::string desc = std::to_string(weapon.dice_count) + "d" + std::to_string(weapon.dice_sides);
   if (weapon.bonus != 0) desc += "+" + std::to_string(weapon.bonus);
+  if (weapon.attack_range > 1) desc += ", range " + std::to_string(weapon.attack_range);
   return desc;
 }
 
@@ -961,10 +990,11 @@ int main(int argc, char* argv[]) {
     Help,
     MinionRoster,
     MinionFocus,
-    Look
+    Look,
+    RangedAttack
   };
   int casting_spell_index = -1;  // which kSpellTable entry is being aimed, while Mode::Targeting
-  int target_x = 0;   // cursor position, while Mode::Targeting, Mode::MinionFocus, or Mode::Look
+  int target_x = 0;  // cursor position, while Mode::Targeting, MinionFocus, Look, or RangedAttack
   int target_y = 0;
   // Index into kSpellTable of the currently-running toggle spell (e.g. Sandstorm), or
   // -1 if none is active. Only one toggle spell can run at a time — simple on purpose,
@@ -997,6 +1027,15 @@ int main(int argc, char* argv[]) {
   auto level_up_once = [&]() {
     player.level += 1;
     pending_attribute_points += 1;
+    // The level-up itself grants HP (see max_hp_for_level_and_strength) regardless of
+    // which attribute the point later gets spent on — previously a run that never
+    // chose Strength never gained any max HP at all past character creation. Same
+    // "current-jump" convention every other permanent max_hp increase already uses
+    // (e.g. the LevelUp Shift+S handler below): current HP rises by the same delta,
+    // not just the ceiling.
+    int new_max_hp = max_hp_for_level_and_strength(player.level, player.strength);
+    player.hp += new_max_hp - player.max_hp;
+    player.max_hp = new_max_hp;
   };
 
   // Grants XP and processes any level-ups it triggers (normally one, but a large XP
@@ -1102,7 +1141,8 @@ int main(int argc, char* argv[]) {
             explode(proj, x, y);  // the monster's own tile is a valid, walkable center
           } else {
             Actor& target = level.monsters[static_cast<size_t>(target_index)];
-            int dodge_chance = monster_dodge_chance(target.evasion, proj.hit_dice_count, proj.hit_dice_sides);
+            int dodge_chance =
+                monster_dodge_chance(target.evasion, proj.hit_dice_count, proj.hit_dice_sides, proj.accuracy_bonus);
             if (random_int(1, 100) <= dodge_chance) {
               add_message("The " + target.name + " dodges your " + proj.name + "!");
             } else {
@@ -1165,7 +1205,7 @@ int main(int argc, char* argv[]) {
       player.temp_str_turns -= 1;
       if (player.temp_str_turns == 0) {
         player.temp_str_bonus = 0;
-        player.max_hp = max_hp_for_strength(player.strength);
+        player.max_hp = max_hp_for_level_and_strength(player.level, player.strength);
         player.hp = std::min(player.hp, player.max_hp);  // clamp in case regen filled past the new, lower ceiling
         add_message("Your surge of strength fades.");
       }
@@ -1576,7 +1616,7 @@ int main(int argc, char* argv[]) {
     player.intelligence = 2;
     player.level = 1;
     player.xp = 0;
-    player.max_hp = max_hp_for_strength(player.strength);
+    player.max_hp = max_hp_for_level_and_strength(player.level, player.strength);
     player.hp = player.max_hp;
     player.hp_regen_accumulator = 0.0f;
     player.max_mana = max_mana_for_intelligence(player.intelligence);
@@ -1908,14 +1948,16 @@ int main(int argc, char* argv[]) {
           "g                                 Pick up everything on your tile",
           "w  a  q                           Weapon / Armor / Potion menu (equip or drink)",
           "d                                 Drop a weapon, armor, or potion",
+          "f                                 Fire the equipped ranged weapon (move to target,",
+          "                                  Enter to loose it, Esc to cancel)",
           "z                                 Cast a known spell",
           "m                                 Command a minion or all of them (roster menu; Shift+A",
           "                                  there jumps straight to All)",
           "o  p                              Cycle command focus to the next/previous minion",
           "Shift+P                           Return focus to yourself",
-          "f  Enter                          While focused: Follow / confirm Attack or Hold",
-          "                                  (sidebar shows each minion's order as [F]ollow /",
-          "                                  [H]old / [A]ttack)",
+          "f  Enter                          While focused on a minion instead: Follow / confirm",
+          "                                  Attack or Hold (sidebar shows each minion's order as",
+          "                                  [F]ollow / [H]old / [A]ttack)",
           "x                                 Look around (move the cursor, side panel shows",
           "                                  details); x or Esc to close",
           "]                                 Message log (full scrollback)",
@@ -1979,6 +2021,9 @@ int main(int argc, char* argv[]) {
       } else if (mode == Mode::Look) {
         tcod::print(console, {0, CONTEXT_ROW}, "Looking around - move the cursor to inspect, Esc to close.",
                     tcod::ColorRGB{255, 255, 100}, std::nullopt);
+      } else if (mode == Mode::RangedAttack) {
+        std::string prompt = "Firing your " + player.weapon.name + " - move to target, Enter to fire, Esc to cancel.";
+        tcod::print(console, {0, CONTEXT_ROW}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
       }
 
       // --- Sidebar: character stats, then who's around ("at a glance") ---
@@ -2130,14 +2175,16 @@ int main(int argc, char* argv[]) {
 
       // --- Map panel ---
       // Camera: centers on the player, except while aiming or looking around
-      // (Targeting/MinionFocus/Look), where it centers on the cursor instead so a
-      // cursor that has wandered away from the player (MinionFocus and Look have no
-      // range limit, unlike a spell's Targeting) never drifts off-screen. Clamped so
-      // the viewport never scrolls past the map's edge — same clamp-to-bounds shape
-      // regardless of which point it's following.
+      // (Targeting/RangedAttack/MinionFocus/Look), where it centers on the cursor
+      // instead so a cursor that has wandered away from the player (MinionFocus and
+      // Look have no range limit, unlike a spell's Targeting or a weapon's
+      // RangedAttack) never drifts off-screen. Clamped so the viewport never scrolls
+      // past the map's edge — same clamp-to-bounds shape regardless of which point
+      // it's following.
       int camera_focus_x = player.x;
       int camera_focus_y = player.y;
-      if (mode == Mode::Targeting || mode == Mode::MinionFocus || mode == Mode::Look) {
+      if (mode == Mode::Targeting || mode == Mode::MinionFocus || mode == Mode::Look ||
+          mode == Mode::RangedAttack) {
         camera_focus_x = target_x;
         camera_focus_y = target_y;
       }
@@ -2322,6 +2369,24 @@ int main(int argc, char* argv[]) {
         }
       }
 
+      if (mode == Mode::RangedAttack) {
+        // Same aim-preview line as Mode::Targeting above, minus the AoE step — no
+        // player weapon has a blast radius today, so there's nothing extra to predict.
+        auto preview = trace_path(player.x, player.y, target_x, target_y);
+        for (size_t i = 0; i < preview.size(); ++i) {
+          auto [x, y] = preview[i];
+          bool blocked = !level.map.is_walkable(x, y);
+          bool has_monster = hostile_monster_at(level.monsters, x, y) >= 0;
+          bool stops_here = blocked || has_monster || i + 1 == preview.size();
+          if (in_view(x, y)) {
+            auto& cell = console.at(MAP_ORIGIN_X + x - camera_x, MAP_ORIGIN_Y + y - camera_y);
+            cell.ch = stops_here ? 'X' : '*';
+            cell.fg = stops_here ? tcod::ColorRGB{255, 60, 60} : tcod::ColorRGB{150, 60, 60};
+          }
+          if (blocked || has_monster) break;
+        }
+      }
+
       if (mode == Mode::MinionFocus) {
         // Highlights whichever minion(s) are currently being commanded — once the
         // cursor wanders away from a minion's own tile there's otherwise no way to
@@ -2487,7 +2552,7 @@ int main(int argc, char* argv[]) {
           running = false;
         } else if (shift_held && event.key.key == SDLK_S) {
           player.strength += 1;
-          int new_max_hp = max_hp_for_strength(player.strength);
+          int new_max_hp = max_hp_for_level_and_strength(player.level, player.strength);
           player.hp += new_max_hp - player.max_hp;
           player.max_hp = new_max_hp;
           add_message("Strength increased to " + std::to_string(player.strength) + "!");
@@ -2587,7 +2652,7 @@ int main(int argc, char* argv[]) {
               // stacking the bonus indefinitely.
               if (player.temp_str_turns <= 0) {
                 player.temp_str_bonus = chosen.buff_amount;
-                player.max_hp = max_hp_for_strength(player.strength + player.temp_str_bonus);
+                player.max_hp = max_hp_for_level_and_strength(player.level, player.strength + player.temp_str_bonus);
                 // Ceiling only, unlike leveling up: current HP doesn't jump with it.
               }
               player.temp_str_turns = chosen.buff_turns;
@@ -2993,6 +3058,96 @@ int main(int argc, char* argv[]) {
         continue;
       }
 
+      if (mode == Mode::RangedAttack) {
+        const Weapon& weapon = player.weapon;
+
+        if (event.key.key == SDLK_ESCAPE) {
+          mode = Mode::Playing;
+          continue;
+        }
+        if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER) {
+          // Same shape as a spell cast (Mode::Targeting above), just sourced from the
+          // weapon instead of a Spell, no mana cost, and the accuracy/damage bonus is
+          // Dexterity-derived instead of Intelligence-derived (see monster_dodge_chance()
+          // and Projectile::accuracy_bonus) — every 3 points of Dexterity adds +1 to
+          // both, same divisor Intelligence already uses for spell damage.
+          Projectile proj;
+          proj.path = trace_path(player.x, player.y, target_x, target_y);
+          proj.speed = kInstantSpellSpeed;
+          proj.dice_count = weapon.dice_count;
+          proj.dice_sides = weapon.dice_sides;
+          proj.hit_dice_count = weapon.hit_dice_count;
+          proj.hit_dice_sides = weapon.hit_dice_sides;
+          proj.prev_x = player.x;
+          proj.prev_y = player.y;
+          int dex_bonus = (player.dexterity + player.temp_dex_bonus) / 3;
+          proj.bonus = weapon.bonus + dex_bonus;
+          proj.accuracy_bonus = dex_bonus;
+          proj.name = weapon.name;
+          proj.glyph = '-';
+          proj.color = tcod::ColorRGB{200, 170, 100};
+          level.projectiles.push_back(proj);
+
+          add_message("You fire your " + weapon.name + ".");
+          mode = Mode::Playing;
+          end_turn();
+          continue;
+        }
+
+        // Movement keys move the targeting cursor instead of the player, clamped to
+        // the weapon's own range — same circular-radius shape a spell's Targeting uses.
+        int tdx = 0;
+        int tdy = 0;
+        switch (event.key.key) {
+          case SDLK_UP:
+          case SDLK_K:
+            tdy = -1;
+            break;
+          case SDLK_DOWN:
+          case SDLK_J:
+            tdy = 1;
+            break;
+          case SDLK_LEFT:
+          case SDLK_H:
+            tdx = -1;
+            break;
+          case SDLK_RIGHT:
+          case SDLK_L:
+            tdx = 1;
+            break;
+          case SDLK_Y:
+            tdx = -1;
+            tdy = -1;
+            break;
+          case SDLK_U:
+            tdx = 1;
+            tdy = -1;
+            break;
+          case SDLK_B:
+            tdx = -1;
+            tdy = 1;
+            break;
+          case SDLK_N:
+            tdx = 1;
+            tdy = 1;
+            break;
+          default:
+            break;
+        }
+        if (tdx != 0 || tdy != 0) {
+          int nx = target_x + tdx;
+          int ny = target_y + tdy;
+          int rdx = nx - player.x;
+          int rdy = ny - player.y;
+          bool in_range = rdx * rdx + rdy * rdy <= weapon.attack_range * weapon.attack_range;
+          if (level.map.in_bounds(nx, ny) && in_range) {
+            target_x = nx;
+            target_y = ny;
+          }
+        }
+        continue;
+      }
+
       if (mode == Mode::Look) {
         if (event.key.key == SDLK_ESCAPE || event.key.key == SDLK_X) {
           mode = Mode::Playing;
@@ -3161,6 +3316,19 @@ int main(int argc, char* argv[]) {
       }
       if (event.key.key == SDLK_Z) {
         mode = Mode::SpellMenu;
+        continue;
+      }
+      if (event.key.key == SDLK_F) {
+        // Fire the equipped weapon at range — only meaningful for a ranged weapon
+        // (Weapon::attack_range > 1, e.g. Bow); a melee weapon still only attacks by
+        // bumping into an adjacent monster.
+        if (player.weapon.attack_range <= 1) {
+          add_message("Your " + player.weapon.name + " isn't a ranged weapon.");
+        } else {
+          target_x = player.x;
+          target_y = player.y;
+          mode = Mode::RangedAttack;
+        }
         continue;
       }
       if (event.key.key == SDLK_M) {

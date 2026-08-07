@@ -28,6 +28,13 @@ struct Weapon {
   // mention them keep compiling unchanged.
   int hit_dice_count = 1;
   int hit_dice_sides = 4;
+  // How many tiles away (Chebyshev distance) this weapon can attack from. 1 (the
+  // default) is melee/adjacency-only, same convention as MonsterTemplate/
+  // Actor::attack_range on the monster side. >1 marks a player-usable ranged weapon
+  // (e.g. a Bow) — firing one goes through Mode::RangedAttack in main.cpp (aim with a
+  // cursor like a spell, Enter to loose a Projectile) instead of the bump-to-attack
+  // path, which stays melee-only.
+  int attack_range = 1;
 };
 
 // Rolls this weapon's damage for one attack.

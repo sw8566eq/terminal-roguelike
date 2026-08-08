@@ -59,6 +59,12 @@ struct Armor {
 // stat at all (e.g. Heal Potion).
 enum class StatKind { None, Strength, Dexterity, Intelligence };
 
+// Which permanent spell path the player has picked (see Actor::chosen_school below and
+// Mode::SchoolChoice in main.cpp, forced the first time Intelligence reaches 4). None on
+// a Spell (main.cpp's Spell::school) means shared — available regardless of which path
+// is chosen (Magic Dart); None on the player means the choice hasn't happened yet.
+enum class SpellSchool { None, Caster, Summoner, CombatMage };
+
 // A consumable potion: drinking it applies its effect immediately and uses it up —
 // unlike Weapon/Armor, there's nothing to equip or swap back out. A potion is a heal
 // (heal_percent > 0), a temporary stat buff (buff_stat != StatKind::None), or a
@@ -235,6 +241,12 @@ struct Actor {
   int max_mana = 0;
   float mana_regen_accumulator = 0.0f;
 
+  // Which spell school the player has permanently chosen (see SpellSchool above), or
+  // None until Intelligence first reaches 4 (see Mode::SchoolChoice in main.cpp). Only
+  // the player ever sets this away from None, since nothing else casts — same shared-
+  // but-player-only shape as mana above.
+  SpellSchool chosen_school = SpellSchool::None;
+
   // Temporary stat bonuses from stat potions (Potion of Strength/Dexterity/
   // Intelligence), and turns remaining before each reverts. Ticked down once per turn
   // for every Actor in end_turn(); drinking another potion of the same stat while one
@@ -251,6 +263,20 @@ struct Actor {
   int temp_dex_turns = 0;
   int temp_int_bonus = 0;
   int temp_int_turns = 0;
+
+  // Temporary flat melee-damage and flat-armor bonuses from Combat Mage spells (Battle
+  // Fury / Iron Skin), and turns remaining before each reverts. Same tick/refresh shape
+  // as temp_str/dex/int above — ticked down once per turn in end_turn(), re-casting
+  // refreshes the timer rather than stacking. Unlike STR/DEX/INT, neither feeds a
+  // derived ceiling (no max_hp/evasion/max_mana knock-on) — they're read directly at
+  // point of use (resolve_attack()'s damage roll for melee damage, every
+  // armor.defense damage-reduction site for armor), so reverting is a plain zero-out,
+  // no delta subtraction needed. Spell-only today — only the player casts, so these
+  // stay 0 on every monster.
+  int temp_melee_damage_bonus = 0;
+  int temp_melee_damage_turns = 0;
+  int temp_armor_bonus = 0;
+  int temp_armor_turns = 0;
 
   // Monsters only: the last tile this monster actually saw the player standing on,
   // or (-1, -1) if it's never seen them (or already reached that tile without finding

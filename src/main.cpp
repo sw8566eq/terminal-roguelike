@@ -446,6 +446,21 @@ struct Spell {
   bool is_summon = false;
   int summon_template_index = 0;  // summon spells only: row into kMinionTable
   bool is_swap = false;
+  // Which permanent spell school this spell belongs to (see SpellSchool in
+  // entity.hpp) — None means shared, available under either school. Checked by
+  // known_spell_indices() alongside unlock_int, so a spell needs both a high enough
+  // Intelligence *and* the right (or no) school to actually be known.
+  SpellSchool school = SpellSchool::None;
+  // Combat Mage buff spells (Battle Fury / Iron Skin): resolve immediately from the
+  // spell menu like a summon spell (no Mode::Targeting), applying a fixed-duration
+  // buff to the caster — same "refresh timer without stacking" idiom apply_potion()
+  // uses for STR/DEX/INT. dice_count/dice_sides/speed/range/aoe_radius/hit_dice/glyph/
+  // color are unused for these; buff_amount/buff_turns mirror Potion's fields of the
+  // same name.
+  bool is_melee_buff = false;
+  bool is_armor_buff = false;
+  int buff_amount = 0;
+  int buff_turns = 0;
 };
 
 constexpr int kInstantSpellSpeed = 99;  // safely more tiles than this map's diagonal
@@ -456,53 +471,86 @@ const std::vector<Spell> kSpellTable = {
     // mechanic).
     {"Magic Dart", /*unlock_int=*/3, /*dice_count=*/1, /*dice_sides=*/2, kInstantSpellSpeed, /*range=*/8,
      /*mana_cost=*/1, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
-     /*hit_dice_count=*/1, /*hit_dice_sides=*/4, '*', tcod::ColorRGB{200, 100, 255}},
+     /*hit_dice_count=*/1, /*hit_dice_sides=*/4, '*', tcod::ColorRGB{200, 100, 255}, /*is_summon=*/false,
+     /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::None},
     // Slow-moving orb (visibly crosses several turns instead of resolving instantly) that
     // explodes into a 3x3 blast wherever it stops, rather than just hitting one target.
     // Its high hit-dice (vs. Magic Dart's low one) is the AoE-is-hard-to-dodge case.
-    {"Fireball", /*unlock_int=*/6, /*dice_count=*/1, /*dice_sides=*/6, /*speed=*/2, /*range=*/8,
+    // Caster's entry spell — unlock_int=4 so it's already castable the moment the
+    // Caster/Summoner choice (Mode::SchoolChoice) is made, same as Raise Skeleton is
+    // for Summoner below.
+    {"Fireball", /*unlock_int=*/4, /*dice_count=*/1, /*dice_sides=*/6, /*speed=*/2, /*range=*/8,
      /*mana_cost=*/3, /*aoe_radius=*/1, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
-     /*hit_dice_count=*/3, /*hit_dice_sides=*/6, 'o', tcod::ColorRGB{255, 120, 40}},
+     /*hit_dice_count=*/3, /*hit_dice_sides=*/6, 'o', tcod::ColorRGB{255, 120, 40}, /*is_summon=*/false,
+     /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::Caster},
     // Toggled aura, not a fired spell: 7x7 around the player (aoe_radius=3), 2 flat
     // damage/turn to every monster caught in it, drains 2 mana/turn while active.
     // Turning it on costs a flat 3 mana for that turn instead of the per-turn drain
     // (see the SpellMenu toggle handler) — steep enough that flicking it on and off
     // every turn to save mana isn't actually cheaper than just leaving it running.
-    {"Sandstorm", /*unlock_int=*/9, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/0,
+    // Caster's second spell — unlock_int=7 keeps the same +3 gap after Fireball (4)
+    // that it had after Fireball's old unlock_int (6 -> 9), just shifted down.
+    {"Sandstorm", /*unlock_int=*/7, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/0,
      /*mana_cost=*/3, /*aoe_radius=*/3, /*is_toggle=*/true, /*tick_damage=*/2, /*tick_mana_cost=*/2,
-     /*hit_dice_count=*/2, /*hit_dice_sides=*/6, 's', tcod::ColorRGB{230, 190, 90}},
+     /*hit_dice_count=*/2, /*hit_dice_sides=*/6, 's', tcod::ColorRGB{230, 190, 90}, /*is_summon=*/false,
+     /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::Caster},
     // First summon spell: raises kMinionTable[0] (Skeletal Minion) next to the player.
-    // unlock_int sits between Magic Dart and Fireball — an early, low-commitment taste
-    // of the summoner playstyle before anything heavier. See the SpellMenu handler for
-    // how casting a summon spell differs from firing/toggling.
-    {"Raise Skeleton", /*unlock_int=*/5, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/0,
+    // Summoner's entry spell — unlock_int=4 so it's already castable the moment the
+    // Caster/Summoner choice is made, same as Fireball is for Caster above. See the
+    // SpellMenu handler for how casting a summon spell differs from firing/toggling.
+    {"Raise Skeleton", /*unlock_int=*/4, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/0,
      /*mana_cost=*/4, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
      /*hit_dice_count=*/0, /*hit_dice_sides=*/0, 'u', tcod::ColorRGB{100, 200, 220}, /*is_summon=*/true,
-     /*summon_template_index=*/0},
+     /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::Summoner},
     // Trades places with a minion instead of dealing damage — a tactical reposition
     // (pull yourself to a minion holding a doorway, or swap a hurt minion out of melee
-    // and take its spot yourself). unlock_int=6 is a stated default: after Raise
-    // Skeleton (5), so there's actually a minion to swap with by the time it unlocks,
-    // alongside Fireball's tier. range=6 is a stated default too. mana_cost=8 is
-    // deliberately steep, not cheap like a damage spell's cost — this is a guaranteed,
-    // no-dodge escape from any fight (swap to a minion standing somewhere safer) as
-    // much as it's an engage tool, so it's priced to be an emergency option, not
-    // something to lean on every encounter: at the unlock threshold (max_mana=15 at
-    // INT 6) it's barely castable twice in a row, and takes ~80 turns of passive regen
-    // to recover a single cast. Scales down in relative cost as INT climbs further,
+    // and take its spot yourself). Summoner's second spell — unlock_int=5 keeps the
+    // same +1 gap after Raise Skeleton (4) that it had after Raise Skeleton's old
+    // unlock_int (5 -> 6), just shifted down. range=6 is a stated default. mana_cost=8
+    // is deliberately steep, not cheap like a damage spell's cost — this is a
+    // guaranteed, no-dodge escape from any fight (swap to a minion standing somewhere
+    // safer) as much as it's an engage tool, so it's priced to be an emergency option,
+    // not something to lean on every encounter: at the unlock threshold (max_mana=13
+    // at INT 5) a single cast leaves barely a third of the bar, and takes a good chunk
+    // of passive regen to recover. Scales down in relative cost as INT climbs further,
     // same as every other spell's mana cost does against a rising max_mana ceiling.
-    {"Place Swap", /*unlock_int=*/6, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/6,
+    {"Place Swap", /*unlock_int=*/5, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/6,
      /*mana_cost=*/8, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
      /*hit_dice_count=*/0, /*hit_dice_sides=*/0, '=', tcod::ColorRGB{100, 220, 255}, /*is_summon=*/false,
-     /*summon_template_index=*/0, /*is_swap=*/true},
+     /*summon_template_index=*/0, /*is_swap=*/true, /*school=*/SpellSchool::Summoner},
+    // Combat Mage's entry spell — unlock_int=4, same rule as Fireball/Raise Skeleton:
+    // INT 4 grants a spell no matter which of the three schools is picked. Flat melee
+    // damage, not accuracy — melee-only (see resolve_attack()'s raw_damage line):
+    // doesn't help a fired spell or the Bow. Stated defaults, adjustable like Place
+    // Swap's mana cost was after playtesting.
+    {"Battle Fury", /*unlock_int=*/4, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/0,
+     /*mana_cost=*/3, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
+     /*hit_dice_count=*/0, /*hit_dice_sides=*/0, 'f', tcod::ColorRGB{220, 80, 60}, /*is_summon=*/false,
+     /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::CombatMage,
+     /*is_melee_buff=*/true, /*is_armor_buff=*/false, /*buff_amount=*/4, /*buff_turns=*/10},
+    // Combat Mage's second spell — unlock_int=5, same +1 gap after the entry spell as
+    // Summoner's Raise Skeleton(4)->Place Swap(5). buff_amount=3 matches Chainmail's own
+    // +3 defense. Applies to all damage sources (see every armor.defense site), not
+    // just melee, unlike Battle Fury.
+    {"Iron Skin", /*unlock_int=*/5, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/0,
+     /*mana_cost=*/3, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
+     /*hit_dice_count=*/0, /*hit_dice_sides=*/0, 'k', tcod::ColorRGB{150, 150, 220}, /*is_summon=*/false,
+     /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::CombatMage,
+     /*is_melee_buff=*/false, /*is_armor_buff=*/true, /*buff_amount=*/3, /*buff_turns=*/9},
 };
 
 // Indices into kSpellTable of every spell the player currently knows, in display
-// order. Kept as one function so the spell-menu render and input code can't drift.
-std::vector<int> known_spell_indices(int intelligence) {
+// order. A spell needs both a high enough Intelligence *and* the right school —
+// kSpellTable[i].school == SpellSchool::None (shared, e.g. Magic Dart) or a match
+// against chosen_school (see Actor::chosen_school / Mode::SchoolChoice). Kept as one
+// function so the spell-menu render and input code can't drift.
+std::vector<int> known_spell_indices(int intelligence, SpellSchool chosen_school) {
   std::vector<int> indices;
   for (size_t i = 0; i < kSpellTable.size(); ++i) {
-    if (intelligence >= kSpellTable[i].unlock_int) indices.push_back(static_cast<int>(i));
+    const Spell& s = kSpellTable[i];
+    if (intelligence < s.unlock_int) continue;
+    if (s.school != SpellSchool::None && s.school != chosen_school) continue;
+    indices.push_back(static_cast<int>(i));
   }
   return indices;
 }
@@ -1299,6 +1347,7 @@ int main(int argc, char* argv[]) {
     Drop,
     Dead,
     LevelUp,
+    SchoolChoice,
     SpellMenu,
     Targeting,
     MessageLog,
@@ -1525,7 +1574,11 @@ int main(int argc, char* argv[]) {
     }
 
     int raw_damage = roll_damage(weapon) + damage_bonus_for(attacker, weapon);
-    int damage = std::max(raw_damage - defender.armor.defense, 0);
+    // Battle Fury: flat melee-only damage, not accuracy. resolve_attack() is also how
+    // a ranged monster (e.g. a Goblin Slinger's Rock) resolves its attack — melee-only
+    // is what keeps this off of that case too, not "player only."
+    if (weapon.attack_range <= 1) raw_damage += attacker.temp_melee_damage_bonus;
+    int damage = std::max(raw_damage - defender.armor.defense - defender.temp_armor_bonus, 0);
     defender.hp -= damage;
 
     std::string wielder = attacker.is_player ? "your " : "its ";
@@ -1570,7 +1623,9 @@ int main(int argc, char* argv[]) {
           add_message("The " + target.name + " dodges the blast!");
           continue;
         }
-        int damage = std::max(roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus - target.armor.defense, 0);
+        int damage = std::max(
+            roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus - target.armor.defense - target.temp_armor_bonus,
+            0);
         target.hp -= damage;
         if (!target.is_alive()) {
           add_message("The blast kills the " + target.name + "!");
@@ -1582,7 +1637,7 @@ int main(int argc, char* argv[]) {
 
       if (player.is_alive() && std::abs(player.x - cx) <= proj.aoe_radius && std::abs(player.y - cy) <= proj.aoe_radius) {
         int raw_damage = roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus;
-        int damage = std::max(raw_damage - player.armor.defense, 0);
+        int damage = std::max(raw_damage - player.armor.defense - player.temp_armor_bonus, 0);
         player.hp -= damage;
         add_message("You're caught in your own " + proj.name + " for " + std::to_string(damage) + "!");
         if (!player.is_alive()) on_actor_killed(player, /*killed_by_player_side=*/false, proj.name + " you cast");
@@ -1626,8 +1681,9 @@ int main(int argc, char* argv[]) {
             if (random_int(1, 100) <= dodge) {
               add_message("The " + target.name + " dodges your " + proj.name + "!");
             } else {
-              int damage =
-                  std::max(roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus - target.armor.defense, 0);
+              int damage = std::max(roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus - target.armor.defense -
+                                         target.temp_armor_bonus,
+                                     0);
               target.hp -= damage;
               if (!target.is_alive()) {
                 add_message("Your " + proj.name + " kills the " + target.name + "!");
@@ -1715,6 +1771,16 @@ int main(int argc, char* argv[]) {
         actor.temp_int_bonus = 0;
         if (actor.is_player) add_message("Your surge of insight fades.");
       }
+      // Combat Mage buffs (Battle Fury / Iron Skin) — simpler than STR/DEX/INT above,
+      // since neither feeds a derived ceiling; reverting is just zeroing the bonus.
+      if (actor.temp_melee_damage_turns > 0 && --actor.temp_melee_damage_turns == 0) {
+        actor.temp_melee_damage_bonus = 0;
+        if (actor.is_player) add_message("Your battle fury fades.");
+      }
+      if (actor.temp_armor_turns > 0 && --actor.temp_armor_turns == 0) {
+        actor.temp_armor_bonus = 0;
+        if (actor.is_player) add_message("Your iron skin fades.");
+      }
     };
 
     tick_upkeep(player);
@@ -1770,7 +1836,7 @@ int main(int argc, char* argv[]) {
             add_message("The " + target.name + " dodges the " + storm.name + "!");
             continue;
           }
-          int damage = std::max(storm.tick_damage - target.armor.defense, 0);
+          int damage = std::max(storm.tick_damage - target.armor.defense - target.temp_armor_bonus, 0);
           target.hp -= damage;
           if (!target.is_alive()) {
             add_message("Your " + storm.name + " kills the " + target.name + "!");
@@ -2128,6 +2194,10 @@ int main(int argc, char* argv[]) {
     player.temp_dex_turns = 0;
     player.temp_int_bonus = 0;
     player.temp_int_turns = 0;
+    player.temp_melee_damage_bonus = 0;
+    player.temp_melee_damage_turns = 0;
+    player.temp_armor_bonus = 0;
+    player.temp_armor_turns = 0;
     level.map.update_fov(player.x, player.y, FOV_RADIUS);
 
     player.weapons.clear();
@@ -2364,7 +2434,7 @@ int main(int argc, char* argv[]) {
       tcod::print(console, {0, 0}, "Spells - press a letter to cast, Esc to close", tcod::ColorRGB{255, 255, 255},
                   std::nullopt);
 
-      auto known = known_spell_indices(player.intelligence);
+      auto known = known_spell_indices(player.intelligence, player.chosen_school);
       if (known.empty()) {
         tcod::print(console, {0, 2}, "(no spells known yet)", tcod::ColorRGB{120, 120, 120}, std::nullopt);
       }
@@ -2385,6 +2455,13 @@ int main(int argc, char* argv[]) {
           at_minion_cap = count_minions(level.monsters) >= kMaxMinions;
           line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (summons a " + tmpl.name + ", " +
                  duration_str + ") - " + std::to_string(s.mana_cost) + " MP" + (at_minion_cap ? " [AT CAP]" : "");
+        } else if (s.is_melee_buff) {
+          line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (+" + std::to_string(s.buff_amount) +
+                 " melee damage, " + std::to_string(s.buff_turns) + " turns) - " + std::to_string(s.mana_cost) +
+                 " MP";
+        } else if (s.is_armor_buff) {
+          line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (+" + std::to_string(s.buff_amount) +
+                 " armor, " + std::to_string(s.buff_turns) + " turns) - " + std::to_string(s.mana_cost) + " MP";
         } else if (s.is_swap) {
           line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (swap places with a minion) - " +
                  std::to_string(s.mana_cost) + " MP";
@@ -2473,6 +2550,8 @@ int main(int argc, char* argv[]) {
           "                                  details); x or Esc to close",
           "]                                 Message log (full scrollback)",
           "Shift+S  Shift+D  Shift+I         On level up: spend the point on STR/DEX/INT",
+          "Shift+C  Shift+U  Shift+M         At Intelligence 4: choose Caster, Summoner, or",
+          "                                  Combat Mage (once, permanent)",
           "?                                 This screen",
           "Esc                               Quit (or close the current menu)",
       };
@@ -2501,6 +2580,21 @@ int main(int argc, char* argv[]) {
         ++row;
         ++letter;
       }
+    } else if (mode == Mode::SchoolChoice) {
+      // Full-screen forced prompt, same shape as MinionRoster above rather than
+      // LevelUp's one-line CONTEXT_ROW style — this needs room to explain all three
+      // paths, since it's a permanent, run-defining choice rather than a quick stat bump.
+      tcod::print(console, {0, 0},
+                  "You have grown wise enough to specialize your magic. Choose a path - this choice is permanent.",
+                  tcod::ColorRGB{255, 255, 255}, std::nullopt);
+      tcod::print(console, {0, 2}, "Shift+C) Caster      -- offensive magic: Fireball, Sandstorm",
+                  tcod::ColorRGB{200, 200, 200}, std::nullopt);
+      tcod::print(console, {0, 3}, "Shift+U) Summoner    -- conjury and command: Raise Skeleton, Place Swap",
+                  tcod::ColorRGB{200, 200, 200}, std::nullopt);
+      tcod::print(console, {0, 4}, "Shift+M) Combat Mage -- melee buffs: Battle Fury, Iron Skin",
+                  tcod::ColorRGB{200, 200, 200}, std::nullopt);
+      tcod::print(console, {0, 6}, "Magic Dart remains available either way.", tcod::ColorRGB{120, 120, 120},
+                  std::nullopt);
     } else {
       update_monster_memory(level);
 
@@ -3116,11 +3210,11 @@ int main(int argc, char* argv[]) {
           add_message("Dexterity increased to " + std::to_string(player.dexterity) + "!");
           pending_attribute_points -= 1;
         } else if (shift_held && event.key.key == SDLK_I) {
-          auto known_before = known_spell_indices(player.intelligence);
+          auto known_before = known_spell_indices(player.intelligence, player.chosen_school);
           int mana_delta =
               max_mana_for_intelligence(player.intelligence + 1) - max_mana_for_intelligence(player.intelligence);
           player.intelligence += 1;
-          auto known_after = known_spell_indices(player.intelligence);
+          auto known_after = known_spell_indices(player.intelligence, player.chosen_school);
           player.max_mana += mana_delta;
           player.mana += mana_delta;
           add_message("Intelligence increased to " + std::to_string(player.intelligence) + "!");
@@ -3129,8 +3223,62 @@ int main(int argc, char* argv[]) {
             if (!already_known) add_message("You can now cast " + kSpellTable[static_cast<size_t>(spell_idx)].name + "!");
           }
           pending_attribute_points -= 1;
+          // The first time Intelligence reaches 4, interrupt with the forced
+          // Caster/Summoner pick (Mode::SchoolChoice) instead of falling straight back
+          // into Mode::Playing/another LevelUp prompt — known_spell_indices() above
+          // deliberately can't have surfaced any class-gated spell yet, since
+          // chosen_school is still None at this point (only the shared Magic Dart-style
+          // spells show up from this diff; the school's own entry spell is announced
+          // from Mode::SchoolChoice's handler once a path is actually picked).
+          if (player.chosen_school == SpellSchool::None && player.intelligence >= 4) {
+            mode = Mode::SchoolChoice;
+          }
         }
-        if (pending_attribute_points <= 0) mode = Mode::Playing;
+        // Guarded so the same keypress that just triggered Mode::SchoolChoice above
+        // (the common case — a level-up grants exactly one point, so
+        // pending_attribute_points usually also hits 0 right when INT crosses 4)
+        // doesn't immediately stomp it back to Mode::Playing before it's ever seen.
+        if (mode != Mode::SchoolChoice && pending_attribute_points <= 0) mode = Mode::Playing;
+        continue;
+      }
+
+      if (mode == Mode::SchoolChoice) {
+        // Mandatory, same as LevelUp's own Esc — quitting rather than silently leaving
+        // chosen_school stuck at None forever, which would permanently lock out every
+        // school's spells.
+        bool shift_held = (event.key.mod & SDL_KMOD_SHIFT) != 0;
+        if (event.key.key == SDLK_ESCAPE) {
+          running = false;
+        } else if (shift_held && (event.key.key == SDLK_C || event.key.key == SDLK_U || event.key.key == SDLK_M)) {
+          auto known_before = known_spell_indices(player.intelligence, player.chosen_school);
+          if (event.key.key == SDLK_C) {
+            player.chosen_school = SpellSchool::Caster;
+          } else if (event.key.key == SDLK_U) {
+            player.chosen_school = SpellSchool::Summoner;
+          } else {
+            player.chosen_school = SpellSchool::CombatMage;
+          }
+          auto known_after = known_spell_indices(player.intelligence, player.chosen_school);
+          if (player.chosen_school == SpellSchool::Caster) {
+            add_message("You have specialized in Caster magic!");
+          } else if (player.chosen_school == SpellSchool::Summoner) {
+            add_message("You have specialized in Summoner magic!");
+          } else {
+            add_message("You have specialized in Combat Mage magic!");
+          }
+          // Same before/after diff idiom as the Shift+I handler above, reused rather
+          // than duplicated, so "what's newly known" can't drift between the two call
+          // sites — announces the school's own entry spell (Fireball/Raise Skeleton/
+          // Battle Fury), the only thing this diff can ever surface given the choice
+          // fires the instant Intelligence crosses 4.
+          for (int spell_idx : known_after) {
+            bool already_known = std::find(known_before.begin(), known_before.end(), spell_idx) != known_before.end();
+            if (!already_known) add_message("You can now cast " + kSpellTable[static_cast<size_t>(spell_idx)].name + "!");
+          }
+          // Resume any level-up points still queued (e.g. mid-drain from --level=N)
+          // instead of always dropping straight back to Playing.
+          mode = pending_attribute_points > 0 ? Mode::LevelUp : Mode::Playing;
+        }
         continue;
       }
 
@@ -3212,7 +3360,7 @@ int main(int argc, char* argv[]) {
         if (event.key.key == SDLK_ESCAPE) {
           mode = Mode::Playing;
         } else if (event.key.key >= SDLK_A && event.key.key <= SDLK_Z) {
-          auto known = known_spell_indices(player.intelligence);
+          auto known = known_spell_indices(player.intelligence, player.chosen_school);
           size_t idx = static_cast<size_t>(event.key.key - SDLK_A);
           if (idx < known.size()) {
             int spell_idx = known[idx];
@@ -3268,6 +3416,33 @@ int main(int argc, char* argv[]) {
                 }
                 level.monsters.push_back(minion);
                 add_message("You raise a " + tmpl.name + " to fight for you!");
+                mode = Mode::Playing;
+                end_turn();
+              }
+            } else if (spell.is_melee_buff) {
+              if (player.mana < spell.mana_cost) {
+                add_message("Not enough mana to cast " + spell.name + ".");
+                mode = Mode::Playing;  // free cancel, no turn spent
+              } else {
+                player.mana -= spell.mana_cost;
+                // Refresh-not-stack, same idiom apply_potion() uses for STR/DEX/INT.
+                if (player.temp_melee_damage_turns <= 0) player.temp_melee_damage_bonus = spell.buff_amount;
+                player.temp_melee_damage_turns = spell.buff_turns;
+                add_message("Your strikes grow fiercer! Melee damage +" + std::to_string(spell.buff_amount) +
+                            " for " + std::to_string(spell.buff_turns) + " turns.");
+                mode = Mode::Playing;
+                end_turn();
+              }
+            } else if (spell.is_armor_buff) {
+              if (player.mana < spell.mana_cost) {
+                add_message("Not enough mana to cast " + spell.name + ".");
+                mode = Mode::Playing;  // free cancel, no turn spent
+              } else {
+                player.mana -= spell.mana_cost;
+                if (player.temp_armor_turns <= 0) player.temp_armor_bonus = spell.buff_amount;
+                player.temp_armor_turns = spell.buff_turns;
+                add_message("Your skin hardens! Armor +" + std::to_string(spell.buff_amount) + " for " +
+                            std::to_string(spell.buff_turns) + " turns.");
                 mode = Mode::Playing;
                 end_turn();
               }

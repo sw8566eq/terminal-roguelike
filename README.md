@@ -101,7 +101,11 @@ step 1.
   commanding are highlighted so you don't lose track while aiming.
   Walking into your own minion swaps places with it instead of attacking
 - On leveling up, `Shift+S` / `Shift+D` / `Shift+I` to put your point into
-  Strength / Dexterity / Intelligence
+  Strength / Dexterity / Intelligence. The first time Intelligence reaches 4,
+  a one-time, permanent choice interrupts: `Shift+C` for Caster (Fireball,
+  Sandstorm), `Shift+U` for Summoner (Raise Skeleton, Place Swap), or
+  `Shift+M` for Combat Mage (Battle Fury, Iron Skin) — Magic Dart stays
+  available either way
 - `x` to look around: move a cursor over the map without spending a turn or
   moving, and the side panel describes what's under it — remembered terrain
   anywhere you've explored, and for anything actually in view, the item or
@@ -168,6 +172,11 @@ roguelike/
       including on the caster, if cast too close), and Sandstorm (a
       toggled aura that follows the player around instead of being aimed,
       damaging everything in a 7x7 zone every turn while it drains mana)
+- [x] Spell schools: at Intelligence 4 you permanently pick Caster (Fireball,
+      Sandstorm), Summoner (Raise Skeleton, Place Swap), or Combat Mage
+      (Battle Fury, a melee-accuracy buff; Iron Skin, a flat-armor buff) —
+      the other two paths' spells are locked out for the rest of that run.
+      Magic Dart is shared, available regardless of path
 - [x] Mana: spells cost mana to cast (or, for Sandstorm, to keep running),
       regenerating passively the same way HP does
 - [x] Monster AI: chases when it can see you, keeps heading for the last

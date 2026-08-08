@@ -204,12 +204,22 @@ roguelike/
       it routes around walls instead of getting stuck on corners
 - [x] Monster variety scales with depth (tougher monster types replace
       weaker ones as you descend, plus more of them per floor)
+- [x] Bosses: exactly one spawns on each floor its table row covers, on top of
+      that floor's normal monsters rather than drawn from them. The first is
+      the Orc Warlord on floor 3 — an outsized Orc arriving two floors before
+      ordinary Orcs do, on a floor otherwise full of Rats and Goblins. It's
+      the only thing in the game that regenerates besides you, so wounds you
+      don't finish it with heal back off while you keep your distance, and
+      it's the only monster carrying a potion — expect it to open by drinking
+      a Potion of Strength. Its Chainmail and Warlord's Cleaver drop when it
+      dies
 - [x] Potions: healing, temporary (+5, 15-turn) Strength/Dexterity/
       Intelligence boosts, and teleportation (random spot on the current floor)
 - [x] Weapon/armor/potion variety also scales with depth, mirroring monsters
-- [x] Passive HP regeneration (slow, scales with max HP) — the player only;
-      monsters don't heal, so wounds you inflict stick and chip-and-retreat
-      tactics work. It's a per-monster toggle, ready for boss-type enemies
+- [x] Passive HP regeneration (slow, scales with max HP). A per-Actor toggle:
+      the player and the Orc Warlord have it, every ordinary monster doesn't,
+      so wounds you inflict on a normal monster stick and chip-and-retreat
+      tactics work on everything except the boss
 - [x] Multi-line message log with scrollback (`]`), repeat-message coalescing
 - [x] Sectioned HUD: three bordered ASCII panels — the dungeon, a message log,
       and a status sidebar listing your stats, every temporary buff you have
@@ -234,8 +244,9 @@ roguelike/
       carrying drops on the floor when they die, and it's the same item you'd
       have found lying there. `x` (look) shows what a monster is wearing and
       carrying before you commit to the fight. Monsters can drink potions
-      through the same code you do, but no monster is given any right now —
-      it turned the floor into a consumables buffet
+      through the same code you do — the Orc Warlord boss is the only one
+      given any, since handing them out widely turned the floor into a
+      consumables buffet
 - [x] Summoner playstyle, phase 1: a spell raises a temporary minion that
       fights at your side; hostile monsters can target minions instead of
       always going after you, so they're real meat-shields; minions are

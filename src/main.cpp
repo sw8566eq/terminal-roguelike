@@ -134,10 +134,17 @@ struct MonsterTemplate {
   // doesn't heal at all — see Actor::hp_regen_turns. Reserved for boss/elite rows that
   // should shrug off chip damage; ordinary monsters keep their wounds.
   int hp_regen_turns = 0;
-  // Extra actions per world turn beyond the first — 0 on every row today, the second
+  // Extra actions per world turn beyond the first — 0 on every ordinary row, the second
   // boss/elite knob alongside hp_regen_turns. A row with extra_actions=1 moves/attacks
   // twice for each of the player's turns. See Actor::extra_actions.
   int extra_actions = 0;
+  // A boss spawns exactly once on every floor its min_depth/max_depth range covers,
+  // instead of being drawn at random like an ordinary monster — see bosses_at_depth()
+  // and generate_level(). Boss rows are excluded from the ordinary random pool
+  // (monsters_available_at_depth()), so a floor gets exactly one, never zero and never
+  // five. Nothing else about a boss is special: it's an Actor with bigger numbers and
+  // whatever combination of hp_regen_turns/extra_actions/gear its row asks for.
+  bool is_boss = false;
 };
 
 // Natural weapons: part of the monster, not loot, so they're marked intrinsic exactly
@@ -200,6 +207,35 @@ const std::vector<MonsterTemplate> kMonsterTable = {
     {"Troll", 'T', tcod::ColorRGB{100, 110, 80}, 22,
      Weapon{"Massive Club", 1, 8, 0, false, 1, -1, /*hit_dice=*/1, 3}, /*xp_reward=*/40,
      /*evasion=*/2, /*dexterity=*/10, /*strength=*/3, /*min_depth=*/8, /*max_depth=*/-1},
+    // The first boss (is_boss — exactly one spawns on floor 3, and it's excluded from
+    // that floor's random pool; see bosses_at_depth()). An outsized Orc arriving two
+    // floors before ordinary Orcs do, on a floor whose normal residents are Rats and
+    // Goblins — it should read as something you weren't supposed to meet yet.
+    //
+    // Uses both boss knobs' worth of what's already wired, and nothing bespoke:
+    //   - hp_regen_turns=120 is the first non-zero value in the game. At 28 max HP
+    //     that's roughly 1 HP every 4 turns — far too slow to matter inside a fight,
+    //     which is the point: it doesn't make the fight longer, it makes chip-and-
+    //     retreat stop working, since anything you don't finish it heals back off while
+    //     you're away. See Actor::hp_regen_turns.
+    //   - A Potion of Strength in `potions`, the first row in the game to carry one.
+    //     try_actor_use_potion() makes it drink once the player is within
+    //     kAiBuffPotionRange (4) — so it usually opens the fight by buffing to +5 STR
+    //     for 15 turns, through the exact same apply_potion() the player's q menu uses.
+    //     If it dies without drinking, the potion drops as loot like any other gear.
+    //     (This is the deliberate exception to "no row carries potions today" — one
+    //     potion on one boss on one floor isn't the consumables buffet that made
+    //     MonsterTemplate::potions get emptied out.)
+    //   - Chainmail (3 defense, itself min_depth 3) and a heavy Warlord's Cleaver, both
+    //     dropping on death — the fight's actual reward, since neither is something a
+    //     floor-3 character reliably has yet.
+    // extra_actions stays 0: this is meant to be a wall, not a blender. Numbers are
+    // stated defaults, as tunable as every other row.
+    {"Orc Warlord", 'W', tcod::ColorRGB{190, 70, 40}, 28,
+     Weapon{"Warlord's Cleaver", 1, 8, 0, false, 1, -1, /*hit_dice=*/1, 3}, /*xp_reward=*/55,
+     /*evasion=*/4, /*dexterity=*/8, /*strength=*/3, /*min_depth=*/3, /*max_depth=*/3,
+     /*armor=*/kArmorTable[1], /*extra_weapons=*/{}, /*potions=*/{kPotionTable[1]},
+     /*hp_regen_turns=*/120, /*extra_actions=*/0, /*is_boss=*/true},
 };
 
 // A player-summoned minion (Allegiance::Player) — same shape as MonsterTemplate where
@@ -273,7 +309,27 @@ std::vector<int> available_at_depth(const std::vector<T>& table, int depth) {
   return indices;
 }
 
-std::vector<int> monsters_available_at_depth(int depth) { return available_at_depth(kMonsterTable, depth); }
+// The ordinary random spawn pool for a floor: everything available_at_depth() allows,
+// minus boss rows. A boss is placed separately and exactly once (see bosses_at_depth()
+// below), so leaving it in here too would let a floor roll several of them — or none.
+std::vector<int> monsters_available_at_depth(int depth) {
+  std::vector<int> indices = available_at_depth(kMonsterTable, depth);
+  indices.erase(std::remove_if(indices.begin(), indices.end(),
+                               [](int i) { return kMonsterTable[static_cast<size_t>(i)].is_boss; }),
+                indices.end());
+  return indices;
+}
+
+// The mirror image: only the boss rows whose depth range covers this floor. Same
+// min_depth/max_depth gating every other table uses — a boss that should appear on
+// exactly one floor just sets both to the same number.
+std::vector<int> bosses_at_depth(int depth) {
+  std::vector<int> indices = available_at_depth(kMonsterTable, depth);
+  indices.erase(std::remove_if(indices.begin(), indices.end(),
+                               [](int i) { return !kMonsterTable[static_cast<size_t>(i)].is_boss; }),
+                indices.end());
+  return indices;
+}
 std::vector<int> weapons_available_at_depth(int depth) { return available_at_depth(kWeaponTable, depth); }
 std::vector<int> armor_available_at_depth(int depth) { return available_at_depth(kArmorTable, depth); }
 std::vector<int> potions_available_at_depth(int depth) { return available_at_depth(kPotionTable, depth); }
@@ -1217,6 +1273,17 @@ Level generate_level(int width, int height, bool has_stairs_up, int depth) {
     level.monsters.push_back(spawn_monster(kMonsterTable[static_cast<size_t>(table_index)], mx, my));
   }
 
+  // Bosses are placed on top of that count rather than drawn from it: one guaranteed
+  // spawn per boss row whose depth range covers this floor (see bosses_at_depth()).
+  // Placed like any other monster otherwise — a random free tile, respecting `occupied`
+  // — so it can land anywhere on the floor, not in a designated arena. Since levels
+  // persist (see the `levels` vector), a killed boss stays dead when you come back.
+  for (int table_index : bosses_at_depth(depth)) {
+    auto [bx, by] = random_free_tile(level.map, occupied);
+    occupied.push_back({bx, by});
+    level.monsters.push_back(spawn_monster(kMonsterTable[static_cast<size_t>(table_index)], bx, by));
+  }
+
   auto available_weapons = weapons_available_at_depth(depth);
   for (int i = 0; i < NUM_ITEMS; ++i) {
     auto [ix, iy] = random_free_tile(level.map, occupied);
@@ -1881,15 +1948,18 @@ int main(int argc, char* argv[]) {
     // Potion of Strength loses it on exactly the same schedule the player would.
     //
     // Regen is per-Actor and opt-in (Actor::hp_regen_turns, 0 = doesn't regenerate):
-    // only the player heals today, so an ordinary monster's wounds stick. The rate
+    // the player and the Orc Warlord are the only two that heal, so an ordinary
+    // monster's wounds still stick and chip-and-retreat still works on it. The rate
     // scales with max HP, so a full heal takes hp_regen_turns turns regardless of how
     // big the pool is. Silent — no log message — since it ticks often enough that
     // logging it would just spam. Mana needs no equivalent gate: only the player has any
     // (max_mana stays 0 on a monster), so that loop no-ops on its own.
     //
-    // Note this only runs for Actors on the *current* floor, which is invisible today
-    // since nothing but the player regenerates. If a regenerating boss is ever added, it
-    // won't heal while you're on another floor — consistent with it not acting either.
+    // Note this only runs for Actors on the *current* floor. That's now observable: the
+    // Orc Warlord (hp_regen_turns=120, the only non-zero row) heals back the damage you
+    // leave on it if you retreat *within* floor 3, but not while you're on another
+    // floor — consistent with it not acting while you're away either. So stairs remain a
+    // way to break off a losing boss fight; backing into a corridor is not.
     //
     // Each expiring buff removes exactly the delta apply_potion() added, rather than
     // recomputing a ceiling from the attribute — that's what lets the same code undo a

@@ -11,6 +11,12 @@ bool Map::in_bounds(int x, int y) const { return x >= 0 && x < width_ && y >= 0 
 
 bool Map::is_walkable(int x, int y) const { return in_bounds(x, y) && tiles_[y * width_ + x].walkable; }
 
+bool Map::blocks_projectile(int x, int y) const {
+  if (!in_bounds(x, y)) return true;
+  const Tile& tile = tiles_[y * width_ + x];
+  return !tile.walkable && !tile.is_hole;
+}
+
 const Tile& Map::at(int x, int y) const { return tiles_[y * width_ + x]; }
 
 bool Map::is_in_fov(int x, int y) const { return in_bounds(x, y) && fov_map_.isInFov(x, y); }
@@ -124,4 +130,88 @@ std::pair<int, int> Map::generate(int max_rooms, int room_min_size, int room_max
 
   sync_fov_map();
   return start;
+}
+
+namespace {
+constexpr int kMaxHolePatches = 2;    // 0-2 patches per floor
+constexpr int kMinHolePatchSize = 2;
+constexpr int kMaxHolePatchSize = 6;
+constexpr int kHolePatchRetries = 5;  // per patch, before giving up on placing it at all
+}  // namespace
+
+void Map::carve_hole_clusters(int entry_x, int entry_y, int stairs_x, int stairs_y) {
+  // A tile is a safe hole candidate if it's room floor (never a corridor/wall), not the
+  // entry or stairs tile, not already a hole, and every orthogonal neighbor is also room
+  // floor — that last check is what keeps a patch away from a room's edge/doorway (a
+  // corridor or wall neighbor means this tile is on the boundary).
+  auto is_candidate = [&](int x, int y) {
+    if (!in_bounds(x, y)) return false;
+    if ((x == entry_x && y == entry_y) || (x == stairs_x && y == stairs_y)) return false;
+    const Tile& t = tiles_[y * width_ + x];
+    if (!t.in_room || !t.walkable || t.is_hole) return false;
+    const int offs[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    for (const auto& o : offs) {
+      int nx = x + o[0], ny = y + o[1];
+      if (!in_bounds(nx, ny) || !tiles_[ny * width_ + nx].in_room) return false;
+    }
+    return true;
+  };
+
+  int patch_count = random_int(0, kMaxHolePatches);
+  for (int p = 0; p < patch_count; ++p) {
+    for (int attempt = 0; attempt < kHolePatchRetries; ++attempt) {
+      // Hunt for a random seed tile (bounded tries so a nearly-full map can't hang).
+      int seed_x = -1, seed_y = -1;
+      for (int tries = 0; tries < 200 && seed_x < 0; ++tries) {
+        int x = random_int(0, width_ - 1);
+        int y = random_int(0, height_ - 1);
+        if (is_candidate(x, y)) {
+          seed_x = x;
+          seed_y = y;
+        }
+      }
+      if (seed_x < 0) break;  // no valid seed anywhere; give up on this patch entirely
+
+      // Random-walk a small blob out from the seed, staying inside candidate tiles.
+      std::vector<std::pair<int, int>> patch = {{seed_x, seed_y}};
+      int target_size = random_int(kMinHolePatchSize, kMaxHolePatchSize);
+      while (static_cast<int>(patch.size()) < target_size) {
+        auto [fx, fy] = patch[static_cast<size_t>(random_int(0, static_cast<int>(patch.size()) - 1))];
+        const int offs[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+        std::vector<std::pair<int, int>> options;
+        for (const auto& o : offs) {
+          int nx = fx + o[0], ny = fy + o[1];
+          if (!is_candidate(nx, ny)) continue;
+          bool already = std::any_of(patch.begin(), patch.end(),
+                                      [&](const auto& t) { return t.first == nx && t.second == ny; });
+          if (!already) options.push_back({nx, ny});
+        }
+        if (options.empty()) break;  // can't grow further; take what we have
+        patch.push_back(options[static_cast<size_t>(random_int(0, static_cast<int>(options.size()) - 1))]);
+      }
+      if (static_cast<int>(patch.size()) < kMinHolePatchSize) continue;  // too small, retry elsewhere
+
+      // Tentatively carve, then confirm entry can still reach the stairs.
+      for (const auto& [x, y] : patch) {
+        Tile& t = tiles_[y * width_ + x];
+        t.walkable = false;
+        t.transparent = true;  // already true for any dig_room-produced tile; explicit for clarity
+        t.is_hole = true;
+      }
+      sync_fov_map();
+      // entry_x/y and stairs_x/y are always distinct tiles (stairs placement excludes
+      // the entry from its occupied list), so an empty result here always means
+      // "unreachable" — not find_path()'s other empty-result case (start == destination).
+      bool reachable = !find_path(entry_x, entry_y, stairs_x, stairs_y).empty();
+      if (reachable) break;  // patch kept; move on to the next patch
+
+      // Revert and retry a different placement.
+      for (const auto& [x, y] : patch) {
+        Tile& t = tiles_[y * width_ + x];
+        t.walkable = true;
+        t.is_hole = false;
+      }
+      sync_fov_map();
+    }
+  }
 }

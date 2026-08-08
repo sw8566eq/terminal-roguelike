@@ -11,6 +11,10 @@ struct Tile {
   bool transparent = false;  // whether light/sight passes through, for FOV
   bool explored = false;     // true once the tile has ever been seen (fog of war memory)
   bool in_room = false;      // true for room floor tiles; false for corridor floor tiles and walls
+  // A pit/chasm: blocks movement and pathfinding (walkable=false, like a wall) but not
+  // projectiles/spells/line-of-sight (transparent=true, unlike a wall). See
+  // Map::blocks_projectile() and Map::carve_hole_clusters().
+  bool is_hole = false;
 };
 
 // Axis-aligned rectangle used while carving rooms, in tile coordinates.
@@ -36,6 +40,10 @@ class Map {
 
   bool in_bounds(int x, int y) const;
   bool is_walkable(int x, int y) const;
+  // Whether a projectile/spell/line-of-sight is stopped at (x,y): true for a wall or
+  // out-of-bounds, false for ordinary floor *and* for a Hole. The one "does a shot stop
+  // here" check, kept separate from is_walkable so the two can differ.
+  bool blocks_projectile(int x, int y) const;
   const Tile& at(int x, int y) const;
 
   // Resets the map to all-wall and carves a fresh dungeon of non-overlapping
@@ -59,6 +67,14 @@ class Map {
   // start == destination. Used by monster chase AI so they route around obstacles
   // instead of a naive greedy step toward the target.
   std::vector<std::pair<int, int>> find_path(int from_x, int from_y, int to_x, int to_y) const;
+
+  // Carves 0-2 small random-shaped Hole patches into room interiors only (never a
+  // corridor, never a room's edge/doorway), each validated by tentatively carving it
+  // and confirming (entry_x,entry_y) can still reach (stairs_x,stairs_y) via
+  // find_path() — reverted and retried if not. Must be called after stairs are chosen
+  // (from generate_level() in main.cpp), not from inside generate() itself, since
+  // stairs_down_x/y don't exist yet when generate() runs.
+  void carve_hole_clusters(int entry_x, int entry_y, int stairs_x, int stairs_y);
 
  private:
   void dig_room(const Rect& room);

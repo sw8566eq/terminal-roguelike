@@ -569,6 +569,41 @@ int actor_index_by_id(const std::vector<Actor>& actors, int id) {
   return -1;
 }
 
+// Picks which hostile to auto-target when Targeting/RangedAttack mode is entered: the
+// last-targeted hostile (last_target_id) if it's still alive, hostile, in the player's
+// FOV, and within range — otherwise the closest hostile meeting the same two
+// conditions — otherwise -1 (caller falls back to the player's own tile). Range is
+// squared-Euclidean (dx*dx+dy*dy <= range*range), matching the cursor-movement clamp
+// both modes already use. FOV is the same "can currently be targeted" proxy monster
+// AI's own target selection already uses.
+int auto_target_hostile(const std::vector<Actor>& monsters, const Actor& player, const Map& map,
+                         int last_target_id, int range) {
+  auto qualifies = [&](const Actor& m) {
+    if (!map.is_in_fov(m.x, m.y)) return false;
+    int dx = m.x - player.x;
+    int dy = m.y - player.y;
+    return dx * dx + dy * dy <= range * range;
+  };
+
+  int last_index = actor_index_by_id(monsters, last_target_id);
+  if (last_index >= 0 && monsters[static_cast<size_t>(last_index)].allegiance == Allegiance::Hostile &&
+      qualifies(monsters[static_cast<size_t>(last_index)])) {
+    return last_target_id;
+  }
+
+  int best_id = -1, best_dist = -1;
+  for (const auto& m : monsters) {
+    if (m.allegiance != Allegiance::Hostile || !m.is_alive() || !qualifies(m)) continue;
+    int dx = m.x - player.x, dy = m.y - player.y;
+    int dist = dx * dx + dy * dy;
+    if (best_id == -1 || dist < best_dist) {
+      best_id = m.id;
+      best_dist = dist;
+    }
+  }
+  return best_id;
+}
+
 // How many of the player's minions are currently alive on this floor (minions always
 // live on whichever floor the player is currently on — see the cross-floor handling
 // in descend()/ascend()). Checked against kMaxMinions when casting a summon spell.
@@ -618,7 +653,7 @@ std::pair<int, int> find_impact(const std::vector<std::pair<int, int>>& path, in
                                  const Map& map, const std::vector<Actor>& monsters) {
   int prev_x = start_x, prev_y = start_y;
   for (const auto& [x, y] : path) {
-    if (!map.is_walkable(x, y)) return {prev_x, prev_y};
+    if (map.blocks_projectile(x, y)) return {prev_x, prev_y};
     if (hostile_monster_at(monsters, x, y) >= 0) return {x, y};
     prev_x = x;
     prev_y = y;
@@ -636,7 +671,7 @@ std::pair<int, int> find_impact(const std::vector<std::pair<int, int>>& path, in
 bool line_clear(int fx, int fy, int tx, int ty, const Map& map) {
   auto path = trace_path(fx, fy, tx, ty);
   for (size_t i = 0; i + 1 < path.size(); ++i) {
-    if (!map.is_walkable(path[i].first, path[i].second)) return false;
+    if (map.blocks_projectile(path[i].first, path[i].second)) return false;
   }
   return true;
 }
@@ -940,6 +975,12 @@ Level generate_level(int width, int height, bool has_stairs_up, int depth) {
   level.stairs_down_y = down_y;
   occupied.push_back({down_x, down_y});
 
+  // Must run after stairs are placed (Map::generate() itself returns before
+  // stairs_down_x/y are known) and before monsters/items are placed, so their
+  // random_free_tile() calls skip Hole tiles for free via the ordinary is_walkable()
+  // check, no extra bookkeeping needed.
+  level.map.carve_hole_clusters(entry_x, entry_y, down_x, down_y);
+
   auto available_monsters = monsters_available_at_depth(depth);
   int monster_count = monster_count_for_depth(depth);
   for (int i = 0; i < monster_count; ++i) {
@@ -1200,6 +1241,10 @@ int main(int argc, char* argv[]) {
   int casting_spell_index = -1;  // which kSpellTable entry is being aimed, while Mode::Targeting
   int target_x = 0;  // cursor position, while Mode::Targeting, MinionFocus, Look, or RangedAttack
   int target_y = 0;
+  // The id of the last hostile Targeting/RangedAttack's cursor was aimed at when the
+  // player fired (see auto_target_hostile()) — shared between the two modes the same
+  // way target_x/target_y already are. -1 until the first shot connects with something.
+  int last_target_id = -1;
   // Index into kSpellTable of the currently-running toggle spell (e.g. Sandstorm), or
   // -1 if none is active. Only one toggle spell can run at a time — simple on purpose,
   // since there's only one so far; a second would need its own slot or a small vector.
@@ -1490,7 +1535,7 @@ int main(int argc, char* argv[]) {
         auto [x, y] = proj.path[proj.path_index];
         ++proj.path_index;
 
-        if (!level.map.is_walkable(x, y)) {
+        if (level.map.blocks_projectile(x, y)) {
           if (proj.aoe_radius > 0) {
             explode(proj, proj.prev_x, proj.prev_y);  // last open tile before the wall
           } else {
@@ -2431,8 +2476,9 @@ int main(int argc, char* argv[]) {
           bool tile_in_fov = level.map.is_in_fov(target_x, target_y);
           bool is_stairs_down = (target_x == level.stairs_down_x && target_y == level.stairs_down_y);
           bool is_stairs_up = level.has_stairs_up && (target_x == level.entry_x && target_y == level.entry_y);
-          std::string terrain = is_stairs_down    ? "Stairs down"
-                                 : is_stairs_up    ? "Stairs up"
+          std::string terrain = is_stairs_down                             ? "Stairs down"
+                                 : is_stairs_up                             ? "Stairs up"
+                                 : level.map.at(target_x, target_y).is_hole ? "Hole"
                                  : level.map.is_walkable(target_x, target_y) ? "Floor"
                                                                               : "Wall";
           sb_print("  " + terrain, tcod::ColorRGB{200, 200, 200});
@@ -2561,6 +2607,7 @@ int main(int argc, char* argv[]) {
           if (!level.map.is_explored(x, y) && !reveal_mode) continue;
 
           bool walkable = level.map.is_walkable(x, y);
+          bool is_hole = level.map.at(x, y).is_hole;
           bool visible = level.map.is_in_fov(x, y);
           bool is_stairs_down = (x == level.stairs_down_x && y == level.stairs_down_y);
           bool is_stairs_up = level.has_stairs_up && (x == level.entry_x && y == level.entry_y);
@@ -2570,6 +2617,8 @@ int main(int argc, char* argv[]) {
             cell.ch = '>';
           } else if (is_stairs_up) {
             cell.ch = '<';
+          } else if (is_hole) {
+            cell.ch = '^';
           } else {
             cell.ch = walkable ? '.' : '#';
           }
@@ -2577,6 +2626,8 @@ int main(int argc, char* argv[]) {
           if (visible) {
             if (is_stairs_down || is_stairs_up) {
               cell.fg = tcod::ColorRGB{255, 255, 150};
+            } else if (is_hole) {
+              cell.fg = tcod::ColorRGB{180, 90, 40};
             } else {
               cell.fg = walkable ? tcod::ColorRGB{160, 160, 160} : tcod::ColorRGB{90, 90, 90};
             }
@@ -2584,6 +2635,8 @@ int main(int argc, char* argv[]) {
             // Remembered but currently out of sight: dimmed fog-of-war shading.
             if (is_stairs_down || is_stairs_up) {
               cell.fg = tcod::ColorRGB{110, 110, 70};
+            } else if (is_hole) {
+              cell.fg = tcod::ColorRGB{70, 35, 15};
             } else {
               cell.fg = walkable ? tcod::ColorRGB{60, 60, 60} : tcod::ColorRGB{35, 35, 35};
             }
@@ -2685,7 +2738,7 @@ int main(int argc, char* argv[]) {
         auto preview = trace_path(player.x, player.y, target_x, target_y);
         for (size_t i = 0; i < preview.size(); ++i) {
           auto [x, y] = preview[i];
-          bool blocked = !level.map.is_walkable(x, y);
+          bool blocked = level.map.blocks_projectile(x, y);
           bool has_monster = hostile_monster_at(level.monsters, x, y) >= 0;
           bool stops_here = blocked || has_monster || i + 1 == preview.size();
           if (in_view(x, y)) {
@@ -2728,7 +2781,7 @@ int main(int argc, char* argv[]) {
         auto preview = trace_path(player.x, player.y, target_x, target_y);
         for (size_t i = 0; i < preview.size(); ++i) {
           auto [x, y] = preview[i];
-          bool blocked = !level.map.is_walkable(x, y);
+          bool blocked = level.map.blocks_projectile(x, y);
           bool has_monster = hostile_monster_at(level.monsters, x, y) >= 0;
           bool stops_here = blocked || has_monster || i + 1 == preview.size();
           if (in_view(x, y)) {
@@ -3077,8 +3130,18 @@ int main(int argc, char* argv[]) {
               }
             } else {
               casting_spell_index = spell_idx;
-              target_x = player.x;
-              target_y = player.y;
+              // Auto-aim at the most recently targeted hostile if it still qualifies,
+              // else the closest qualifying one, else fall back to the player's own
+              // tile (the old default) — see auto_target_hostile().
+              int auto_id = auto_target_hostile(level.monsters, player, level.map, last_target_id, spell.range);
+              int auto_idx = actor_index_by_id(level.monsters, auto_id);
+              if (auto_idx >= 0) {
+                target_x = level.monsters[static_cast<size_t>(auto_idx)].x;
+                target_y = level.monsters[static_cast<size_t>(auto_idx)].y;
+              } else {
+                target_x = player.x;
+                target_y = player.y;
+              }
               mode = Mode::Targeting;
             }
           }
@@ -3286,6 +3349,13 @@ int main(int argc, char* argv[]) {
             continue;
           }
 
+          // Remember what's under the cursor now, before firing, so the next time
+          // Targeting/RangedAttack opens it re-aims at the same monster (see
+          // auto_target_hostile()). Left unchanged if the shot is aimed at empty
+          // ground (e.g. an AoE spell dropped on open floor).
+          int hit_index = hostile_monster_at(level.monsters, target_x, target_y);
+          if (hit_index >= 0) last_target_id = level.monsters[static_cast<size_t>(hit_index)].id;
+
           // Any tile is a legal target now: the spell travels and resolves against
           // whatever (if anything) it actually reaches, not necessarily the cursor tile.
           Projectile proj;
@@ -3388,6 +3458,12 @@ int main(int argc, char* argv[]) {
           // damage_bonus_for() gives a ranged weapon the Dexterity bonus, and
           // accuracy_bonus carries the caster's Dexterity accuracy term (the weapon's
           // own hit-dice are still rolled fresh on impact).
+
+          // Remember what's under the cursor now, before firing — see the Targeting
+          // handler's identical comment above.
+          int hit_index = hostile_monster_at(level.monsters, target_x, target_y);
+          if (hit_index >= 0) last_target_id = level.monsters[static_cast<size_t>(hit_index)].id;
+
           Projectile proj;
           proj.path = trace_path(player.x, player.y, target_x, target_y);
           proj.speed = kInstantSpellSpeed;
@@ -3645,8 +3721,17 @@ int main(int argc, char* argv[]) {
         if (player.weapon.attack_range <= 1) {
           add_message("Your " + player.weapon.name + " isn't a ranged weapon.");
         } else {
-          target_x = player.x;
-          target_y = player.y;
+          // Same auto-aim as SpellMenu -> Targeting above, see auto_target_hostile().
+          int auto_id = auto_target_hostile(level.monsters, player, level.map, last_target_id,
+                                             player.weapon.attack_range);
+          int auto_idx = actor_index_by_id(level.monsters, auto_id);
+          if (auto_idx >= 0) {
+            target_x = level.monsters[static_cast<size_t>(auto_idx)].x;
+            target_y = level.monsters[static_cast<size_t>(auto_idx)].y;
+          } else {
+            target_x = player.x;
+            target_y = player.y;
+          }
           mode = Mode::RangedAttack;
         }
         continue;

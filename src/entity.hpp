@@ -278,6 +278,24 @@ struct Actor {
   int temp_armor_bonus = 0;
   int temp_armor_turns = 0;
 
+  // How many *extra* actions this Actor gets per world turn, beyond the one everything
+  // gets. 0 everywhere today except while the player has Haste up. Authored per row for
+  // a monster (MonsterTemplate::extra_actions, 0 on every current row — the boss/elite
+  // knob, same reserved-for-later shape as hp_regen_turns above); temporary and
+  // spell-driven for the player, via the bonus/turns pair below.
+  //
+  // Genuinely shared, not player-only: the player spends theirs by having end_turn()
+  // return early without advancing the world (see its free-action guard), and a monster
+  // spends theirs by running its AI-loop body more than once. Different plumbing, since
+  // the player's turn is input-driven and a monster's is a loop iteration, but the same
+  // field with the same meaning — a monster with extra_actions=1 acts twice for each of
+  // your turns, and a hasted player acts twice for each of its turns.
+  int extra_actions = 0;
+  // Same tick/refresh shape as the buff pairs above; read together with extra_actions
+  // via total_actions_for() in main.cpp, never on its own.
+  int temp_extra_actions_bonus = 0;
+  int temp_extra_actions_turns = 0;
+
   // Monsters only: the last tile this monster actually saw the player standing on,
   // or (-1, -1) if it's never seen them (or already reached that tile without finding
   // them there). Lets a monster keep heading for where the player was after losing

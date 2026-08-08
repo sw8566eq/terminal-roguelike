@@ -82,7 +82,9 @@ step 1.
   of moving you, with a preview line (and a highlighted blast radius for an
   AoE spell) showing what the shot would hit, `Enter` fires, `Esc` cancels; a
   toggled spell (like Sandstorm) instead turns on/off immediately, no aiming;
-  a summon spell raises a minion next to you immediately, no aiming either
+  a summon spell raises a minion next to you immediately, no aiming either;
+  so does a self-buff spell (Battle Fury, Iron Skin, Haste), which shows up
+  in the sidebar's Buffs list with its remaining turns
   — freshly summoned minions default to Aggressive (below), not passive Follow
 - Commanding minions, if you have any: `o` / `p` cycle command focus to the
   next/previous minion, or `m` opens a roster menu to pick one by letter —
@@ -104,8 +106,9 @@ step 1.
   Strength / Dexterity / Intelligence. The first time Intelligence reaches 4,
   a one-time, permanent choice interrupts: `Shift+C` for Caster (Fireball,
   Sandstorm, Lightning Bolt), `Shift+U` for Summoner (Raise Skeleton, Place
-  Swap, Summon Demon), or `Shift+M` for Combat Mage (Battle Fury, Iron Skin)
-  — Magic Dart and its upgraded cousin Energy Lance stay available either way
+  Swap, Summon Demon), or `Shift+M` for Combat Mage (Battle Fury, Iron Skin,
+  Haste) — Magic Dart and its upgraded cousin Energy Lance stay available
+  whichever path you pick
 - `x` to look around: move a cursor over the map without spending a turn or
   moving, and the side panel describes what's under it — remembered terrain
   anywhere you've explored, and for anything actually in view, the item or
@@ -131,6 +134,10 @@ These are for development/testing, not normal play:
   `--floor=N`, plus every monster with its stats and everything it's
   carrying (which is real loot, since it drops), then exit immediately
   without opening a window
+- `--fast-monsters` — give every hostile monster one extra action per turn,
+  so they move and attack twice for each turn you take. No monster in the
+  game does this normally; the flag exists to exercise the boss/elite
+  behavior before an actual boss row is written
 - `--give=<name>[,<name>...]` — add items straight to your carried
   inventory at startup (not equipped), by exact name across weapons,
   armor, and potions, e.g. `--give="Dagger,Potion of Teleportation"`;
@@ -178,9 +185,17 @@ roguelike/
 - [x] Spell schools: at Intelligence 4 you permanently pick Caster (Fireball,
       Sandstorm, Lightning Bolt), Summoner (Raise Skeleton, Place Swap,
       Summon Demon — a permanent, much stronger minion), or Combat Mage
-      (Battle Fury, a melee-damage buff; Iron Skin, a flat-armor buff) —
-      the other two paths' spells are locked out for the rest of that run.
-      Magic Dart and Energy Lance are shared, available regardless of path
+      (Battle Fury, a melee-damage buff; Iron Skin, a flat-armor buff; Haste,
+      below) — the other two paths' spells are locked out for the rest of
+      that run. Magic Dart and Energy Lance are shared, available regardless
+      of path
+- [x] Extra actions per turn: Haste (the Combat Mage's top spell) lets you act
+      twice for every turn the dungeon takes — you move, fight and cast at
+      double rate while monsters, minions, buff timers and mana regen all run
+      on the normal clock. It's a plain Actor property rather than a player
+      perk, so a boss or elite monster can be given the same thing by setting
+      one field on its table row (try `--fast-monsters` below to see it from
+      the other side)
 - [x] Mana: spells cost mana to cast (or, for Sandstorm, to keep running),
       regenerating passively the same way HP does
 - [x] Monster AI: chases when it can see you, keeps heading for the last
@@ -197,7 +212,8 @@ roguelike/
       tactics work. It's a per-monster toggle, ready for boss-type enemies
 - [x] Multi-line message log with scrollback (`]`), repeat-message coalescing
 - [x] Sectioned HUD: three bordered ASCII panels — the dungeon, a message log,
-      and a status sidebar listing your stats plus the enemies and minions
+      and a status sidebar listing your stats, every temporary buff you have
+      running with its remaining turns, plus the enemies and minions
       currently in view. The dungeon is bigger than the panel showing it, so
       the view scrolls to follow you (or your cursor while aiming)
 - [x] Look around (`x`): inspect any explored tile without spending a turn

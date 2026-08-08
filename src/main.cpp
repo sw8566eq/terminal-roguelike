@@ -134,6 +134,10 @@ struct MonsterTemplate {
   // doesn't heal at all — see Actor::hp_regen_turns. Reserved for boss/elite rows that
   // should shrug off chip damage; ordinary monsters keep their wounds.
   int hp_regen_turns = 0;
+  // Extra actions per world turn beyond the first — 0 on every row today, the second
+  // boss/elite knob alongside hp_regen_turns. A row with extra_actions=1 moves/attacks
+  // twice for each of the player's turns. See Actor::extra_actions.
+  int extra_actions = 0;
 };
 
 // Natural weapons: part of the monster, not loot, so they're marked intrinsic exactly
@@ -225,6 +229,9 @@ struct MinionTemplate {
   // Same regeneration toggle as MonsterTemplate — 0 (today's only row) means a minion
   // doesn't heal either. See Actor::hp_regen_turns.
   int hp_regen_turns = 0;
+  // Same extra-actions knob as MonsterTemplate, 0 on every row today. A summon fast
+  // enough to act twice a turn would just set this. See Actor::extra_actions.
+  int extra_actions = 0;
 };
 
 const std::vector<MinionTemplate> kMinionTable = {
@@ -282,6 +289,16 @@ constexpr int kHpPerLevel = 3;
 constexpr int kHpPerStrength = 7;
 int max_hp_for_level_and_strength(int level, int strength) {
   return 10 + (level - 1) * kHpPerLevel + strength * kHpPerStrength;
+}
+
+// How many actions this Actor gets per world turn: one, plus whatever its row authored
+// (Monster/MinionTemplate::extra_actions) and whatever a Haste-style buff is currently
+// granting. The single place those two sources are combined — read it rather than
+// touching either field directly, exactly as dexterity is always read together with
+// temp_dex_bonus. Clamped at 1 so a hypothetical negative bonus can't stall an Actor
+// out of acting entirely.
+int total_actions_for(const Actor& actor) {
+  return std::max(1, 1 + actor.extra_actions + actor.temp_extra_actions_bonus);
 }
 
 // Max mana scales with Intelligence only, not level, unlike
@@ -466,6 +483,11 @@ struct Spell {
   // same name.
   bool is_melee_buff = false;
   bool is_armor_buff = false;
+  // Haste: the third Combat Mage buff, resolving from the menu exactly like the two
+  // above, but granting buff_amount *extra actions per turn* instead of a combat number
+  // (see Actor::extra_actions and total_actions_for()). Shares the buff_amount/buff_turns
+  // pair rather than adding its own, since it wants the same two knobs.
+  bool is_haste_buff = false;
   int buff_amount = 0;
   int buff_turns = 0;
   // True for a piercing spell (Lightning Bolt): the fired Projectile keeps traveling
@@ -548,7 +570,8 @@ const std::vector<Spell> kSpellTable = {
      /*mana_cost=*/3, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
      /*hit_dice_count=*/0, /*hit_dice_sides=*/0, 'f', tcod::ColorRGB{220, 80, 60}, /*is_summon=*/false,
      /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::CombatMage,
-     /*is_melee_buff=*/true, /*is_armor_buff=*/false, /*buff_amount=*/4, /*buff_turns=*/10},
+     /*is_melee_buff=*/true, /*is_armor_buff=*/false, /*is_haste_buff=*/false,
+     /*buff_amount=*/4, /*buff_turns=*/10},
     // Combat Mage's second spell — unlock_int=5, same +1 gap after the entry spell as
     // Summoner's Raise Skeleton(4)->Place Swap(5). buff_amount=3 matches Chainmail's own
     // +3 defense. Applies to all damage sources (see every armor.defense site), not
@@ -557,7 +580,8 @@ const std::vector<Spell> kSpellTable = {
      /*mana_cost=*/3, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
      /*hit_dice_count=*/0, /*hit_dice_sides=*/0, 'k', tcod::ColorRGB{150, 150, 220}, /*is_summon=*/false,
      /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::CombatMage,
-     /*is_melee_buff=*/false, /*is_armor_buff=*/true, /*buff_amount=*/3, /*buff_turns=*/9},
+     /*is_melee_buff=*/false, /*is_armor_buff=*/true, /*is_haste_buff=*/false,
+     /*buff_amount=*/3, /*buff_turns=*/9},
     // Caster's third spell — a genuinely new mechanic, not just another stat tier: a
     // piercing beam (Projectile::pierces) that hits every hostile monster along its
     // line of travel instead of stopping at the first one. Deliberately NOT combined
@@ -575,8 +599,8 @@ const std::vector<Spell> kSpellTable = {
      /*mana_cost=*/5, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
      /*hit_dice_count=*/3, /*hit_dice_sides=*/6, '/', tcod::ColorRGB{255, 255, 120}, /*is_summon=*/false,
      /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::Caster,
-     /*is_melee_buff=*/false, /*is_armor_buff=*/false, /*buff_amount=*/0, /*buff_turns=*/0,
-     /*pierces=*/true},
+     /*is_melee_buff=*/false, /*is_armor_buff=*/false, /*is_haste_buff=*/false,
+     /*buff_amount=*/0, /*buff_turns=*/0, /*pierces=*/true},
     // Summoner's third spell: raises kMinionTable[1] (Demon), the school's stronger,
     // permanent counterpart to Raise Skeleton's early, temporary Skeletal Minion —
     // pure content-table addition, zero new mechanism (identical is_summon shape).
@@ -587,6 +611,23 @@ const std::vector<Spell> kSpellTable = {
      /*mana_cost=*/9, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
      /*hit_dice_count=*/0, /*hit_dice_sides=*/0, 'D', tcod::ColorRGB{200, 40, 180}, /*is_summon=*/true,
      /*summon_template_index=*/1, /*is_swap=*/false, /*school=*/SpellSchool::Summoner},
+    // Combat Mage's third spell, and the school's payoff: buff_amount extra actions per
+    // world turn (see Actor::extra_actions / total_actions_for()). Structurally just a
+    // third self-buff resolving from the menu like Battle Fury and Iron Skin — the new
+    // mechanism is entirely in how the turn loop spends the actions, not here.
+    //
+    // unlock_int=9 is the parallel tier to Lightning Bolt and Summon Demon.
+    // mana_cost=9 matches Summon Demon's, the other school's spell of comparable
+    // "changes the whole fight" weight, and buff_turns=8 is deliberately shorter than
+    // Battle Fury's 10 — 8 world turns is already 16 actions. Note this multiplies
+    // *everything*, including Battle Fury swings and further casts, so it's the most
+    // likely number in the table to need tuning down after playtesting.
+    {"Haste", /*unlock_int=*/9, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/0,
+     /*mana_cost=*/9, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
+     /*hit_dice_count=*/0, /*hit_dice_sides=*/0, 'h', tcod::ColorRGB{120, 255, 180}, /*is_summon=*/false,
+     /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::CombatMage,
+     /*is_melee_buff=*/false, /*is_armor_buff=*/false, /*is_haste_buff=*/true,
+     /*buff_amount=*/1, /*buff_turns=*/8},
 };
 
 // Indices into kSpellTable of every spell the player currently knows, in display
@@ -1064,6 +1105,15 @@ int allocate_actor_id() {
   return next_id++;
 }
 
+// Debug flag --fast-monsters: gives every hostile monster spawned one extra action per
+// turn (Actor::extra_actions). File-scope rather than a main() local like the other
+// debug flags because it's read inside spawn_monster(), and floor 1 is generated by
+// start_new_game() before main()'s normal argv loop runs — so it's set by a pre-scan at
+// the very top of main() instead. Exists because no kMonsterTable row sets
+// extra_actions today, and without it the monster half of the mechanic would have
+// nothing to exercise it until a boss row is actually written.
+bool g_debug_fast_monsters = false;
+
 // Builds a hostile monster from a table row. Every assignment here is a straight copy
 // into the identically-named Actor field — there's no monster-specific derivation left,
 // which is the point: the result is an ordinary Actor that the combat, gear, potion and
@@ -1086,6 +1136,7 @@ Actor spawn_monster(const MonsterTemplate& tmpl, int x, int y) {
   monster.dexterity = tmpl.dexterity;
   monster.strength = tmpl.strength;
   monster.hp_regen_turns = tmpl.hp_regen_turns;
+  monster.extra_actions = tmpl.extra_actions + (g_debug_fast_monsters ? 1 : 0);
   return monster;
 }
 
@@ -1108,6 +1159,7 @@ Actor spawn_minion(const MinionTemplate& tmpl, int x, int y) {
   minion.dexterity = tmpl.dexterity;
   minion.strength = tmpl.strength;
   minion.hp_regen_turns = tmpl.hp_regen_turns;
+  minion.extra_actions = tmpl.extra_actions;
   minion.duration_turns = tmpl.duration_turns;
   minion.allegiance = Allegiance::Player;
   return minion;
@@ -1278,6 +1330,13 @@ void draw_panel(tcod::Console& console, int x, int y, int w, int h, const std::s
 }
 
 int main(int argc, char* argv[]) {
+  // Pre-scan for the one debug flag that has to be known before any level is generated
+  // — start_new_game() below builds floor 1, and --floor=N replays descend(), both well
+  // before the ordinary argv loop further down. See g_debug_fast_monsters.
+  for (int i = 1; i < argc; ++i) {
+    if (std::string(argv[i]) == "--fast-monsters") g_debug_fast_monsters = true;
+  }
+
   // Sectioned HUD layout: a context-prompt row, then a map panel (left) and a
   // stats/enemies/minions "at a glance" sidebar (right) side by side, then a
   // message-log panel spanning the full width along the bottom. Each panel is a
@@ -1424,6 +1483,12 @@ int main(int argc, char* argv[]) {
   // -1 if none is active. Only one toggle spell can run at a time — simple on purpose,
   // since there's only one so far; a second would need its own slot or a small vector.
   int active_toggle_spell = -1;
+  // How many of the player's extra actions (total_actions_for(player) - 1, normally 0)
+  // have already been spent inside the current world turn. Session state rather than an
+  // Actor field, exactly like active_toggle_spell above: it's a property of where we are
+  // in the turn loop, not of the character. See end_turn()'s free-action guard, which is
+  // the only thing that reads or writes it.
+  int free_actions_used = 0;
   // Which minion currently has command focus while cycling with o/p (see Mode::Playing's
   // key handling) — persists across focus sessions so repeated o/p presses keep moving
   // through the roster in order, not reset to the first minion every time. -1 = no
@@ -1651,7 +1716,14 @@ int main(int argc, char* argv[]) {
   // Advances every in-flight projectile on the current floor by its speed (in tiles),
   // checking each tile it passes through this turn for a wall or monster to hit.
   // Called once per player turn, from end_turn().
-  auto advance_projectiles = [&]() {
+  //
+  // instant_only restricts it to hit-scan shots (speed >= kInstantSpellSpeed: Magic
+  // Dart, Energy Lance, Lightning Bolt, the Bow — everything that always crosses the
+  // whole map in the turn it's fired). That's the mode a hasted player's *free* action
+  // runs in: an instant shot has no travel to observe, so making it wait for the world
+  // to move would just feel broken, while a genuinely slow projectile (Fireball's orb)
+  // is supposed to be observably in flight and so must only advance on real world turns.
+  auto advance_projectiles = [&](bool instant_only = false) {
     Level& level = levels[static_cast<size_t>(current_level)];
 
     // Deals independently-rolled damage to every living monster within aoe_radius tiles
@@ -1702,6 +1774,10 @@ int main(int argc, char* argv[]) {
 
     for (size_t i = 0; i < level.projectiles.size();) {
       Projectile& proj = level.projectiles[i];
+      if (instant_only && proj.speed < kInstantSpellSpeed) {
+        ++i;  // leave it exactly where it is; it moves on the next real world turn
+        continue;
+      }
       bool consumed = false;
 
       for (int step = 0; step < proj.speed && !consumed; ++step) {
@@ -1780,6 +1856,26 @@ int main(int argc, char* argv[]) {
   auto end_turn = [&]() {
     Level& level = levels[static_cast<size_t>(current_level)];
 
+    // Extra actions (Haste, or a boss-style Actor::extra_actions): this is where the
+    // player spends theirs. end_turn() is the single hook every turn-consuming player
+    // action funnels through, so "act twice per world turn" is exactly "return without
+    // advancing the world, every other action" — no per-action-site changes anywhere.
+    //
+    // A monster spends its own extra actions differently, by running its AI-loop body
+    // more than once (see the two loops below); the plumbing differs because the
+    // player's turn is input-driven and a monster's is a loop iteration, but
+    // total_actions_for() is the one shared source of how many either of them gets.
+    //
+    // Only hit-scan projectiles resolve on a free action — see advance_projectiles()'s
+    // instant_only parameter for why. Nothing else runs: no upkeep (so buff timers count
+    // *world* turns, meaning Haste's 8 turns is 16 actions), no aura tick, no AI.
+    if (free_actions_used < total_actions_for(player) - 1 && mode != Mode::Dead) {
+      ++free_actions_used;
+      advance_projectiles(/*instant_only=*/true);
+      return;
+    }
+    free_actions_used = 0;
+
     // Per-turn upkeep, run identically for every living Actor on the floor: passive HP
     // and mana regen, then any temporary stat buff counting down. A monster that drank a
     // Potion of Strength loses it on exactly the same schedule the player would.
@@ -1844,6 +1940,13 @@ int main(int argc, char* argv[]) {
       if (actor.temp_armor_turns > 0 && --actor.temp_armor_turns == 0) {
         actor.temp_armor_bonus = 0;
         if (actor.is_player) add_message("Your iron skin fades.");
+      }
+      // Haste. Nothing to unwind beyond zeroing the bonus: free_actions_used is reset at
+      // the top of every real turn (see end_turn()'s guard), and this only ever runs on a
+      // real turn, so an expiry can't strand a half-spent action budget.
+      if (actor.temp_extra_actions_turns > 0 && --actor.temp_extra_actions_turns == 0) {
+        actor.temp_extra_actions_bonus = 0;
+        if (actor.is_player) add_message("You slow back to normal speed.");
       }
     };
 
@@ -1940,104 +2043,116 @@ int main(int argc, char* argv[]) {
     for (auto& monster : level.monsters) {
       if (mode == Mode::Dead) break;  // player already died to an earlier monster this turn
       if (!monster.is_alive() || monster.allegiance != Allegiance::Hostile) continue;
+      // Extra actions: an ordinary monster runs this body once, and a boss/elite row
+      // with extra_actions > 0 runs it again for each extra. Every "this creature is
+      // done" exit inside the body is already a `continue`, which inside this inner loop
+      // reads correctly as "this action is spent, take the next one" — so a two-action
+      // monster can drink a potion and then attack, or attack twice, or close the
+      // distance and then swing. total_actions_for() is the same function the player's
+      // own extra actions come from (see end_turn()'s free-action guard).
+      for (int action = 0; action < total_actions_for(monster); ++action) {
+        // Re-checked per action, not just per monster: the player can die to this
+        // monster's first swing, and nothing should get a second one after that.
+        if (mode == Mode::Dead || !monster.is_alive()) break;
 
-      // Picks this monster's target for the turn: the player, or the closest living
-      // minion whose tile is currently in the player's FOV (there's no separate
-      // per-monster FOV; "lit right now" — the same is_in_fov() check already used to
-      // decide whether to even render a minion — stands in for "this monster would
-      // notice it"). Ties favor the player. Minions don't get their own "remembered
-      // last position" the way the player does (last_seen_player_x/y below is still
-      // player-specific) — a Phase 1 simplification. With zero minions on the floor
-      // this always resolves to the player, so solo-player behavior is unchanged.
-      Actor* target = &player;
-      int best_dist = distance_between(monster, player);
-      for (auto& candidate : level.monsters) {
-        if (candidate.allegiance != Allegiance::Player || !candidate.is_alive()) continue;
-        if (!level.map.is_in_fov(candidate.x, candidate.y)) continue;
-        int dist = distance_between(monster, candidate);
-        if (dist < best_dist) {
-          best_dist = dist;
-          target = &candidate;
-        }
-      }
-
-      // Gear and consumables, decided before anything else this turn and using the same
-      // code the player's own menus drive. Swapping to whichever carried weapon suits
-      // the current distance is free (it's a draw, not a turn); actually drinking
-      // something costs the turn, exactly as it does for the player.
-      equip_best_weapon_for_range(monster, best_dist);
-      if (try_actor_use_potion(monster, /*enemy_near=*/best_dist <= kAiBuffPotionRange)) continue;
-
-      // "In range" is just the equipped weapon's reach — the same field that decides
-      // whether the player can fire what they're holding. A wall between the two still
-      // blocks it (line_clear()), which at range 1 is always trivially true, so melee is
-      // unaffected by that check. Once melee_engaged (see Actor), a ranged monster's
-      // reach permanently collapses to 1: it snipes right up until its target reaches
-      // it, then fights like any other melee monster for good.
-      int effective_range = monster.melee_engaged ? 1 : monster.weapon.attack_range;
-      bool in_range = best_dist <= effective_range && best_dist > 0;
-      if (in_range && line_clear(monster.x, monster.y, target->x, target->y, level.map)) {
-        resolve_attack(monster, *target, monster.weapon);
-        continue;
-      }
-
-      int target_x = target->x;
-      int target_y = target->y;
-      bool target_is_player = target->is_player;
-
-      // Out of range (or no line of sight): chase toward the chosen target if it's
-      // currently visible — for the player specifically, "visible" still means the
-      // FOV-reciprocity check below (can_see_player), same as always; a minion target
-      // was already required to be in_fov to be picked as the target at all, above.
-      // Otherwise, if the monster still remembers where it last saw the player
-      // specifically, head there instead of immediately giving up — once it arrives
-      // and the player isn't there, the memory clears and it falls back to idle
-      // wandering. Movement follows a real A* path (Map::find_path(), libtcod's
-      // TCODPath) recomputed fresh every turn — cheap enough at this map size that
-      // there's no need to cache it turn-to-turn — so a monster routes around a wall
-      // segment instead of pacing against it.
-      bool can_see_player = level.map.is_in_fov(monster.x, monster.y);
-      if (can_see_player) {
-        monster.last_seen_player_x = player.x;
-        monster.last_seen_player_y = player.y;
-      }
-
-      int move_dx = 0;
-      int move_dy = 0;
-      bool can_see_target = target_is_player ? can_see_player : true;  // minion targets are always is_in_fov, see above
-      bool has_chase_target = can_see_target || monster.last_seen_player_x >= 0;
-      if (has_chase_target) {
-        int chase_x = can_see_target ? target_x : monster.last_seen_player_x;
-        int chase_y = can_see_target ? target_y : monster.last_seen_player_y;
-        if (chase_x == monster.x && chase_y == monster.y) {
-          // Arrived at the last-known spot and nothing's here: give up the chase.
-          // Falls through to a wander roll below this turn, same as if there'd never
-          // been anything to chase.
-          monster.last_seen_player_x = -1;
-          monster.last_seen_player_y = -1;
-        } else {
-          auto path = level.map.find_path(monster.x, monster.y, chase_x, chase_y);
-          // Empty means no route exists at all — falls through to the wander roll
-          // below, same shape as today's "stuck" case, just genuinely no path instead
-          // of one greedy step happening to be blocked.
-          if (!path.empty()) {
-            move_dx = path[0].first - monster.x;
-            move_dy = path[0].second - monster.y;
+        // Picks this monster's target for the turn: the player, or the closest living
+        // minion whose tile is currently in the player's FOV (there's no separate
+        // per-monster FOV; "lit right now" — the same is_in_fov() check already used to
+        // decide whether to even render a minion — stands in for "this monster would
+        // notice it"). Ties favor the player. Minions don't get their own "remembered
+        // last position" the way the player does (last_seen_player_x/y below is still
+        // player-specific) — a Phase 1 simplification. With zero minions on the floor
+        // this always resolves to the player, so solo-player behavior is unchanged.
+        Actor* target = &player;
+        int best_dist = distance_between(monster, player);
+        for (auto& candidate : level.monsters) {
+          if (candidate.allegiance != Allegiance::Player || !candidate.is_alive()) continue;
+          if (!level.map.is_in_fov(candidate.x, candidate.y)) continue;
+          int dist = distance_between(monster, candidate);
+          if (dist < best_dist) {
+            best_dist = dist;
+            target = &candidate;
           }
         }
-      }
-      if (move_dx == 0 && move_dy == 0 && monster.last_seen_player_x < 0 && random_int(0, 1) == 0) {
-        // Wander: only a coin-flip chance to shuffle each turn, so it reads as idle
-        // rather than frantic. Only reachable with no memory to chase — see above.
-        move_dx = random_int(-1, 1);
-        move_dy = random_int(-1, 1);
-      }
-      if (move_dx == 0 && move_dy == 0) continue;
 
-      // Try the intended step, then fall back to a single-axis step if it's blocked
-      // (e.g. a diagonal clipped by a wall corner).
-      if (!try_monster_step(monster, move_dx, move_dy)) {
-        if (!try_monster_step(monster, move_dx, 0)) try_monster_step(monster, 0, move_dy);
+        // Gear and consumables, decided before anything else this turn and using the same
+        // code the player's own menus drive. Swapping to whichever carried weapon suits
+        // the current distance is free (it's a draw, not a turn); actually drinking
+        // something costs the turn, exactly as it does for the player.
+        equip_best_weapon_for_range(monster, best_dist);
+        if (try_actor_use_potion(monster, /*enemy_near=*/best_dist <= kAiBuffPotionRange)) continue;
+
+        // "In range" is just the equipped weapon's reach — the same field that decides
+        // whether the player can fire what they're holding. A wall between the two still
+        // blocks it (line_clear()), which at range 1 is always trivially true, so melee is
+        // unaffected by that check. Once melee_engaged (see Actor), a ranged monster's
+        // reach permanently collapses to 1: it snipes right up until its target reaches
+        // it, then fights like any other melee monster for good.
+        int effective_range = monster.melee_engaged ? 1 : monster.weapon.attack_range;
+        bool in_range = best_dist <= effective_range && best_dist > 0;
+        if (in_range && line_clear(monster.x, monster.y, target->x, target->y, level.map)) {
+          resolve_attack(monster, *target, monster.weapon);
+          continue;
+        }
+
+        int target_x = target->x;
+        int target_y = target->y;
+        bool target_is_player = target->is_player;
+
+        // Out of range (or no line of sight): chase toward the chosen target if it's
+        // currently visible — for the player specifically, "visible" still means the
+        // FOV-reciprocity check below (can_see_player), same as always; a minion target
+        // was already required to be in_fov to be picked as the target at all, above.
+        // Otherwise, if the monster still remembers where it last saw the player
+        // specifically, head there instead of immediately giving up — once it arrives
+        // and the player isn't there, the memory clears and it falls back to idle
+        // wandering. Movement follows a real A* path (Map::find_path(), libtcod's
+        // TCODPath) recomputed fresh every turn — cheap enough at this map size that
+        // there's no need to cache it turn-to-turn — so a monster routes around a wall
+        // segment instead of pacing against it.
+        bool can_see_player = level.map.is_in_fov(monster.x, monster.y);
+        if (can_see_player) {
+          monster.last_seen_player_x = player.x;
+          monster.last_seen_player_y = player.y;
+        }
+
+        int move_dx = 0;
+        int move_dy = 0;
+        bool can_see_target = target_is_player ? can_see_player : true;  // minion targets are always is_in_fov, see above
+        bool has_chase_target = can_see_target || monster.last_seen_player_x >= 0;
+        if (has_chase_target) {
+          int chase_x = can_see_target ? target_x : monster.last_seen_player_x;
+          int chase_y = can_see_target ? target_y : monster.last_seen_player_y;
+          if (chase_x == monster.x && chase_y == monster.y) {
+            // Arrived at the last-known spot and nothing's here: give up the chase.
+            // Falls through to a wander roll below this turn, same as if there'd never
+            // been anything to chase.
+            monster.last_seen_player_x = -1;
+            monster.last_seen_player_y = -1;
+          } else {
+            auto path = level.map.find_path(monster.x, monster.y, chase_x, chase_y);
+            // Empty means no route exists at all — falls through to the wander roll
+            // below, same shape as today's "stuck" case, just genuinely no path instead
+            // of one greedy step happening to be blocked.
+            if (!path.empty()) {
+              move_dx = path[0].first - monster.x;
+              move_dy = path[0].second - monster.y;
+            }
+          }
+        }
+        if (move_dx == 0 && move_dy == 0 && monster.last_seen_player_x < 0 && random_int(0, 1) == 0) {
+          // Wander: only a coin-flip chance to shuffle each turn, so it reads as idle
+          // rather than frantic. Only reachable with no memory to chase — see above.
+          move_dx = random_int(-1, 1);
+          move_dy = random_int(-1, 1);
+        }
+        if (move_dx == 0 && move_dy == 0) continue;
+
+        // Try the intended step, then fall back to a single-axis step if it's blocked
+        // (e.g. a diagonal clipped by a wall corner).
+        if (!try_monster_step(monster, move_dx, move_dy)) {
+          if (!try_monster_step(monster, move_dx, 0)) try_monster_step(monster, 0, move_dy);
+        }
       }
     }
 
@@ -2090,82 +2205,28 @@ int main(int argc, char* argv[]) {
     for (auto& minion : level.monsters) {
       if (mode == Mode::Dead) break;
       if (!minion.is_alive() || minion.allegiance != Allegiance::Player) continue;
+      // Same extra-actions inner loop the hostile loop above uses, for exactly the same
+      // reason — a minion is an Actor, so a fast summon (MinionTemplate::extra_actions,
+      // 0 on every row today) gets its extra actions through the same one function the
+      // player and every monster do.
+      for (int action = 0; action < total_actions_for(minion); ++action) {
+        if (mode == Mode::Dead || !minion.is_alive()) break;
 
-      // Same gear/consumable upkeep the hostile loop runs, through the same helpers —
-      // a minion carrying a spare weapon or a potion uses it on exactly the same terms
-      // a monster does.
-      int hostile_dist = nearest_hostile_distance(minion);
-      if (hostile_dist >= 0) equip_best_weapon_for_range(minion, hostile_dist);
-      if (try_actor_use_potion(minion, /*enemy_near=*/hostile_dist >= 0 && hostile_dist <= kAiBuffPotionRange)) {
-        continue;
-      }
-
-      if (minion.order == MinionOrder::AttackTarget) {
-        int ti = actor_index_by_id(level.monsters, minion.attack_target_id);
-        if (ti < 0) {
-          minion.order = MinionOrder::Follow;
+        // Same gear/consumable upkeep the hostile loop runs, through the same helpers —
+        // a minion carrying a spare weapon or a potion uses it on exactly the same terms
+        // a monster does.
+        int hostile_dist = nearest_hostile_distance(minion);
+        if (hostile_dist >= 0) equip_best_weapon_for_range(minion, hostile_dist);
+        if (try_actor_use_potion(minion, /*enemy_near=*/hostile_dist >= 0 && hostile_dist <= kAiBuffPotionRange)) {
           continue;
         }
-        Actor& target = level.monsters[static_cast<size_t>(ti)];
-        bool in_range = distance_between(minion, target) <= minion.weapon.attack_range;
-        if (in_range && line_clear(minion.x, minion.y, target.x, target.y, level.map)) {
-          resolve_attack(minion, target, minion.weapon);
-          continue;
-        }
-        auto path = level.map.find_path(minion.x, minion.y, target.x, target.y);
-        if (!path.empty()) {
-          int move_dx = path[0].first - minion.x;
-          int move_dy = path[0].second - minion.y;
-          if (!try_monster_step(minion, move_dx, move_dy)) {
-            if (!try_monster_step(minion, move_dx, 0)) try_monster_step(minion, 0, move_dy);
+
+        if (minion.order == MinionOrder::AttackTarget) {
+          int ti = actor_index_by_id(level.monsters, minion.attack_target_id);
+          if (ti < 0) {
+            minion.order = MinionOrder::Follow;
+            continue;
           }
-        }
-        continue;
-      }
-
-      if (minion.order == MinionOrder::Hold) {
-        if (try_minion_auto_defend(minion)) continue;
-        if (minion.x == minion.hold_x && minion.y == minion.hold_y) continue;  // already there
-        auto path = level.map.find_path(minion.x, minion.y, minion.hold_x, minion.hold_y);
-        if (!path.empty()) {
-          int move_dx = path[0].first - minion.x;
-          int move_dy = path[0].second - minion.y;
-          if (!try_monster_step(minion, move_dx, move_dy)) {
-            if (!try_monster_step(minion, move_dx, 0)) try_monster_step(minion, 0, move_dy);
-          }
-        }
-        continue;
-      }
-
-      if (minion.order == MinionOrder::Aggressive) {
-        if (try_minion_auto_defend(minion)) continue;  // already-adjacent hostiles first
-
-        // Stick with the same hostile while it's still alive and still visible, to
-        // avoid flitting between targets when several are in view at once — same idea
-        // AttackTarget already has, just auto-selected instead of player-chosen.
-        // "Visible" reuses the player's FOV, the same mutual-visibility proxy every
-        // other target-selection in the game already uses.
-        int ti = actor_index_by_id(level.monsters, minion.attack_target_id);
-        bool still_valid = ti >= 0 && level.monsters[static_cast<size_t>(ti)].allegiance == Allegiance::Hostile &&
-                            level.map.is_in_fov(level.monsters[static_cast<size_t>(ti)].x,
-                                                 level.monsters[static_cast<size_t>(ti)].y);
-        if (!still_valid) {
-          Actor* closest = nullptr;
-          int best_dist = 0;
-          for (auto& hostile : level.monsters) {
-            if (hostile.allegiance != Allegiance::Hostile || !hostile.is_alive()) continue;
-            if (!level.map.is_in_fov(hostile.x, hostile.y)) continue;
-            int dist = distance_between(minion, hostile);
-            if (closest == nullptr || dist < best_dist) {
-              closest = &hostile;
-              best_dist = dist;
-            }
-          }
-          minion.attack_target_id = closest != nullptr ? closest->id : -1;
-          ti = closest != nullptr ? actor_index_by_id(level.monsters, minion.attack_target_id) : -1;
-        }
-
-        if (ti >= 0) {
           Actor& target = level.monsters[static_cast<size_t>(ti)];
           bool in_range = distance_between(minion, target) <= minion.weapon.attack_range;
           if (in_range && line_clear(minion.x, minion.y, target.x, target.y, level.map)) {
@@ -2182,21 +2243,82 @@ int main(int argc, char* argv[]) {
           }
           continue;
         }
-        // No hostile currently visible — fall through to the Follow movement below.
-      }
 
-      if (minion.order == MinionOrder::Follow) {
-        if (try_minion_auto_defend(minion)) continue;
-      }
-      // Follow (also Aggressive with nothing currently visible to chase — its own
-      // auto-defend attempt already happened above in that case). Close the distance
-      // to the player; try_monster_step already refuses to step onto the player's own
-      // tile, so this naturally stops once adjacent rather than trying to stack on them.
-      auto path = level.map.find_path(minion.x, minion.y, player.x, player.y);
-      if (!path.empty()) {
-        int move_dx = path[0].first - minion.x;
-        int move_dy = path[0].second - minion.y;
-        try_monster_step(minion, move_dx, move_dy);
+        if (minion.order == MinionOrder::Hold) {
+          if (try_minion_auto_defend(minion)) continue;
+          if (minion.x == minion.hold_x && minion.y == minion.hold_y) continue;  // already there
+          auto path = level.map.find_path(minion.x, minion.y, minion.hold_x, minion.hold_y);
+          if (!path.empty()) {
+            int move_dx = path[0].first - minion.x;
+            int move_dy = path[0].second - minion.y;
+            if (!try_monster_step(minion, move_dx, move_dy)) {
+              if (!try_monster_step(minion, move_dx, 0)) try_monster_step(minion, 0, move_dy);
+            }
+          }
+          continue;
+        }
+
+        if (minion.order == MinionOrder::Aggressive) {
+          if (try_minion_auto_defend(minion)) continue;  // already-adjacent hostiles first
+
+          // Stick with the same hostile while it's still alive and still visible, to
+          // avoid flitting between targets when several are in view at once — same idea
+          // AttackTarget already has, just auto-selected instead of player-chosen.
+          // "Visible" reuses the player's FOV, the same mutual-visibility proxy every
+          // other target-selection in the game already uses.
+          int ti = actor_index_by_id(level.monsters, minion.attack_target_id);
+          bool still_valid = ti >= 0 && level.monsters[static_cast<size_t>(ti)].allegiance == Allegiance::Hostile &&
+                              level.map.is_in_fov(level.monsters[static_cast<size_t>(ti)].x,
+                                                   level.monsters[static_cast<size_t>(ti)].y);
+          if (!still_valid) {
+            Actor* closest = nullptr;
+            int best_dist = 0;
+            for (auto& hostile : level.monsters) {
+              if (hostile.allegiance != Allegiance::Hostile || !hostile.is_alive()) continue;
+              if (!level.map.is_in_fov(hostile.x, hostile.y)) continue;
+              int dist = distance_between(minion, hostile);
+              if (closest == nullptr || dist < best_dist) {
+                closest = &hostile;
+                best_dist = dist;
+              }
+            }
+            minion.attack_target_id = closest != nullptr ? closest->id : -1;
+            ti = closest != nullptr ? actor_index_by_id(level.monsters, minion.attack_target_id) : -1;
+          }
+
+          if (ti >= 0) {
+            Actor& target = level.monsters[static_cast<size_t>(ti)];
+            bool in_range = distance_between(minion, target) <= minion.weapon.attack_range;
+            if (in_range && line_clear(minion.x, minion.y, target.x, target.y, level.map)) {
+              resolve_attack(minion, target, minion.weapon);
+              continue;
+            }
+            auto path = level.map.find_path(minion.x, minion.y, target.x, target.y);
+            if (!path.empty()) {
+              int move_dx = path[0].first - minion.x;
+              int move_dy = path[0].second - minion.y;
+              if (!try_monster_step(minion, move_dx, move_dy)) {
+                if (!try_monster_step(minion, move_dx, 0)) try_monster_step(minion, 0, move_dy);
+              }
+            }
+            continue;
+          }
+          // No hostile currently visible — fall through to the Follow movement below.
+        }
+
+        if (minion.order == MinionOrder::Follow) {
+          if (try_minion_auto_defend(minion)) continue;
+        }
+        // Follow (also Aggressive with nothing currently visible to chase — its own
+        // auto-defend attempt already happened above in that case). Close the distance
+        // to the player; try_monster_step already refuses to step onto the player's own
+        // tile, so this naturally stops once adjacent rather than trying to stack on them.
+        auto path = level.map.find_path(minion.x, minion.y, player.x, player.y);
+        if (!path.empty()) {
+          int move_dx = path[0].first - minion.x;
+          int move_dy = path[0].second - minion.y;
+          try_monster_step(minion, move_dx, move_dy);
+        }
       }
     }
 
@@ -2262,6 +2384,9 @@ int main(int argc, char* argv[]) {
     player.temp_melee_damage_turns = 0;
     player.temp_armor_bonus = 0;
     player.temp_armor_turns = 0;
+    player.temp_extra_actions_bonus = 0;
+    player.temp_extra_actions_turns = 0;
+    free_actions_used = 0;  // session state, but a restart must not inherit a part-spent turn
     level.map.update_fov(player.x, player.y, FOV_RADIUS);
 
     player.weapons.clear();
@@ -2375,6 +2500,9 @@ int main(int argc, char* argv[]) {
     if (arg == "--dump-loot") {
       dump_loot = true;
       continue;
+    }
+    if (arg == "--fast-monsters") {
+      continue;  // already handled by the pre-scan at the top of main()
     }
     const std::string floor_prefix = "--floor=";
     if (arg.rfind(floor_prefix, 0) == 0) {
@@ -2526,6 +2654,9 @@ int main(int argc, char* argv[]) {
         } else if (s.is_armor_buff) {
           line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (+" + std::to_string(s.buff_amount) +
                  " armor, " + std::to_string(s.buff_turns) + " turns) - " + std::to_string(s.mana_cost) + " MP";
+        } else if (s.is_haste_buff) {
+          line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (+" + std::to_string(s.buff_amount) +
+                 " action/turn, " + std::to_string(s.buff_turns) + " turns) - " + std::to_string(s.mana_cost) + " MP";
         } else if (s.is_swap) {
           line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (swap places with a minion) - " +
                  std::to_string(s.mana_cost) + " MP";
@@ -2651,14 +2782,17 @@ int main(int argc, char* argv[]) {
       tcod::print(console, {0, 0},
                   "You have grown wise enough to specialize your magic. Choose a path - this choice is permanent.",
                   tcod::ColorRGB{255, 255, 255}, std::nullopt);
-      tcod::print(console, {0, 2}, "Shift+C) Caster      -- offensive magic: Fireball, Sandstorm",
+      tcod::print(console, {0, 2},
+                  "Shift+C) Caster      -- offensive magic: Fireball, Sandstorm, Lightning Bolt",
                   tcod::ColorRGB{200, 200, 200}, std::nullopt);
-      tcod::print(console, {0, 3}, "Shift+U) Summoner    -- conjury and command: Raise Skeleton, Place Swap",
+      tcod::print(console, {0, 3},
+                  "Shift+U) Summoner    -- conjury and command: Raise Skeleton, Place Swap, Summon Demon",
                   tcod::ColorRGB{200, 200, 200}, std::nullopt);
-      tcod::print(console, {0, 4}, "Shift+M) Combat Mage -- melee buffs: Battle Fury, Iron Skin",
+      tcod::print(console, {0, 4},
+                  "Shift+M) Combat Mage -- self-buffs: Battle Fury, Iron Skin, Haste",
                   tcod::ColorRGB{200, 200, 200}, std::nullopt);
-      tcod::print(console, {0, 6}, "Magic Dart remains available either way.", tcod::ColorRGB{120, 120, 120},
-                  std::nullopt);
+      tcod::print(console, {0, 6}, "Magic Dart and Energy Lance stay available whichever path you pick.",
+                  tcod::ColorRGB{120, 120, 120}, std::nullopt);
     } else {
       update_monster_memory(level);
 
@@ -2744,6 +2878,38 @@ int main(int argc, char* argv[]) {
       if (active_toggle_spell >= 0) {
         sb_print("[" + kSpellTable[static_cast<size_t>(active_toggle_spell)].name + "]",
                  tcod::ColorRGB{255, 255, 100});
+      }
+
+      // Every active temporary buff, with what it's worth and how many turns are left.
+      // The STR/DEX/INT lines above already show their potion bonuses inline as "+N", but
+      // that says nothing about how much longer they last, and the three spell buffs
+      // (Battle Fury / Iron Skin / Haste) had no on-screen presence at all before this —
+      // Haste in particular needs one, since "the world didn't move" is otherwise
+      // indistinguishable from a dropped keypress. One list, so there's a single place to
+      // look and a single place to add the next buff.
+      //
+      // Sits above the Enemies/Minions lists for the same reason the Look block does:
+      // sb_print silently drops anything past the panel's bottom, and a timer you're
+      // playing around matters more than the tail of a long enemy list. Rows only exist
+      // while something is actually active, so the usual case costs nothing.
+      {
+        auto buff_row = [&](const std::string& label, int bonus, int turns) {
+          if (turns <= 0) return;
+          sb_print("  " + label + " +" + std::to_string(bonus) + " (" + std::to_string(turns) + ")",
+                   tcod::ColorRGB{160, 255, 160});
+        };
+        bool any_buff = player.temp_str_turns > 0 || player.temp_dex_turns > 0 || player.temp_int_turns > 0 ||
+                        player.temp_melee_damage_turns > 0 || player.temp_armor_turns > 0 ||
+                        player.temp_extra_actions_turns > 0;
+        if (any_buff) {
+          sb_print("Buffs:", tcod::ColorRGB{200, 255, 200});
+          buff_row("STR", player.temp_str_bonus, player.temp_str_turns);
+          buff_row("DEX", player.temp_dex_bonus, player.temp_dex_turns);
+          buff_row("INT", player.temp_int_bonus, player.temp_int_turns);
+          buff_row("Melee dmg", player.temp_melee_damage_bonus, player.temp_melee_damage_turns);
+          buff_row("Armor", player.temp_armor_bonus, player.temp_armor_turns);
+          buff_row("Actions", player.temp_extra_actions_bonus, player.temp_extra_actions_turns);
+        }
       }
 
       // Placed ahead of Enemies/Minions (rather than after) so it can never get
@@ -3514,6 +3680,24 @@ int main(int argc, char* argv[]) {
                             std::to_string(spell.buff_turns) + " turns.");
                 mode = Mode::Playing;
                 end_turn();
+              }
+            } else if (spell.is_haste_buff) {
+              if (player.mana < spell.mana_cost) {
+                add_message("Not enough mana to cast " + spell.name + ".");
+                mode = Mode::Playing;  // free cancel, no turn spent
+              } else {
+                player.mana -= spell.mana_cost;
+                add_message("You blur into motion! +" + std::to_string(spell.buff_amount) +
+                            " action per turn for " + std::to_string(spell.buff_turns) + " turns.");
+                mode = Mode::Playing;
+                // The buff is applied *after* end_turn(), so casting Haste costs a whole
+                // turn like any other spell instead of immediately refunding itself as a
+                // free action. Exactly the reason active_toggle_spell is set after
+                // end_turn() when a toggle spell is switched on — otherwise the cheapest
+                // way to use the spell would be to keep re-casting it.
+                end_turn();
+                if (player.temp_extra_actions_turns <= 0) player.temp_extra_actions_bonus = spell.buff_amount;
+                player.temp_extra_actions_turns = spell.buff_turns;  // refresh-not-stack, as above
               }
             } else if (spell.is_swap) {
               casting_spell_index = spell_idx;

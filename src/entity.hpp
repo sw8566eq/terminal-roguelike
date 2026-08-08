@@ -296,6 +296,18 @@ struct Actor {
   int temp_extra_actions_bonus = 0;
   int temp_extra_actions_turns = 0;
 
+  // Index into kSpellTable of the one spell this Actor casts, or -1 for "doesn't cast".
+  // The player doesn't use this — they pick from known_spell_indices() in the z menu —
+  // it's how a caster *monster* (the Goblin Shaman) knows what to throw. One spell
+  // rather than a list, deliberately minimal: a second one needs a small vector plus a
+  // rule for choosing between them, and nothing wants that yet.
+  int spell_index = -1;
+  // Turns to regenerate 0 -> full mana, or 0 for "doesn't regenerate", exactly mirroring
+  // hp_regen_turns above. This gate didn't exist while the player was the only Actor
+  // with a mana pool at all (the regen loop no-opped on its own at max_mana 0); the
+  // moment a monster had mana, "no regen" stopped being expressible without it.
+  int mana_regen_turns = 0;
+
   // Monsters only: the last tile this monster actually saw the player standing on,
   // or (-1, -1) if it's never seen them (or already reached that tile without finding
   // them there). Lets a monster keep heading for where the player was after losing

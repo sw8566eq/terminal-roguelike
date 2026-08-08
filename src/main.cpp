@@ -145,6 +145,20 @@ struct MonsterTemplate {
   // five. Nothing else about a boss is special: it's an Actor with bigger numbers and
   // whatever combination of hp_regen_turns/extra_actions/gear its row asks for.
   bool is_boss = false;
+  // Spellcasting, for a monster whose row wants it (the Goblin Shaman). All four are
+  // trailing rather than sitting next to strength/dexterity where `intelligence` really
+  // belongs, because every row in this table is positional aggregate init and these are
+  // all ints — inserting mid-struct would silently misalign nine existing rows rather
+  // than fail to compile.
+  //   intelligence     -> spell damage bonus (INT/3), exactly as the player's does
+  //   max_mana         -> authored, not derived via max_mana_for_intelligence() — same
+  //                       authored-vs-derived split as max_hp and evasion
+  //   mana_regen_turns -> 0 means the pool is a one-time budget (see Actor)
+  //   spell_index      -> row into kSpellTable, -1 for a non-caster
+  int intelligence = 0;
+  int max_mana = 0;
+  int mana_regen_turns = 0;
+  int spell_index = -1;
 };
 
 // Natural weapons: part of the monster, not loot, so they're marked intrinsic exactly
@@ -187,6 +201,24 @@ const std::vector<MonsterTemplate> kMonsterTable = {
     {"Goblin Slinger", 'G', tcod::ColorRGB{150, 150, 70}, 5, kThrownRock, /*xp_reward=*/8,
      /*evasion=*/8, /*dexterity=*/2, /*strength=*/1, /*min_depth=*/1, /*max_depth=*/4, /*armor=*/kNoArmor,
      /*extra_weapons=*/{kWeaponTable[0]}},
+    // The first monster in the game that actually casts: it spends real mana on the same
+    // kSpellTable Magic Dart the player learns, and it launches a real travelling
+    // Projectile you can see coming and dodge — not an instant hit resolved inside the AI
+    // loop the way a Goblin Slinger's Rock is.
+    //
+    // Its whole design is the mana budget. INT 3 gives max_mana 10 (authored here to
+    // match what max_mana_for_intelligence(3) would give the player) and Magic Dart costs
+    // 1, so it gets exactly 10 darts — and mana_regen_turns=0 means that's all it will
+    // ever get. Each dart is 1d2 + INT/3 = 2-3 damage, so a full pool is ~25 damage if
+    // every one lands: genuinely threatening to a floor-1 character, and completely spent
+    // afterward. Out of mana it falls through to ordinary chase-and-melee behavior with
+    // 5 HP and Claws, i.e. it becomes the weakest thing on the floor. Outlasting it is
+    // the intended counterplay, alongside breaking line of sight or just closing to melee.
+    {"Goblin Shaman", 'S', tcod::ColorRGB{160, 100, 220}, 5, kClaws, /*xp_reward=*/14,
+     /*evasion=*/8, /*dexterity=*/3, /*strength=*/0, /*min_depth=*/1, /*max_depth=*/4,
+     /*armor=*/kNoArmor, /*extra_weapons=*/{}, /*potions=*/{}, /*hp_regen_turns=*/0,
+     /*extra_actions=*/0, /*is_boss=*/false, /*intelligence=*/3, /*max_mana=*/10,
+     /*mana_regen_turns=*/0, /*spell_index=*/0},
     {"Skeleton", 's', tcod::ColorRGB{220, 220, 200}, 10,
      Weapon{"Rusty Sword", 1, 4, 0, false, 1, -1, /*hit_dice=*/2, 4}, /*xp_reward=*/15,
      /*evasion=*/8, /*dexterity=*/6, /*strength=*/2, /*min_depth=*/5, /*max_depth=*/-1},
@@ -750,6 +782,21 @@ struct Projectile {
   std::string name;
   char glyph = '*';
   tcod::ColorRGB color{255, 255, 255};
+  // Who fired this. Before monsters could cast, every Projectile was implicitly the
+  // player's and all three of these were baked into advance_projectiles() as constants.
+  //
+  // owner_allegiance decides both what the shot can hit (never its own side — the same
+  // rule that already made minions transparent to the player's spells, just no longer
+  // hard-coded to one direction) and which way XP flows on a kill. owner_is_player and
+  // owner_name only drive message wording.
+  //
+  // The owner's *name* is snapshotted at cast time rather than resolved by id on impact,
+  // for exactly the reason accuracy_bonus is: a slow projectile can outlive its caster,
+  // and "the Goblin Shaman's Magic Dart" should still read correctly if the Shaman died
+  // before it landed.
+  Allegiance owner_allegiance = Allegiance::Player;
+  bool owner_is_player = true;
+  std::string owner_name;
 };
 
 // Every tile from just past (from_x,from_y) through (to_x,to_y), via libtcod's
@@ -983,6 +1030,34 @@ std::string actor_possessive(const Actor& a) {
 // English verb agreement for the templates above: "you hit", but "the Rat hits".
 std::string actor_verb(const Actor& a, const std::string& base) { return a.is_player ? base : base + "s"; }
 
+// The Projectile counterparts of actor_possessive()/actor_subject(). They can't just
+// call those, because a Projectile only carries a snapshot of who fired it — the caster
+// may be dead by the time it lands (see Projectile's owner fields).
+//   projectile_possessive -> "your" / "your Skeletal Minion's" / "the Goblin Shaman's"
+//   projectile_subject    -> "Your Magic Dart" / "The Goblin Shaman's Magic Dart"
+std::string projectile_possessive(const Projectile& proj) {
+  if (proj.owner_is_player) return "your";
+  return (proj.owner_allegiance == Allegiance::Player ? "your " : "the ") + proj.owner_name + "'s";
+}
+std::string projectile_subject(const Projectile& proj) {
+  if (proj.owner_is_player) return "Your " + proj.name;
+  return (proj.owner_allegiance == Allegiance::Player ? "Your " : "The ") + proj.owner_name + "'s " + proj.name;
+}
+
+// The living Actor at (x,y) that `owner`'s projectile is allowed to hit: only ever the
+// opposing side. This is hostile_monster_at() generalized by who fired — with
+// owner = Allegiance::Player it matches exactly what that already did (hostiles only,
+// minions transparent), and with owner = Allegiance::Hostile it matches minions instead.
+// Note the player is never in `monsters`, so a hostile shot's chance to hit *them* is
+// checked separately by advance_projectiles().
+int projectile_target_at(const std::vector<Actor>& monsters, int x, int y, Allegiance owner) {
+  for (size_t i = 0; i < monsters.size(); ++i) {
+    if (monsters[i].allegiance == owner) continue;
+    if (monsters[i].is_alive() && monsters[i].x == x && monsters[i].y == y) return static_cast<int>(i);
+  }
+  return -1;
+}
+
 // Average damage this Actor would do with this weapon, used only to rank the weapons
 // it's carrying (see equip_best_weapon_for_range) — never for actual damage, which is
 // always rolled.
@@ -1193,6 +1268,10 @@ Actor spawn_monster(const MonsterTemplate& tmpl, int x, int y) {
   monster.strength = tmpl.strength;
   monster.hp_regen_turns = tmpl.hp_regen_turns;
   monster.extra_actions = tmpl.extra_actions + (g_debug_fast_monsters ? 1 : 0);
+  monster.intelligence = tmpl.intelligence;
+  monster.mana = monster.max_mana = tmpl.max_mana;  // spawns with a full pool, like max_hp
+  monster.mana_regen_turns = tmpl.mana_regen_turns;
+  monster.spell_index = tmpl.spell_index;
   return monster;
 }
 
@@ -1799,23 +1878,27 @@ int main(int argc, char* argv[]) {
     // for spells with aoe_radius > 0 (e.g. Fireball); see find_impact() for how (cx,cy)
     // is chosen to match what the Targeting preview showed the player.
     //
-    // The caster isn't exempt: if the player is within radius of the blast too (a point-
-    // blank cast, or a wall/monster close enough that the impact lands next to them),
-    // they take the same roll. This is the actual deterrent against casting an AoE on
-    // something adjacent. Their armor soaks it like anyone else's would, but they get no
-    // dodge roll — you can't evade your own point-blank explosion.
+    // The caster's own side isn't exempt from its own blast: if the player is within
+    // radius of a blast they own (a point-blank cast, or a wall/monster close enough that
+    // the impact lands next to them), they take the same roll. This is the actual
+    // deterrent against casting an AoE on something adjacent. Their armor soaks it like
+    // anyone else's would, but they get no dodge roll — you can't evade your own
+    // point-blank explosion. Someone *else's* blast is an ordinary attack and does get a
+    // dodge roll, which is the one place the two cases differ.
     auto explode = [&](Projectile& proj, int cx, int cy) {
-      add_message("Your " + proj.name + " explodes!");
+      bool from_player_side = proj.owner_allegiance == Allegiance::Player;
+      add_message(projectile_subject(proj) + " explodes!");
       for (auto& target : level.monsters) {
-        // Minions are immune to the player's own AoE splash — only hostile monsters
-        // are ever caught in it. (The player themself is still at risk, below.)
-        if (target.allegiance == Allegiance::Player || !target.is_alive()) continue;
+        // A blast never catches its own side: the player's own minions stand in their
+        // Fireball untouched, and a hostile caster's blast likewise spares other
+        // hostiles. Same rule from either direction, no longer hard-coded to one.
+        if (target.allegiance == proj.owner_allegiance || !target.is_alive()) continue;
         if (std::abs(target.x - cx) > proj.aoe_radius || std::abs(target.y - cy) > proj.aoe_radius) continue;
 
         int dodge = dodge_chance_vs_accuracy(
             target, proj.accuracy_bonus + roll_dice(proj.hit_dice_count, proj.hit_dice_sides));
         if (random_int(1, 100) <= dodge) {
-          add_message("The " + target.name + " dodges the blast!");
+          add_message(actor_subject(target) + actor_verb(target, " dodge") + " the blast!");
           continue;
         }
         int damage = std::max(
@@ -1823,20 +1906,62 @@ int main(int argc, char* argv[]) {
             0);
         target.hp -= damage;
         if (!target.is_alive()) {
-          add_message("The blast kills the " + target.name + "!");
-          on_actor_killed(target, /*killed_by_player_side=*/true, proj.name);
+          add_message("The blast kills " + actor_object(target) + "!");
+          on_actor_killed(target, from_player_side, proj.name);
           continue;
         }
-        add_message("The blast hits the " + target.name + " for " + std::to_string(damage) + ".");
+        add_message("The blast hits " + actor_object(target) + " for " + std::to_string(damage) + ".");
       }
 
+      // The player is never in level.monsters, so they need their own check either way.
       if (player.is_alive() && std::abs(player.x - cx) <= proj.aoe_radius && std::abs(player.y - cy) <= proj.aoe_radius) {
-        int raw_damage = roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus;
-        int damage = std::max(raw_damage - player.armor.defense - player.temp_armor_bonus, 0);
-        player.hp -= damage;
-        add_message("You're caught in your own " + proj.name + " for " + std::to_string(damage) + "!");
-        if (!player.is_alive()) on_actor_killed(player, /*killed_by_player_side=*/false, proj.name + " you cast");
+        bool hit = true;
+        if (!from_player_side) {
+          // Someone else's blast: an ordinary attack, so it can be dodged.
+          int dodge = dodge_chance_vs_accuracy(
+              player, proj.accuracy_bonus + roll_dice(proj.hit_dice_count, proj.hit_dice_sides));
+          if (random_int(1, 100) <= dodge) {
+            add_message("You dodge the blast!");
+            hit = false;
+          }
+        }
+        if (hit) {
+          int raw_damage = roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus;
+          int damage = std::max(raw_damage - player.armor.defense - player.temp_armor_bonus, 0);
+          player.hp -= damage;
+          if (from_player_side) {
+            add_message("You're caught in your own " + proj.name + " for " + std::to_string(damage) + "!");
+          } else {
+            add_message("The blast hits you for " + std::to_string(damage) + "!");
+          }
+          if (!player.is_alive()) {
+            on_actor_killed(player, /*killed_by_player_side=*/false,
+                            from_player_side ? proj.name + " you cast" : projectile_possessive(proj) + " " + proj.name);
+          }
+        }
       }
+    };
+
+    // One projectile hit against one target, used by both the walk below's monster branch
+    // and its player branch — dodge roll, armor-reduced damage, death, and the three log
+    // lines, all phrased from the projectile's owner rather than assuming it's yours.
+    auto resolve_projectile_hit = [&](const Projectile& proj, Actor& target) {
+      int dodge = dodge_chance_vs_accuracy(
+          target, proj.accuracy_bonus + roll_dice(proj.hit_dice_count, proj.hit_dice_sides));
+      if (random_int(1, 100) <= dodge) {
+        add_message(actor_subject(target) + actor_verb(target, " dodge") + " " + projectile_possessive(proj) + " " +
+                    proj.name + "!");
+        return;
+      }
+      int damage = std::max(
+          roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus - target.armor.defense - target.temp_armor_bonus, 0);
+      target.hp -= damage;
+      if (!target.is_alive()) {
+        add_message(projectile_subject(proj) + " kills " + actor_object(target) + "!");
+        on_actor_killed(target, proj.owner_allegiance == Allegiance::Player, proj.name);
+        return;
+      }
+      add_message(projectile_subject(proj) + " hits " + actor_object(target) + " for " + std::to_string(damage) + ".");
     };
 
     for (size_t i = 0; i < level.projectiles.size();) {
@@ -1863,40 +1988,38 @@ int main(int argc, char* argv[]) {
           if (proj.aoe_radius > 0) {
             explode(proj, proj.prev_x, proj.prev_y);  // last open tile before the wall
           } else {
-            add_message("Your " + proj.name + " fizzles against a wall.");
+            add_message(projectile_subject(proj) + " fizzles against a wall.");
           }
           consumed = true;
           break;
         }
 
-        int target_index = hostile_monster_at(level.monsters, x, y);
-        if (target_index >= 0) {
+        // The player's own tile. Checked separately from the monster lookup below purely
+        // because the player isn't in level.monsters, and only for an enemy shot — your
+        // own spells pass straight over you, with the sole exception of an AoE's splash,
+        // which explode() handles on its own terms.
+        if (proj.owner_allegiance == Allegiance::Hostile && player.is_alive() && x == player.x && y == player.y) {
           if (proj.aoe_radius > 0) {
-            explode(proj, x, y);  // the monster's own tile is a valid, walkable center
+            explode(proj, x, y);
             consumed = true;
           } else {
-            Actor& target = level.monsters[static_cast<size_t>(target_index)];
-            int dodge = dodge_chance_vs_accuracy(
-                target, proj.accuracy_bonus + roll_dice(proj.hit_dice_count, proj.hit_dice_sides));
-            if (random_int(1, 100) <= dodge) {
-              add_message("The " + target.name + " dodges your " + proj.name + "!");
-            } else {
-              int damage = std::max(roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus - target.armor.defense -
-                                         target.temp_armor_bonus,
-                                     0);
-              target.hp -= damage;
-              if (!target.is_alive()) {
-                add_message("Your " + proj.name + " kills the " + target.name + "!");
-                on_actor_killed(target, /*killed_by_player_side=*/true, proj.name);
-              } else {
-                add_message("Your " + proj.name + " hits the " + target.name + " for " + std::to_string(damage) + ".");
-              }
-            }
-            // A piercing spell (Lightning Bolt) keeps traveling through a hostile hit
-            // instead of stopping — every monster along the line takes its own
-            // independently-rolled dodge/damage, the same idiom explode() already uses
-            // for multiple targets, just walked one tile at a time instead of scanned
-            // by radius.
+            resolve_projectile_hit(proj, player);
+            if (!proj.pierces) consumed = true;
+          }
+          if (consumed) break;
+        }
+
+        int target_index = projectile_target_at(level.monsters, x, y, proj.owner_allegiance);
+        if (target_index >= 0) {
+          if (proj.aoe_radius > 0) {
+            explode(proj, x, y);  // the target's own tile is a valid, walkable center
+            consumed = true;
+          } else {
+            resolve_projectile_hit(proj, level.monsters[static_cast<size_t>(target_index)]);
+            // A piercing spell (Lightning Bolt) keeps traveling through a hit instead of
+            // stopping — everything along the line takes its own independently-rolled
+            // dodge/damage, the same idiom explode() already uses for multiple targets,
+            // just walked one tile at a time instead of scanned by radius.
             if (!proj.pierces) consumed = true;
           }
           if (consumed) break;
@@ -1952,8 +2075,9 @@ int main(int argc, char* argv[]) {
     // monster's wounds still stick and chip-and-retreat still works on it. The rate
     // scales with max HP, so a full heal takes hp_regen_turns turns regardless of how
     // big the pool is. Silent — no log message — since it ticks often enough that
-    // logging it would just spam. Mana needs no equivalent gate: only the player has any
-    // (max_mana stays 0 on a monster), so that loop no-ops on its own.
+    // logging it would just spam. Mana is gated the same way (Actor::mana_regen_turns) —
+    // it used not to need one, back when the player was the only Actor with a pool at
+    // all, but the Goblin Shaman has a finite 10-mana budget that's meant to stay spent.
     //
     // Note this only runs for Actors on the *current* floor. That's now observable: the
     // Orc Warlord (hp_regen_turns=120, the only non-zero row) heals back the damage you
@@ -1975,7 +2099,7 @@ int main(int argc, char* argv[]) {
           actor.hp += 1;
         }
       }
-      if (actor.mana < actor.max_mana) {
+      if (actor.mana_regen_turns > 0 && actor.mana < actor.max_mana) {
         actor.mana_regen_accumulator += static_cast<float>(actor.max_mana) / static_cast<float>(kManaRegenTurns);
         while (actor.mana_regen_accumulator >= 1.0f && actor.mana < actor.max_mana) {
           actor.mana_regen_accumulator -= 1.0f;
@@ -2152,6 +2276,63 @@ int main(int argc, char* argv[]) {
         equip_best_weapon_for_range(monster, best_dist);
         if (try_actor_use_potion(monster, /*enemy_near=*/best_dist <= kAiBuffPotionRange)) continue;
 
+        // Spellcasting, for a monster whose row gave it a spell (Actor::spell_index — the
+        // Goblin Shaman today). Deliberately built from the same pieces the player's own
+        // cast is: it pays kSpellTable's mana_cost out of a real pool, and it pushes a
+        // real Projectile onto level.projectiles that travels, is drawn on the map, and
+        // rolls dodge/damage in advance_projectiles() like any other shot. Nothing here
+        // resolves damage — that's the whole difference from a Goblin Slinger's Rock,
+        // which lands instantly inside this loop with nothing to see or react to.
+        //
+        // Preferred over melee whenever it's affordable and the shot is available, so a
+        // Shaman opens at range and only reverts to swinging Claws once the pool is dry.
+        // A hit-scan spell resolves in this same turn, via the advance_projectiles() call
+        // just after this loop — see the comment there. It never appears on the map, for
+        // the same reason the player's own Magic Dart doesn't: instant means instant.
+        if (monster.spell_index >= 0) {
+          const Spell& spell = kSpellTable[static_cast<size_t>(monster.spell_index)];
+          // The is_in_fov() term keeps a caster from sniping out of the dark. Range is
+          // Chebyshev here (like every other AI reach check) while FOV_RADIUS is radial,
+          // so a diagonal Shaman at range 8 would otherwise sit outside the player's
+          // sight while shooting into it — which would undercut the whole point of
+          // making monster fire visible. The existing Goblin Slinger has this property
+          // for free at range 5 (its furthest diagonal is still inside FOV_RADIUS); this
+          // just makes the longer-ranged caster match it rather than get an exception.
+          // Reuses the player's own FOV as the mutual-visibility proxy, the same stand-in
+          // for per-monster sight used everywhere else in this loop.
+          bool can_cast = monster.mana >= spell.mana_cost && best_dist > 0 && best_dist <= spell.range &&
+                          level.map.is_in_fov(monster.x, monster.y) &&
+                          line_clear(monster.x, monster.y, target->x, target->y, level.map);
+          if (can_cast) {
+            monster.mana -= spell.mana_cost;
+            Projectile proj;
+            proj.path = trace_path(monster.x, monster.y, target->x, target->y);
+            proj.speed = spell.speed;
+            proj.dice_count = spell.dice_count;
+            proj.dice_sides = spell.dice_sides;
+            proj.hit_dice_count = spell.hit_dice_count;
+            proj.hit_dice_sides = spell.hit_dice_sides;
+            proj.aoe_radius = spell.aoe_radius;
+            proj.pierces = spell.pierces;
+            proj.prev_x = monster.x;
+            proj.prev_y = monster.y;
+            // Same two snapshots the player's cast takes, off the caster's own stats —
+            // spell damage from INT/3, accuracy from Dexterity — so a monster's dart is
+            // built by the identical formula the player's is.
+            proj.bonus = (monster.intelligence + monster.temp_int_bonus) / 3;
+            proj.accuracy_bonus = (monster.dexterity + monster.temp_dex_bonus) * kAccuracyPerDexPoint;
+            proj.name = spell.name;
+            proj.glyph = spell.glyph;
+            proj.color = spell.color;
+            proj.owner_allegiance = monster.allegiance;
+            proj.owner_is_player = false;
+            proj.owner_name = monster.name;
+            level.projectiles.push_back(proj);
+            add_message(actor_subject(monster) + actor_verb(monster, " cast") + " " + spell.name + ".");
+            continue;  // casting is this monster's whole action
+          }
+        }
+
         // "In range" is just the equipped weapon's reach — the same field that decides
         // whether the player can fire what they're holding. A wall between the two still
         // blocks it (line_clear()), which at range 1 is always trivially true, so melee is
@@ -2225,6 +2406,24 @@ int main(int argc, char* argv[]) {
         }
       }
     }
+
+    // Resolve anything hit-scan the monsters just cast, inside the same turn they cast it.
+    // This is the exact counterpart of end_turn()'s own advance_projectiles() call, which
+    // runs right after the *player's* action for the same reason: an instant spell
+    // (kInstantSpellSpeed) is supposed to cross the map the moment it's fired, so it has
+    // to resolve while its target is still where it was aimed.
+    //
+    // Without this a monster's dart sat until the following turn and then flew to the
+    // tile the player had already left — its path is precomputed at cast time — so simply
+    // walking dodged every shot for free. Slow projectiles are deliberately excluded
+    // (instant_only): those are meant to be visibly in flight across turns, and the
+    // player's Fireball already behaves that way.
+    //
+    // Nothing below it in end_turn() invalidates the references this loop held: a kill
+    // only zeroes HP and drops gear (the deferred sweep does the erasing), so
+    // level.monsters can't reshuffle here. If a minion ever casts, the minion loop below
+    // needs the mirror of this call.
+    advance_projectiles(/*instant_only=*/true);
 
     // Distance to the nearest living hostile, or -1 if there are none left on the floor.
     // Used to decide whether a minion should draw a melee weapon or pop a buff potion,
@@ -2439,6 +2638,7 @@ int main(int argc, char* argv[]) {
     // leaves hp_regen_turns at 0. See Actor::hp_regen_turns.
     player.hp_regen_turns = kHpRegenTurns;
     player.hp_regen_accumulator = 0.0f;
+    player.mana_regen_turns = kManaRegenTurns;  // gated now (see Actor::mana_regen_turns)
     player.max_mana = max_mana_for_intelligence(player.intelligence);
     player.mana = player.max_mana;
     player.mana_regen_accumulator = 0.0f;
@@ -2630,6 +2830,12 @@ int main(int argc, char* argv[]) {
                 << describe_weapon(monster.weapon) << ", STR " << monster.strength << ", DEX " << monster.dexterity
                 << ", evasion " << monster.evasion;
       if (!monster.armor.is_intrinsic) std::cout << ", " << monster.armor.name;
+      // A caster's spell and mana pool are as much a part of "what will this fight cost
+      // you" as its weapon is — see the same line in the 'x' look panel.
+      if (monster.spell_index >= 0) {
+        std::cout << ", " << kSpellTable[static_cast<size_t>(monster.spell_index)].name << " " << monster.mana << "/"
+                  << monster.max_mana << " MP";
+      }
       std::cout << ")\n";
       for (const auto& w : monster.weapons) std::cout << "      carries weapon: " << w.name << "\n";
       for (const auto& a : monster.armors) std::cout << "      carries armor: " << a.name << "\n";
@@ -3026,6 +3232,16 @@ int main(int argc, char* argv[]) {
               }
               sb_print("    Eva: " + std::to_string(m.evasion) + "  STR: " + std::to_string(m.strength),
                        tcod::ColorRGB{150, 150, 150});
+              // A caster's remaining mana is the single most useful thing to know about
+              // it — the Goblin Shaman's whole design is a finite dart budget, so being
+              // able to check how much of it is left is what makes waiting it out a real
+              // decision rather than a guess. Only shown for something that actually
+              // casts; every other monster has max_mana 0 and would just print "0/0".
+              if (m.spell_index >= 0) {
+                sb_print("    MP: " + std::to_string(m.mana) + "/" + std::to_string(m.max_mana) + " (" +
+                             kSpellTable[static_cast<size_t>(m.spell_index)].name + ")",
+                         tcod::ColorRGB{150, 150, 220});
+              }
               for (const auto& carried : m.weapons) sb_print("    - " + carried.name, tcod::ColorRGB{170, 170, 200});
               for (const auto& carried : m.potions) sb_print("    - " + carried.name, carried.color);
               if (m.allegiance == Allegiance::Player) {
@@ -4068,6 +4284,11 @@ int main(int argc, char* argv[]) {
           proj.name = spell.name;
           proj.glyph = spell.glyph;
           proj.color = spell.color;
+          // Matches Projectile's defaults, but set explicitly: now that a monster can
+          // fire one too, "who owns this" shouldn't be something a reader has to infer
+          // from a default.
+          proj.owner_allegiance = Allegiance::Player;
+          proj.owner_is_player = true;
           level.projectiles.push_back(proj);
           player.mana -= spell.mana_cost;
 
@@ -4165,6 +4386,8 @@ int main(int argc, char* argv[]) {
           proj.name = weapon.name;
           proj.glyph = '-';
           proj.color = tcod::ColorRGB{200, 170, 100};
+          proj.owner_allegiance = Allegiance::Player;  // explicit, see the spell cast above
+          proj.owner_is_player = true;
           level.projectiles.push_back(proj);
 
           add_message("You fire your " + weapon.name + ".");

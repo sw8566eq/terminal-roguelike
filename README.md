@@ -112,7 +112,8 @@ step 1.
 - `x` to look around: move a cursor over the map without spending a turn or
   moving, and the side panel describes what's under it — remembered terrain
   anywhere you've explored, and for anything actually in view, the item or
-  the monster's weapon, armor, evasion and pack
+  the monster's weapon, armor, evasion, pack, and (for a caster like the
+  Goblin Shaman) which spell it knows and how much mana it has left
 - `]` to open the full message log (scroll with `j`/`k` or arrows, `Esc` or
   `]` to close); the HUD always shows the last few messages anyway
 - `?` to open a controls reference screen (`?` or `Esc` to close)
@@ -196,8 +197,9 @@ roguelike/
       perk, so a boss or elite monster can be given the same thing by setting
       one field on its table row (try `--fast-monsters` below to see it from
       the other side)
-- [x] Mana: spells cost mana to cast (or, for Sandstorm, to keep running),
-      regenerating passively the same way HP does
+- [x] Mana: spells cost mana to cast (or, for Sandstorm, to keep running).
+      Regeneration is per-Actor like HP regen — you regenerate, the Goblin
+      Shaman deliberately doesn't, so its pool is a one-time budget
 - [x] Monster AI: chases when it can see you, keeps heading for the last
       place it saw you after you break line of sight (until it gets there),
       otherwise wanders idly — real A* pathfinding (libtcod's `TCODPath`), so
@@ -230,6 +232,16 @@ roguelike/
 - [x] Ranged weapons for the player: a Bow fired with `f` instead of bumping,
       reusing the same travelling-projectile machinery spells use. Damage and
       hit chance both scale with Dexterity; ammo is unlimited for now
+- [x] Monsters that cast: the Goblin Shaman (floors 1-4) throws the same Magic
+      Dart you can learn, out of a real mana pool, through the same
+      projectile code your own spells use — so it hits instantly at range,
+      exactly as your Magic Dart does, and you can't sidestep it. Its whole
+      design is a budget: 10 mana, 1 per dart, and no regeneration, so it
+      gets exactly 10 darts and is then a 5 HP nuisance with claws.
+      Outlasting it, breaking line of sight, or closing to melee are the
+      counterplay, and `x` on it shows how much mana it has left. Projectiles
+      now carry an owner, so anything that flies works the same in either
+      direction — it never hits its own side, and XP flows to whoever fired it
 - [x] First distinct monster AI: Goblin Slinger (floors 1-4) and its tougher
       floor-5+ counterpart Orc Archer snipe from range without approaching,
       but permanently switch to a more accurate melee weapon and start
@@ -262,6 +274,12 @@ roguelike/
       minion) sets a minion to chase down and fight anything hostile it can
       see instead of passively waiting at your side for something to wander
       into range
+- [x] Monster attacks run through the player's own projectile code: a Shaman's
+      dart is a real `Projectile` with an owner, resolved by the same function,
+      dodge roll and damage math your spells use. Nothing in the pipeline
+      assumes the player fired it any more, so a slow-moving monster spell
+      would visibly cross the map over several turns the way your Fireball
+      does — no monster has one yet
 - [ ] Summoner playstyle, phase 3: true necromancy — reanimating the
       specific monster you just killed (not just conjuring a generic
       minion), via a corpse left on the ground and a spell that targets one;

@@ -411,6 +411,20 @@ int xp_needed_for_level(int level) { return level * 20; }
 // persistent aura. dice_count/dice_sides/speed/range/aoe_radius/hit_dice/glyph/color
 // are unused for these; mana_cost is what it costs to cast, same field every other
 // spell already uses.
+//
+// is_swap marks a fourth spell "kind": instantly trades places with one of the
+// player's own minions instead of firing a Projectile or resolving straight from the
+// menu. Selecting it in the spell menu *does* enter Mode::Targeting (like a regular
+// fired spell) so a cursor can pick which minion, when more than one is around — but
+// Enter swaps the player's and the targeted minion's x/y directly (a guaranteed
+// effect, no dodge/damage roll, since it's cooperating with your own ally) instead of
+// launching anything, and only succeeds if the cursor is actually on a living minion.
+// No FOV requirement when auto-aiming the cursor (see closest_own_minion()) — a
+// minion's position is always known to its own summoner, the same reciprocal
+// awareness noted in the Minions/Summoner architecture notes.
+// dice_count/dice_sides/speed/aoe_radius/hit_dice/glyph/color are unused for these;
+// range still applies (how far away a minion can be and still be swapped with) and
+// mana_cost is what it costs to cast, same fields every targeted spell already uses.
 struct Spell {
   std::string name;
   int unlock_int;
@@ -431,6 +445,7 @@ struct Spell {
   // same convention as Weapon::hit_dice_count/sides.
   bool is_summon = false;
   int summon_template_index = 0;  // summon spells only: row into kMinionTable
+  bool is_swap = false;
 };
 
 constexpr int kInstantSpellSpeed = 99;  // safely more tiles than this map's diagonal
@@ -464,6 +479,22 @@ const std::vector<Spell> kSpellTable = {
      /*mana_cost=*/4, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
      /*hit_dice_count=*/0, /*hit_dice_sides=*/0, 'u', tcod::ColorRGB{100, 200, 220}, /*is_summon=*/true,
      /*summon_template_index=*/0},
+    // Trades places with a minion instead of dealing damage — a tactical reposition
+    // (pull yourself to a minion holding a doorway, or swap a hurt minion out of melee
+    // and take its spot yourself). unlock_int=6 is a stated default: after Raise
+    // Skeleton (5), so there's actually a minion to swap with by the time it unlocks,
+    // alongside Fireball's tier. range=6 is a stated default too. mana_cost=8 is
+    // deliberately steep, not cheap like a damage spell's cost — this is a guaranteed,
+    // no-dodge escape from any fight (swap to a minion standing somewhere safer) as
+    // much as it's an engage tool, so it's priced to be an emergency option, not
+    // something to lean on every encounter: at the unlock threshold (max_mana=15 at
+    // INT 6) it's barely castable twice in a row, and takes ~80 turns of passive regen
+    // to recover a single cast. Scales down in relative cost as INT climbs further,
+    // same as every other spell's mana cost does against a rising max_mana ceiling.
+    {"Place Swap", /*unlock_int=*/6, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/6,
+     /*mana_cost=*/8, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
+     /*hit_dice_count=*/0, /*hit_dice_sides=*/0, '=', tcod::ColorRGB{100, 220, 255}, /*is_summon=*/false,
+     /*summon_template_index=*/0, /*is_swap=*/true},
 };
 
 // Indices into kSpellTable of every spell the player currently knows, in display
@@ -558,6 +589,19 @@ int hostile_monster_at(const std::vector<Actor>& monsters, int x, int y) {
   return -1;
 }
 
+// Same as hostile_monster_at(), but the other way around — only ever matches the
+// player's own minion, a hostile at (x,y) is invisible to this query. Used by the
+// Place Swap spell to decide whether the cursor is actually on a minion to swap with.
+int own_minion_at(const std::vector<Actor>& monsters, int x, int y) {
+  for (size_t i = 0; i < monsters.size(); ++i) {
+    if (monsters[i].allegiance == Allegiance::Player && monsters[i].is_alive() && monsters[i].x == x &&
+        monsters[i].y == y) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
 // Index into `actors` of the living Actor with the given id, or -1 if it's dead/gone.
 // Used to resolve MinionOrder::AttackTarget's attack_target_id back to an actual
 // Actor each turn, rather than holding a raw index (unsafe across a vector that
@@ -596,6 +640,26 @@ int auto_target_hostile(const std::vector<Actor>& monsters, const Actor& player,
     if (m.allegiance != Allegiance::Hostile || !m.is_alive() || !qualifies(m)) continue;
     int dx = m.x - player.x, dy = m.y - player.y;
     int dist = dx * dx + dy * dy;
+    if (best_id == -1 || dist < best_dist) {
+      best_id = m.id;
+      best_dist = dist;
+    }
+  }
+  return best_id;
+}
+
+// Finds the closest living minion to the player within range (squared-Euclidean, same
+// metric auto_target_hostile() uses) — seeds the cursor when entering Mode::Targeting
+// for the Place Swap spell (Spell::is_swap). Unlike auto_target_hostile(), there's no
+// FOV filter: a minion's position is always known to its own summoner (see Spell's
+// is_swap doc comment), so a minion around a corner still qualifies.
+int closest_own_minion(const std::vector<Actor>& monsters, const Actor& player, int range) {
+  int best_id = -1, best_dist = -1;
+  for (const auto& m : monsters) {
+    if (m.allegiance != Allegiance::Player || !m.is_alive()) continue;
+    int dx = m.x - player.x, dy = m.y - player.y;
+    int dist = dx * dx + dy * dy;
+    if (dist > range * range) continue;
     if (best_id == -1 || dist < best_dist) {
       best_id = m.id;
       best_dist = dist;
@@ -2263,6 +2327,9 @@ int main(int argc, char* argv[]) {
           at_minion_cap = count_minions(level.monsters) >= kMaxMinions;
           line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (summons a " + tmpl.name + ", " +
                  duration_str + ") - " + std::to_string(s.mana_cost) + " MP" + (at_minion_cap ? " [AT CAP]" : "");
+        } else if (s.is_swap) {
+          line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (swap places with a minion) - " +
+                 std::to_string(s.mana_cost) + " MP";
         } else {
           line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (" + std::to_string(s.dice_count) +
                  "d" + std::to_string(s.dice_sides) + "+INT/3) - " + std::to_string(s.mana_cost) + " MP";
@@ -2733,44 +2800,57 @@ int main(int argc, char* argv[]) {
       }
 
       if (mode == Mode::Targeting) {
-        // Preview the shot: trace the same path a cast would take, and stop drawing at
-        // the first tile that would actually stop it, so what you see is what you'd hit.
-        auto preview = trace_path(player.x, player.y, target_x, target_y);
-        for (size_t i = 0; i < preview.size(); ++i) {
-          auto [x, y] = preview[i];
-          bool blocked = level.map.blocks_projectile(x, y);
-          bool has_monster = hostile_monster_at(level.monsters, x, y) >= 0;
-          bool stops_here = blocked || has_monster || i + 1 == preview.size();
-          if (in_view(x, y)) {
-            auto& cell = console.at(MAP_ORIGIN_X + x - camera_x, MAP_ORIGIN_Y + y - camera_y);
-            cell.ch = stops_here ? 'X' : '*';
-            cell.fg = stops_here ? tcod::ColorRGB{255, 60, 60} : tcod::ColorRGB{150, 60, 60};
-          }
-          if (blocked || has_monster) break;
-        }
-
-        // AoE spells (Fireball etc.) also highlight the blast radius around wherever the
-        // shot would actually come to rest — find_impact() applies the exact same
-        // stopping rules advance_projectiles() uses, so this matches what firing now
-        // would do. Recolors tiles rather than overwriting their glyph, so monsters/
-        // terrain caught in the blast stay visible underneath the highlight.
         const Spell& previewed_spell = kSpellTable[static_cast<size_t>(casting_spell_index)];
-        if (previewed_spell.aoe_radius > 0) {
-          auto [impact_x, impact_y] = find_impact(preview, player.x, player.y, level.map, level.monsters);
-          int radius = previewed_spell.aoe_radius;
-          for (int by = impact_y - radius; by <= impact_y + radius; ++by) {
-            for (int bx = impact_x - radius; bx <= impact_x + radius; ++bx) {
-              if (bx < 0 || by < 0 || bx >= level.map.width() || by >= level.map.height()) continue;
-              if (!level.map.is_explored(bx, by) && !reveal_mode) continue;
-              if (!in_view(bx, by)) continue;
-              console.at(MAP_ORIGIN_X + bx - camera_x, MAP_ORIGIN_Y + by - camera_y).fg = tcod::ColorRGB{255, 140, 60};
-            }
+
+        if (previewed_spell.is_swap) {
+          // No projectile/line to preview for a swap — just mark the target tile,
+          // colored by whether there's actually a minion there to swap with (matches
+          // the Enter-fire check in own_minion_at()).
+          if (in_view(target_x, target_y)) {
+            bool has_minion = own_minion_at(level.monsters, target_x, target_y) >= 0;
+            auto& cell = console.at(MAP_ORIGIN_X + target_x - camera_x, MAP_ORIGIN_Y + target_y - camera_y);
+            cell.ch = 'X';
+            cell.fg = has_minion ? tcod::ColorRGB{100, 220, 255} : tcod::ColorRGB{120, 60, 60};
           }
-          // Re-mark the impact tile on top so the center stays visually distinct.
-          if (in_view(impact_x, impact_y)) {
-            auto& impact_cell = console.at(MAP_ORIGIN_X + impact_x - camera_x, MAP_ORIGIN_Y + impact_y - camera_y);
-            impact_cell.ch = 'X';
-            impact_cell.fg = tcod::ColorRGB{255, 60, 60};
+        } else {
+          // Preview the shot: trace the same path a cast would take, and stop drawing at
+          // the first tile that would actually stop it, so what you see is what you'd hit.
+          auto preview = trace_path(player.x, player.y, target_x, target_y);
+          for (size_t i = 0; i < preview.size(); ++i) {
+            auto [x, y] = preview[i];
+            bool blocked = level.map.blocks_projectile(x, y);
+            bool has_monster = hostile_monster_at(level.monsters, x, y) >= 0;
+            bool stops_here = blocked || has_monster || i + 1 == preview.size();
+            if (in_view(x, y)) {
+              auto& cell = console.at(MAP_ORIGIN_X + x - camera_x, MAP_ORIGIN_Y + y - camera_y);
+              cell.ch = stops_here ? 'X' : '*';
+              cell.fg = stops_here ? tcod::ColorRGB{255, 60, 60} : tcod::ColorRGB{150, 60, 60};
+            }
+            if (blocked || has_monster) break;
+          }
+
+          // AoE spells (Fireball etc.) also highlight the blast radius around wherever the
+          // shot would actually come to rest — find_impact() applies the exact same
+          // stopping rules advance_projectiles() uses, so this matches what firing now
+          // would do. Recolors tiles rather than overwriting their glyph, so monsters/
+          // terrain caught in the blast stay visible underneath the highlight.
+          if (previewed_spell.aoe_radius > 0) {
+            auto [impact_x, impact_y] = find_impact(preview, player.x, player.y, level.map, level.monsters);
+            int radius = previewed_spell.aoe_radius;
+            for (int by = impact_y - radius; by <= impact_y + radius; ++by) {
+              for (int bx = impact_x - radius; bx <= impact_x + radius; ++bx) {
+                if (bx < 0 || by < 0 || bx >= level.map.width() || by >= level.map.height()) continue;
+                if (!level.map.is_explored(bx, by) && !reveal_mode) continue;
+                if (!in_view(bx, by)) continue;
+                console.at(MAP_ORIGIN_X + bx - camera_x, MAP_ORIGIN_Y + by - camera_y).fg = tcod::ColorRGB{255, 140, 60};
+              }
+            }
+            // Re-mark the impact tile on top so the center stays visually distinct.
+            if (in_view(impact_x, impact_y)) {
+              auto& impact_cell = console.at(MAP_ORIGIN_X + impact_x - camera_x, MAP_ORIGIN_Y + impact_y - camera_y);
+              impact_cell.ch = 'X';
+              impact_cell.fg = tcod::ColorRGB{255, 60, 60};
+            }
           }
         }
       }
@@ -3128,6 +3208,21 @@ int main(int argc, char* argv[]) {
                 mode = Mode::Playing;
                 end_turn();
               }
+            } else if (spell.is_swap) {
+              casting_spell_index = spell_idx;
+              // Auto-aim at the closest minion in range (no FOV requirement — see
+              // closest_own_minion()), else fall back to the player's own tile; Enter
+              // will just reject the cast with a message if nothing's actually there.
+              int auto_id = closest_own_minion(level.monsters, player, spell.range);
+              int auto_idx = actor_index_by_id(level.monsters, auto_id);
+              if (auto_idx >= 0) {
+                target_x = level.monsters[static_cast<size_t>(auto_idx)].x;
+                target_y = level.monsters[static_cast<size_t>(auto_idx)].y;
+              } else {
+                target_x = player.x;
+                target_y = player.y;
+              }
+              mode = Mode::Targeting;
             } else {
               casting_spell_index = spell_idx;
               // Auto-aim at the most recently targeted hostile if it still qualifies,
@@ -3346,6 +3441,26 @@ int main(int argc, char* argv[]) {
           if (player.mana < spell.mana_cost) {
             add_message("Not enough mana to cast " + spell.name + ".");
             mode = Mode::Playing;  // free cancel, same as Esc — no turn spent
+            continue;
+          }
+
+          if (spell.is_swap) {
+            int minion_index = own_minion_at(level.monsters, target_x, target_y);
+            if (minion_index < 0) {
+              add_message("There's no minion there to swap places with.");
+              mode = Mode::Playing;  // free cancel, same as Esc — no turn spent
+              continue;
+            }
+            Actor& minion = level.monsters[static_cast<size_t>(minion_index)];
+            std::swap(player.x, minion.x);
+            std::swap(player.y, minion.y);
+            // Not an incremental step, so (unlike normal movement) FOV needs an
+            // explicit recompute — same as the Potion of Teleportation's effect.
+            level.map.update_fov(player.x, player.y, FOV_RADIUS);
+            player.mana -= spell.mana_cost;
+            add_message("You swap places with your " + minion.name + ".");
+            mode = Mode::Playing;
+            end_turn();
             continue;
           }
 

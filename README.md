@@ -74,11 +74,13 @@ step 1.
   automatically)
 - `w` to open the weapon menu and equip a carried weapon (or bare fists)
 - `a` to open the armor menu and equip a carried piece (or bare skin)
-- `q` to open the potion menu and drink one (heal, a temporary stat boost, or
-  teleport to a random spot on the floor — see below)
+- `q` to open the potion menu and drink one: healing, a temporary +5 boost to
+  Strength/Dexterity/Intelligence for 15 turns, or a teleport to a random spot
+  on the current floor
 - `d` to drop your equipped weapon/armor or something from your pack
-- `z` to open your known spells and cast one (unlocked by Intelligence — see
-  below); for an aimed spell, movement then steers a targeting cursor instead
+- `z` to open your known spells and cast one (unlocked by Intelligence, and by
+  your school — see Status); for an aimed spell, movement then steers a
+  targeting cursor instead
   of moving you, with a preview line (and a highlighted blast radius for an
   AoE spell) showing what the shot would hit, `Enter` fires, `Esc` cancels; a
   toggled spell (like Sandstorm) instead turns on/off immediately, no aiming;
@@ -160,128 +162,91 @@ roguelike/
 
 ## Status
 
-- [x] Window opens, `@` renders, moves with arrow keys / hjkl / diagonals
-- [x] Map data structure (tiles: wall/floor)
-- [x] Procedural dungeon generation (rooms + corridors)
-- [x] Field of view / fog of war (including remembered monster sightings)
-- [x] Monsters + turn-based melee combat (bump-to-attack, weapon dice)
-- [x] Items & inventory (pickup, equip, drop)
-- [x] Permadeath + restart flow
-- [x] Multi-level dungeon (stairs up/down, floors persist as you leave/return)
-- [x] Player attributes & leveling (Strength/Dexterity/Intelligence, XP)
-- [x] Armor & evasion, on one formula shared by everything that fights: an
-      attack's accuracy (the attacker's Dexterity, plus a roll of the weapon
-      or spell's own "hit-dice") is subtracted from the defender's evasion
-      rating, and armor soaks a flat amount off whatever lands. A fast dagger
-      or a wide-area Fireball are harder to dodge than a heavy axe or a
+Everything here is built and playable except the single unchecked item, which is
+what's next.
+
+**World**
+
+- [x] Procedurally generated multi-level dungeon — rooms, corridors, pits you
+      can shoot over but not walk across, and stairs both ways. Floors persist
+      as you leave and return
+- [x] Field of view and fog of war, including remembered monster sightings
+- [x] Depth scaling: monsters, weapons, armor and potions are all gated by floor,
+      and monsters get both tougher and more numerous as you descend
+
+**Combat**
+
+- [x] Turn-based melee (walk into something to hit it), ranged weapons (`f`),
+      and permadeath
+- [x] One accuracy/dodge formula shared by everything that fights: the attacker's
+      Dexterity plus a roll of the weapon or spell's own "hit-dice", against the
+      defender's evasion, with armor soaking a flat amount off whatever lands. A
+      fast dagger or a wide Fireball are harder to dodge than a heavy axe or a
       precise Magic Dart, whoever is swinging them
-- [x] Spells (Intelligence unlocks them): Magic Dart (single-target),
-      Energy Lance (a straightforward upgrade to Magic Dart — better dice,
-      steeper mana cost), Fireball (slow-moving orb, explodes into a 3x3
-      blast on impact — including on the caster, if cast too close),
-      Sandstorm (a toggled aura that follows the player around instead of
-      being aimed, damaging everything in a 7x7 zone every turn while it
-      drains mana), and Lightning Bolt (a piercing beam that hits every
-      monster along its line of travel instead of stopping at the first one)
-- [x] Spell schools: at Intelligence 4 you permanently pick Caster (Fireball,
-      Sandstorm, Lightning Bolt), Summoner (Raise Skeleton, Place Swap,
-      Summon Demon — a permanent, much stronger minion), or Combat Mage
-      (Battle Fury, a melee-damage buff; Iron Skin, a flat-armor buff; Haste,
-      below) — the other two paths' spells are locked out for the rest of
-      that run. Magic Dart and Energy Lance are shared, available regardless
-      of path
-- [x] Extra actions per turn: Haste (the Combat Mage's top spell) lets you act
-      twice for every turn the dungeon takes — you move, fight and cast at
-      double rate while monsters, minions, buff timers and mana regen all run
-      on the normal clock. It's a plain Actor property rather than a player
-      perk, so a boss or elite monster can be given the same thing by setting
-      one field on its table row (try `--fast-monsters` below to see it from
-      the other side)
-- [x] Mana: spells cost mana to cast (or, for Sandstorm, to keep running).
-      Regeneration is per-Actor like HP regen — you regenerate, the Goblin
-      Shaman deliberately doesn't, so its pool is a one-time budget
-- [x] Monster AI: chases when it can see you, keeps heading for the last
-      place it saw you after you break line of sight (until it gets there),
-      otherwise wanders idly — real A* pathfinding (libtcod's `TCODPath`), so
-      it routes around walls instead of getting stuck on corners
-- [x] Monster variety scales with depth (tougher monster types replace
-      weaker ones as you descend, plus more of them per floor)
-- [x] Bosses: exactly one spawns on each floor its table row covers, on top of
-      that floor's normal monsters rather than drawn from them. The first is
-      the Orc Warlord on floor 3 — an outsized Orc arriving two floors before
-      ordinary Orcs do, on a floor otherwise full of Rats and Goblins. It's
-      the only thing in the game that regenerates besides you, so wounds you
-      don't finish it with heal back off while you keep your distance, and
-      it's the only monster carrying a potion — expect it to open by drinking
-      a Potion of Strength. Its Chainmail and Warlord's Cleaver drop when it
-      dies
-- [x] Potions: healing, temporary (+5, 15-turn) Strength/Dexterity/
-      Intelligence boosts, and teleportation (random spot on the current floor)
-- [x] Weapon/armor/potion variety also scales with depth, mirroring monsters
-- [x] Passive HP regeneration (slow, scales with max HP). A per-Actor toggle:
-      the player and the Orc Warlord have it, every ordinary monster doesn't,
-      so wounds you inflict on a normal monster stick and chip-and-retreat
-      tactics work on everything except the boss
-- [x] Multi-line message log with scrollback (`]`), repeat-message coalescing
-- [x] Sectioned HUD: three bordered ASCII panels — the dungeon, a message log,
-      and a status sidebar listing your stats, every temporary buff you have
-      running with its remaining turns, plus the enemies and minions
-      currently in view. The dungeon is bigger than the panel showing it, so
-      the view scrolls to follow you (or your cursor while aiming)
-- [x] Look around (`x`): inspect any explored tile without spending a turn
-- [x] Ranged weapons for the player: a Bow fired with `f` instead of bumping,
-      reusing the same travelling-projectile machinery spells use. Damage and
-      hit chance both scale with Dexterity; ammo is unlimited for now
-- [x] Monsters that cast: the Goblin Shaman (floors 1-4) throws the same Magic
-      Dart you can learn, out of a real mana pool, through the same
-      projectile code your own spells use — so it hits instantly at range,
-      exactly as your Magic Dart does, and you can't sidestep it. Its whole
-      design is a budget: 10 mana, 1 per dart, and no regeneration, so it
-      gets exactly 10 darts and is then a 5 HP nuisance with claws.
-      Outlasting it, breaking line of sight, or closing to melee are the
-      counterplay, and `x` on it shows how much mana it has left. Projectiles
-      now carry an owner, so anything that flies works the same in either
-      direction — it never hits its own side, and XP flows to whoever fired it
-- [x] First distinct monster AI: Goblin Slinger (floors 1-4) and its tougher
-      floor-5+ counterpart Orc Archer snipe from range without approaching,
-      but permanently switch to a more accurate melee weapon and start
-      chasing like an ordinary monster the moment they're touched once —
-      every other monster still shares the plain wander/chase/remember
-      behavior
-- [x] Monsters and the player run on one shared foundation: the same Actor,
-      the same attack/dodge/damage math, the same per-turn upkeep and stat
-      timers. Monsters carry an inventory — they wear armor that soaks your
-      hits (an Orc starts in Leather Armor) and swap between carried weapons
-      depending on how far away you are. Every non-natural item they were
-      carrying drops on the floor when they die, and it's the same item you'd
-      have found lying there. `x` (look) shows what a monster is wearing and
-      carrying before you commit to the fight. Monsters can drink potions
-      through the same code you do — the Orc Warlord boss is the only one
-      given any, since handing them out widely turned the floor into a
-      consumables buffet
-- [x] Summoner playstyle, phase 1: a spell raises a temporary minion that
-      fights at your side; hostile monsters can target minions instead of
-      always going after you, so they're real meat-shields; minions are
-      immune to your own spells, swap places instead of being attacked if
-      you walk into them, and follow you through stairs
-- [x] Summoner playstyle, phase 2: per-minion control instead of pack-only
-      orders — `o`/`p` cycle command focus between individual minions (or
-      pick one from a roster with `m`), aim a cursor with no range limit,
-      and send that minion (or the whole pack) to attack a chosen monster
-      or hold a chosen tile, still defending itself either way; the
-      minion(s) you're commanding are highlighted so you don't lose track
-- [x] Aggressive minion stance: `g` (or the default for a freshly summoned
-      minion) sets a minion to chase down and fight anything hostile it can
-      see instead of passively waiting at your side for something to wander
-      into range
-- [x] Monster attacks run through the player's own projectile code: a Shaman's
-      dart is a real `Projectile` with an owner, resolved by the same function,
-      dodge roll and damage math your spells use. Nothing in the pipeline
-      assumes the player fired it any more, so a slow-moving monster spell
-      would visibly cross the map over several turns the way your Fireball
-      does — no monster has one yet
-- [ ] Summoner playstyle, phase 3: true necromancy — reanimating the
-      specific monster you just killed (not just conjuring a generic
-      minion), via a corpse left on the ground and a spell that targets one;
-      also raising the minion cap toward a 1-7 range now that per-minion
-      control exists
+
+**Character**
+
+- [x] Attributes and leveling — Strength, Dexterity, Intelligence, earned with XP
+- [x] Items: weapons, armor and potions, with pickup, equip and drop
+- [x] Passive HP and mana regeneration, both opt-in per creature rather than
+      universal — see Monsters
+
+**Magic**
+
+- [x] Spell schools: at Intelligence 4 you permanently pick one of three paths,
+      locking the other two out for the rest of the run. Magic Dart and its
+      upgrade Energy Lance stay available whichever you choose
+  - Caster — Fireball (slow orb, 3x3 blast that can catch you too), Sandstorm
+    (toggled aura that follows you and drains mana), Lightning Bolt (pierces
+    every monster along its line)
+  - Summoner — Raise Skeleton, Place Swap (trade places with a minion),
+    Summon Demon (permanent and much stronger)
+  - Combat Mage — Battle Fury (melee damage), Iron Skin (armor), Haste
+- [x] Mana, spent per cast and regenerated slowly
+- [x] Extra actions per turn: Haste lets you act twice for every turn the dungeon
+      takes, while monsters, buff timers and regen all stay on the normal clock.
+      It's a plain creature property, not a player perk, so a boss can be given
+      the same thing in one table field (`--fast-monsters` shows it from the
+      other side)
+
+**Monsters**
+
+- [x] One shared foundation with the player: the same underlying creature, the
+      same attack/dodge/damage math, the same per-turn upkeep. Monsters wear
+      armor that soaks your hits, swap between carried weapons by range, drink
+      potions through the code you do, and drop everything non-natural when they
+      die. `x` shows what a fight will cost you before you commit
+- [x] AI chases on sight, keeps heading for the last place it saw you after you
+      break line of sight, and otherwise wanders — with real A* pathfinding, so
+      it routes around walls instead of grinding into corners
+- [x] Ranged specialists: Goblin Slinger, and its floor-5+ counterpart Orc
+      Archer, snipe without approaching but permanently commit to melee the
+      moment you reach them
+- [x] Casters: the Goblin Shaman throws the same Magic Dart you can learn, from a
+      10-mana pool that never refills — ten darts, then it's a 5 HP nuisance with
+      claws. Projectiles carry an owner, so one code path resolves yours and
+      theirs alike, and neither ever hits its own side
+- [x] Bosses: one guaranteed spawn on each floor its row covers, on top of that
+      floor's normal monsters. The Orc Warlord (floor 3) is the only thing
+      besides you that regenerates, so wounds you don't finish it with heal back
+      off — and the only monster carrying a potion
+
+**Minions**
+
+- [x] Summon temporary or permanent allies that draw enemy attention off you,
+      follow you through stairs, and are immune to your own spells
+- [x] Per-minion command: cycle focus with `o`/`p` or pick one from a roster
+      (`m`), then send that minion or the whole pack to attack a target, hold a
+      tile, follow you, or hunt on its own
+- [ ] True necromancy: reanimate the specific monster you just killed, via a
+      corpse left on the ground and a spell that targets it — plus a higher
+      minion cap now that per-minion control exists
+
+**Interface**
+
+- [x] Sectioned HUD: the dungeon, a message log, and a status sidebar showing
+      your stats, every active buff with its turns remaining, and the enemies
+      and minions currently in view. The map is bigger than its panel, so the
+      view scrolls to follow you
+- [x] Message log with scrollback (`]`) and repeat coalescing
+- [x] Look around (`x`) to inspect any explored tile without spending a turn

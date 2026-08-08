@@ -103,9 +103,9 @@ step 1.
 - On leveling up, `Shift+S` / `Shift+D` / `Shift+I` to put your point into
   Strength / Dexterity / Intelligence. The first time Intelligence reaches 4,
   a one-time, permanent choice interrupts: `Shift+C` for Caster (Fireball,
-  Sandstorm), `Shift+U` for Summoner (Raise Skeleton, Place Swap), or
-  `Shift+M` for Combat Mage (Battle Fury, Iron Skin) — Magic Dart and its
-  upgraded cousin Energy Lance stay available either way
+  Sandstorm, Lightning Bolt), `Shift+U` for Summoner (Raise Skeleton, Place
+  Swap, Summon Demon), or `Shift+M` for Combat Mage (Battle Fury, Iron Skin)
+  — Magic Dart and its upgraded cousin Energy Lance stay available either way
 - `x` to look around: move a cursor over the map without spending a turn or
   moving, and the side panel describes what's under it — remembered terrain
   anywhere you've explored, and for anything actually in view, the item or
@@ -170,12 +170,14 @@ roguelike/
 - [x] Spells (Intelligence unlocks them): Magic Dart (single-target),
       Energy Lance (a straightforward upgrade to Magic Dart — better dice,
       steeper mana cost), Fireball (slow-moving orb, explodes into a 3x3
-      blast on impact — including on the caster, if cast too close), and
+      blast on impact — including on the caster, if cast too close),
       Sandstorm (a toggled aura that follows the player around instead of
       being aimed, damaging everything in a 7x7 zone every turn while it
-      drains mana)
+      drains mana), and Lightning Bolt (a piercing beam that hits every
+      monster along its line of travel instead of stopping at the first one)
 - [x] Spell schools: at Intelligence 4 you permanently pick Caster (Fireball,
-      Sandstorm), Summoner (Raise Skeleton, Place Swap), or Combat Mage
+      Sandstorm, Lightning Bolt), Summoner (Raise Skeleton, Place Swap,
+      Summon Demon — a permanent, much stronger minion), or Combat Mage
       (Battle Fury, a melee-damage buff; Iron Skin, a flat-armor buff) —
       the other two paths' spells are locked out for the rest of that run.
       Magic Dart and Energy Lance are shared, available regardless of path

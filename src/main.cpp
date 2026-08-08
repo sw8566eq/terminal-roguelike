@@ -236,6 +236,13 @@ const std::vector<MinionTemplate> kMinionTable = {
     {"Skeletal Minion", 'u', tcod::ColorRGB{100, 200, 220}, /*max_hp=*/8,
      Weapon{"Bone Claws", 1, 4, 0, /*is_intrinsic=*/true, 1, -1, /*hit_dice=*/2, 4},
      /*evasion=*/6, /*dexterity=*/6, /*strength=*/1, /*duration_turns=*/40},
+    // Summoner's third spell's summon: stronger and permanent, contrasting with the
+    // Skeletal Minion's early, low-commitment, temporary framing above. Glyph 'D' and
+    // this magenta are unused by any hostile monster or the Skeletal Minion, so it
+    // reads unmistakably as its own thing.
+    {"Demon", 'D', tcod::ColorRGB{200, 40, 180}, /*max_hp=*/20,
+     Weapon{"Demon Claws", 1, 6, 0, /*is_intrinsic=*/true, 1, -1, /*hit_dice=*/2, 6},
+     /*evasion=*/10, /*dexterity=*/8, /*strength=*/5, /*duration_turns=*/-1},
 };
 
 // How many minions the player can have active at once, checked when casting a summon
@@ -461,6 +468,10 @@ struct Spell {
   bool is_armor_buff = false;
   int buff_amount = 0;
   int buff_turns = 0;
+  // True for a piercing spell (Lightning Bolt): the fired Projectile keeps traveling
+  // through a hostile hit instead of stopping there. Deliberately not combined with
+  // aoe_radius today — see advance_projectiles().
+  bool pierces = false;
 };
 
 constexpr int kInstantSpellSpeed = 99;  // safely more tiles than this map's diagonal
@@ -547,6 +558,35 @@ const std::vector<Spell> kSpellTable = {
      /*hit_dice_count=*/0, /*hit_dice_sides=*/0, 'k', tcod::ColorRGB{150, 150, 220}, /*is_summon=*/false,
      /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::CombatMage,
      /*is_melee_buff=*/false, /*is_armor_buff=*/true, /*buff_amount=*/3, /*buff_turns=*/9},
+    // Caster's third spell — a genuinely new mechanic, not just another stat tier: a
+    // piercing beam (Projectile::pierces) that hits every hostile monster along its
+    // line of travel instead of stopping at the first one. Deliberately NOT combined
+    // with an aoe_radius blast (kept 0) — a pure line-pierce, which keeps the
+    // advance_projectiles() change minimal (reuses the existing single-target
+    // per-victim roll block verbatim, just doesn't stop on a hit) rather than calling
+    // explode() in a loop. hit_dice_count=3/hit_dice_sides=6 matches Fireball's own
+    // hard-to-dodge hit-dice: hitting several targets in a line is comparably hard to
+    // evade as an AoE blast. speed=kInstantSpellSpeed (unlike Fireball's slow orb) so
+    // the whole line resolves the turn it's cast. unlock_int=9/mana_cost=5 are stated
+    // defaults, a tier above Sandstorm (7 unlock/3 mana), reflecting that it can hit
+    // several targets per cast — adjustable after playtesting like every other
+    // spell's numbers have been.
+    {"Lightning Bolt", /*unlock_int=*/9, /*dice_count=*/1, /*dice_sides=*/6, kInstantSpellSpeed, /*range=*/8,
+     /*mana_cost=*/5, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
+     /*hit_dice_count=*/3, /*hit_dice_sides=*/6, '/', tcod::ColorRGB{255, 255, 120}, /*is_summon=*/false,
+     /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::Caster,
+     /*is_melee_buff=*/false, /*is_armor_buff=*/false, /*buff_amount=*/0, /*buff_turns=*/0,
+     /*pierces=*/true},
+    // Summoner's third spell: raises kMinionTable[1] (Demon), the school's stronger,
+    // permanent counterpart to Raise Skeleton's early, temporary Skeletal Minion —
+    // pure content-table addition, zero new mechanism (identical is_summon shape).
+    // unlock_int=9 is the parallel tier to Lightning Bolt above. mana_cost=9 is
+    // steeper than Raise Skeleton's 4, reflecting a permanent and much stronger
+    // minion — stated default, adjustable after playtesting.
+    {"Summon Demon", /*unlock_int=*/9, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/0,
+     /*mana_cost=*/9, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
+     /*hit_dice_count=*/0, /*hit_dice_sides=*/0, 'D', tcod::ColorRGB{200, 40, 180}, /*is_summon=*/true,
+     /*summon_template_index=*/1, /*is_swap=*/false, /*school=*/SpellSchool::Summoner},
 };
 
 // Indices into kSpellTable of every spell the player currently knows, in display
@@ -586,7 +626,8 @@ struct GroundPotion {
 // A spell (or, via Mode::RangedAttack, a fired weapon shot — same struct, same
 // resolution code, just sourced from a Weapon instead of a Spell at fire time) in
 // flight: advances along a precomputed path by `speed` tiles every player turn (see
-// advance_projectiles), hitting the first wall or monster it reaches.
+// advance_projectiles), stopping at the first wall it reaches, and — unless it
+// pierces — the first monster too.
 struct Projectile {
   std::vector<std::pair<int, int>> path;  // tiles from just past the caster through the target
   size_t path_index = 0;                  // how many tiles of the path have been consumed so far
@@ -602,6 +643,11 @@ struct Projectile {
   // together these reconstruct exactly the accuracy any melee swing would have had.
   int accuracy_bonus = 0;
   int aoe_radius = 0;  // 0 = single-target hit only; >0 = explode in a square blast on impact
+  // True for a piercing spell (Lightning Bolt): keeps traveling through a hostile hit
+  // instead of stopping there, hitting every monster along the line. Copied from
+  // Spell::pierces at cast time; never combined with aoe_radius > 0 today (see
+  // advance_projectiles()).
+  bool pierces = false;
   int prev_x = 0;  // last tile actually entered so far (seeded at the caster's tile at cast
   int prev_y = 0;  // time) — where an aoe_radius>0 spell explodes if the next tile is a wall
   std::string name;
@@ -1684,6 +1730,7 @@ int main(int argc, char* argv[]) {
         if (target_index >= 0) {
           if (proj.aoe_radius > 0) {
             explode(proj, x, y);  // the monster's own tile is a valid, walkable center
+            consumed = true;
           } else {
             Actor& target = level.monsters[static_cast<size_t>(target_index)];
             int dodge = dodge_chance_vs_accuracy(
@@ -1702,13 +1749,20 @@ int main(int argc, char* argv[]) {
                 add_message("Your " + proj.name + " hits the " + target.name + " for " + std::to_string(damage) + ".");
               }
             }
+            // A piercing spell (Lightning Bolt) keeps traveling through a hostile hit
+            // instead of stopping — every monster along the line takes its own
+            // independently-rolled dodge/damage, the same idiom explode() already uses
+            // for multiple targets, just walked one tile at a time instead of scanned
+            // by radius.
+            if (!proj.pierces) consumed = true;
           }
-          consumed = true;
-          break;
+          if (consumed) break;
         }
 
-        // Empty, walkable tile: the spell keeps going. Remember it as the last open tile
-        // in case the very next one stops it (the aoe_radius wall-hit case above).
+        // Empty, walkable tile — or a hostile tile a piercing spell just passed
+        // through without stopping: the spell keeps going. Remember it as the last
+        // open tile in case the very next one stops it (the aoe_radius wall-hit case
+        // above).
         proj.prev_x = x;
         proj.prev_y = y;
       }
@@ -2983,13 +3037,18 @@ int main(int argc, char* argv[]) {
             auto [x, y] = preview[i];
             bool blocked = level.map.blocks_projectile(x, y);
             bool has_monster = hostile_monster_at(level.monsters, x, y) >= 0;
-            bool stops_here = blocked || has_monster || i + 1 == preview.size();
+            // A piercing spell's preview marks every hostile tile along the line as a
+            // hit but keeps drawing the line past it — only a wall (or reaching max
+            // range) actually stops it, matching advance_projectiles()'s own pierce
+            // handling. Non-piercing spells are unchanged.
+            bool pierce_hit = has_monster && previewed_spell.pierces;
+            bool stops_here = blocked || (has_monster && !previewed_spell.pierces) || i + 1 == preview.size();
             if (in_view(x, y)) {
               auto& cell = console.at(MAP_ORIGIN_X + x - camera_x, MAP_ORIGIN_Y + y - camera_y);
-              cell.ch = stops_here ? 'X' : '*';
-              cell.fg = stops_here ? tcod::ColorRGB{255, 60, 60} : tcod::ColorRGB{150, 60, 60};
+              cell.ch = (stops_here || pierce_hit) ? 'X' : '*';
+              cell.fg = (stops_here || pierce_hit) ? tcod::ColorRGB{255, 60, 60} : tcod::ColorRGB{150, 60, 60};
             }
-            if (blocked || has_monster) break;
+            if (blocked || (has_monster && !previewed_spell.pierces)) break;
           }
 
           // AoE spells (Fireball etc.) also highlight the blast radius around wherever the
@@ -3739,6 +3798,7 @@ int main(int argc, char* argv[]) {
           proj.hit_dice_count = spell.hit_dice_count;
           proj.hit_dice_sides = spell.hit_dice_sides;
           proj.aoe_radius = spell.aoe_radius;
+          proj.pierces = spell.pierces;
           proj.prev_x = player.x;  // seeds the "last open tile" for an immediate wall hit
           proj.prev_y = player.y;
           // Locked in now, not re-read when it lands. Temporary INT (from a Potion of

@@ -104,8 +104,8 @@ step 1.
   Strength / Dexterity / Intelligence. The first time Intelligence reaches 4,
   a one-time, permanent choice interrupts: `Shift+C` for Caster (Fireball,
   Sandstorm), `Shift+U` for Summoner (Raise Skeleton, Place Swap), or
-  `Shift+M` for Combat Mage (Battle Fury, Iron Skin) — Magic Dart stays
-  available either way
+  `Shift+M` for Combat Mage (Battle Fury, Iron Skin) — Magic Dart and its
+  upgraded cousin Energy Lance stay available either way
 - `x` to look around: move a cursor over the map without spending a turn or
   moving, and the side panel describes what's under it — remembered terrain
   anywhere you've explored, and for anything actually in view, the item or
@@ -168,15 +168,17 @@ roguelike/
       or a wide-area Fireball are harder to dodge than a heavy axe or a
       precise Magic Dart, whoever is swinging them
 - [x] Spells (Intelligence unlocks them): Magic Dart (single-target),
-      Fireball (slow-moving orb, explodes into a 3x3 blast on impact —
-      including on the caster, if cast too close), and Sandstorm (a
-      toggled aura that follows the player around instead of being aimed,
-      damaging everything in a 7x7 zone every turn while it drains mana)
+      Energy Lance (a straightforward upgrade to Magic Dart — better dice,
+      steeper mana cost), Fireball (slow-moving orb, explodes into a 3x3
+      blast on impact — including on the caster, if cast too close), and
+      Sandstorm (a toggled aura that follows the player around instead of
+      being aimed, damaging everything in a 7x7 zone every turn while it
+      drains mana)
 - [x] Spell schools: at Intelligence 4 you permanently pick Caster (Fireball,
       Sandstorm), Summoner (Raise Skeleton, Place Swap), or Combat Mage
-      (Battle Fury, a melee-accuracy buff; Iron Skin, a flat-armor buff) —
+      (Battle Fury, a melee-damage buff; Iron Skin, a flat-armor buff) —
       the other two paths' spells are locked out for the rest of that run.
-      Magic Dart is shared, available regardless of path
+      Magic Dart and Energy Lance are shared, available regardless of path
 - [x] Mana: spells cost mana to cast (or, for Sandstorm, to keep running),
       regenerating passively the same way HP does
 - [x] Monster AI: chases when it can see you, keeps heading for the last

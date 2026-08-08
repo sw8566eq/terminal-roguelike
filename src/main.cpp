@@ -473,6 +473,16 @@ const std::vector<Spell> kSpellTable = {
      /*mana_cost=*/1, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
      /*hit_dice_count=*/1, /*hit_dice_sides=*/4, '*', tcod::ColorRGB{200, 100, 255}, /*is_summon=*/false,
      /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::None},
+    // A straightforward upgrade to Magic Dart, not a new archetype — same instant
+    // single-target shape, just better dice and harder to dodge (2d4 hit-dice vs. Magic
+    // Dart's 1d4), for a steeper mana cost. school=None so it's shared like Magic Dart
+    // rather than gated to one path — unlock_int=6 puts it a couple levels past the
+    // Intelligence-4 school choice, a stated default (same tier Fireball used to unlock
+    // at before the school split), adjustable like other spells' numbers have been.
+    {"Energy Lance", /*unlock_int=*/6, /*dice_count=*/1, /*dice_sides=*/6, kInstantSpellSpeed, /*range=*/8,
+     /*mana_cost=*/3, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
+     /*hit_dice_count=*/2, /*hit_dice_sides=*/4, '+', tcod::ColorRGB{120, 180, 255}, /*is_summon=*/false,
+     /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::None},
     // Slow-moving orb (visibly crosses several turns instead of resolving instantly) that
     // explodes into a 3x3 blast wherever it stops, rather than just hitting one target.
     // Its high hit-dice (vs. Magic Dart's low one) is the AoE-is-hard-to-dodge case.

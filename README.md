@@ -83,6 +83,7 @@ step 1.
   AoE spell) showing what the shot would hit, `Enter` fires, `Esc` cancels; a
   toggled spell (like Sandstorm) instead turns on/off immediately, no aiming;
   a summon spell raises a minion next to you immediately, no aiming either
+  — freshly summoned minions default to Aggressive (below), not passive Follow
 - Commanding minions, if you have any: `o` / `p` cycle command focus to the
   next/previous minion, or `m` opens a roster menu to pick one by letter —
   or `Shift+A` there to command the whole pack at once, however many you
@@ -91,7 +92,10 @@ step 1.
   it, onto empty ground to send them to hold that position (still
   defending themselves if something comes into range), or back onto
   yourself to call them off and have them follow you again; `f` gives that
-  same follow order from wherever the cursor is, no aiming needed; `Esc`
+  same follow order from wherever the cursor is, no aiming needed. `g` sets
+  Aggressive instead: follows you the same as `f`'s order, but breaks off on
+  its own to chase down and fight anything hostile that comes into view,
+  rather than waiting for it to wander into reach. `Esc`
   cancels. `Shift+P` snaps
   command focus back to yourself. The minion(s) you're currently
   commanding are highlighted so you don't lose track while aiming.
@@ -214,6 +218,10 @@ roguelike/
       and send that minion (or the whole pack) to attack a chosen monster
       or hold a chosen tile, still defending itself either way; the
       minion(s) you're commanding are highlighted so you don't lose track
+- [x] Aggressive minion stance: `g` (or the default for a freshly summoned
+      minion) sets a minion to chase down and fight anything hostile it can
+      see instead of passively waiting at your side for something to wander
+      into range
 - [ ] Summoner playstyle, phase 3: true necromancy — reanimating the
       specific monster you just killed (not just conjuring a generic
       minion), via a corpse left on the ground and a spell that targets one;

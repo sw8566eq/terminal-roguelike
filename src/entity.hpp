@@ -94,7 +94,13 @@ enum class Allegiance { Hostile, Player };
 // AttackTarget paths toward/fights one specific enemy by id (attack_target_id below).
 // Hold paths toward and then stands at one specific tile (hold_x/y below), still
 // fighting anything that comes into range — "guard this spot" rather than "sit idle."
-enum class MinionOrder { Follow, AttackTarget, Hold };
+// Aggressive is Follow's proactive sibling: it paths toward the player exactly like
+// Follow does when nothing hostile is around, but as soon as a hostile monster is
+// anywhere in the player's FOV it breaks off to chase and fight that one instead
+// (attack_target_id tracks the current pursuit, same field AttackTarget uses, just
+// auto-selected instead of player-chosen) — "go engage anything you can see" rather
+// than "wait for something to wander into my own reach."
+enum class MinionOrder { Follow, AttackTarget, Hold, Aggressive };
 
 // A living thing on the map: the player, a hostile monster, or a player-owned minion.
 // There is exactly one of these types, deliberately: every one of them equips a weapon

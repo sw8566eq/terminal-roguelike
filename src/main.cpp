@@ -691,6 +691,10 @@ std::string describe_minion_order(const Actor& minion, const std::vector<Actor>&
     int ti = actor_index_by_id(monsters, minion.attack_target_id);
     return ti >= 0 ? "attacking the " + monsters[static_cast<size_t>(ti)].name : "following you";
   }
+  if (minion.order == MinionOrder::Aggressive) {
+    int ti = actor_index_by_id(monsters, minion.attack_target_id);
+    return ti >= 0 ? "engaging the " + monsters[static_cast<size_t>(ti)].name : "following you, watching for enemies";
+  }
   return "following you";
 }
 
@@ -701,6 +705,8 @@ std::string minion_order_flag(const Actor& minion) {
       return "H";
     case MinionOrder::AttackTarget:
       return "A";
+    case MinionOrder::Aggressive:
+      return "G";
     default:
       return "F";
   }
@@ -1943,12 +1949,14 @@ int main(int argc, char* argv[]) {
     // The player's minions act after every hostile monster has had its turn. Each one
     // is Following (path toward the player, ignoring FOV — a summoned minion always
     // knows where its own summoner is, unlike a hostile monster tracking the player),
-    // Holding (path toward and then stand at a specific tile — "guard this spot"), or
-    // AttackTarget (path toward/attack one specific enemy, by id). Follow and Hold both
-    // defend themselves via try_minion_auto_defend() instead of moving if a hostile is
-    // already in range. An AttackTarget minion whose target has died or otherwise
-    // disappeared (actor_index_by_id returns -1) reverts to Follow and just holds
-    // position for the rest of this turn, picking up the chase next turn.
+    // Holding (path toward and then stand at a specific tile — "guard this spot"),
+    // AttackTarget (path toward/attack one specific enemy, by id), or Aggressive
+    // (Follow's proactive sibling — see the MinionOrder doc comment in entity.hpp).
+    // Follow, Hold, and Aggressive all defend themselves via try_minion_auto_defend()
+    // instead of moving if a hostile is already in range. An AttackTarget minion whose
+    // target has died or otherwise disappeared (actor_index_by_id returns -1) reverts
+    // to Follow and just holds position for the rest of this turn, picking up the
+    // chase next turn.
     for (auto& minion : level.monsters) {
       if (mode == Mode::Dead) break;
       if (!minion.is_alive() || minion.allegiance != Allegiance::Player) continue;
@@ -1999,11 +2007,61 @@ int main(int argc, char* argv[]) {
         continue;
       }
 
-      // Follow.
-      if (try_minion_auto_defend(minion)) continue;
-      // ...otherwise close the distance to the player. try_monster_step already
-      // refuses to step onto the player's own tile, so this naturally stops once
-      // adjacent rather than trying to stack on them.
+      if (minion.order == MinionOrder::Aggressive) {
+        if (try_minion_auto_defend(minion)) continue;  // already-adjacent hostiles first
+
+        // Stick with the same hostile while it's still alive and still visible, to
+        // avoid flitting between targets when several are in view at once — same idea
+        // AttackTarget already has, just auto-selected instead of player-chosen.
+        // "Visible" reuses the player's FOV, the same mutual-visibility proxy every
+        // other target-selection in the game already uses.
+        int ti = actor_index_by_id(level.monsters, minion.attack_target_id);
+        bool still_valid = ti >= 0 && level.monsters[static_cast<size_t>(ti)].allegiance == Allegiance::Hostile &&
+                            level.map.is_in_fov(level.monsters[static_cast<size_t>(ti)].x,
+                                                 level.monsters[static_cast<size_t>(ti)].y);
+        if (!still_valid) {
+          Actor* closest = nullptr;
+          int best_dist = 0;
+          for (auto& hostile : level.monsters) {
+            if (hostile.allegiance != Allegiance::Hostile || !hostile.is_alive()) continue;
+            if (!level.map.is_in_fov(hostile.x, hostile.y)) continue;
+            int dist = distance_between(minion, hostile);
+            if (closest == nullptr || dist < best_dist) {
+              closest = &hostile;
+              best_dist = dist;
+            }
+          }
+          minion.attack_target_id = closest != nullptr ? closest->id : -1;
+          ti = closest != nullptr ? actor_index_by_id(level.monsters, minion.attack_target_id) : -1;
+        }
+
+        if (ti >= 0) {
+          Actor& target = level.monsters[static_cast<size_t>(ti)];
+          bool in_range = distance_between(minion, target) <= minion.weapon.attack_range;
+          if (in_range && line_clear(minion.x, minion.y, target.x, target.y, level.map)) {
+            resolve_attack(minion, target, minion.weapon);
+            continue;
+          }
+          auto path = level.map.find_path(minion.x, minion.y, target.x, target.y);
+          if (!path.empty()) {
+            int move_dx = path[0].first - minion.x;
+            int move_dy = path[0].second - minion.y;
+            if (!try_monster_step(minion, move_dx, move_dy)) {
+              if (!try_monster_step(minion, move_dx, 0)) try_monster_step(minion, 0, move_dy);
+            }
+          }
+          continue;
+        }
+        // No hostile currently visible — fall through to the Follow movement below.
+      }
+
+      if (minion.order == MinionOrder::Follow) {
+        if (try_minion_auto_defend(minion)) continue;
+      }
+      // Follow (also Aggressive with nothing currently visible to chase — its own
+      // auto-defend attempt already happened above in that case). Close the distance
+      // to the player; try_monster_step already refuses to step onto the player's own
+      // tile, so this naturally stops once adjacent rather than trying to stack on them.
       auto path = level.map.find_path(minion.x, minion.y, player.x, player.y);
       if (!path.empty()) {
         int move_dx = path[0].first - minion.x;
@@ -2407,9 +2465,10 @@ int main(int argc, char* argv[]) {
           "                                  there jumps straight to All)",
           "o  p                              Cycle command focus to the next/previous minion",
           "Shift+P                           Return focus to yourself",
-          "f  Enter                          While focused on a minion instead: Follow / confirm",
-          "                                  Attack or Hold (sidebar shows each minion's order as",
-          "                                  [F]ollow / [H]old / [A]ttack)",
+          "f  g  Enter                       While focused on a minion instead: Follow / go",
+          "                                  Aggressive / confirm Attack or Hold (sidebar shows",
+          "                                  each minion's order as [F]ollow / [G]o aggressive /",
+          "                                  [H]old / [A]ttack)",
           "x                                 Look around (move the cursor, side panel shows",
           "                                  details); x or Esc to close",
           "]                                 Message log (full scrollback)",
@@ -2887,16 +2946,18 @@ int main(int argc, char* argv[]) {
           console.at(MAP_ORIGIN_X + m.x - camera_x, MAP_ORIGIN_Y + m.y - camera_y).fg = tcod::ColorRGB{255, 255, 100};
         }
 
-        // If any commanded minion currently has an AttackTarget order, highlight that
-        // monster too, in a color distinct from the minion tint above — with more than
-        // one of the same monster type in view (two Goblins, say) there's otherwise no
-        // way to tell which one is actually assigned versus just standing nearby.
+        // If any commanded minion currently has an AttackTarget order — or an
+        // Aggressive one that's actively chasing something — highlight that monster
+        // too, in a color distinct from the minion tint above — with more than one of
+        // the same monster type in view (two Goblins, say) there's otherwise no way to
+        // tell which one is actually assigned versus just standing nearby.
         for (const auto& m : level.monsters) {
           if (m.allegiance != Allegiance::Player || !m.is_alive()) continue;
           if (!commanding_all_minions && m.id != focused_minion_id) continue;
-          if (m.order != MinionOrder::AttackTarget) continue;
+          if (m.order != MinionOrder::AttackTarget && m.order != MinionOrder::Aggressive) continue;
           int ti = actor_index_by_id(level.monsters, m.attack_target_id);
-          if (ti < 0) continue;  // target died/gone; the minion will revert to Follow on its own
+          if (ti < 0) continue;  // no current target — AttackTarget will revert to Follow on its own,
+                                  // Aggressive just has nothing in view to chase yet
           const Actor& target = level.monsters[static_cast<size_t>(ti)];
           bool target_visible = level.map.is_in_fov(target.x, target.y);
           if (!target_visible && !reveal_mode) continue;
@@ -3190,11 +3251,13 @@ int main(int argc, char* argv[]) {
                 player.mana -= spell.mana_cost;
                 const MinionTemplate& tmpl = kMinionTable[static_cast<size_t>(spell.summon_template_index)];
                 Actor minion = spawn_minion(tmpl, spawn_x, spawn_y);
-                // Joins the pack's current stance rather than always defaulting to
-                // Follow — if an existing minion is already off attacking something,
-                // the new recruit should too, not stand around while its allies
-                // fight (orders are pack-wide in Phase 1, see the `m` menu).
-                minion.order = MinionOrder::Follow;
+                // Defaults to Aggressive — a fresh recruit engages anything hostile it
+                // can see rather than passively waiting for something to wander into
+                // its own reach — but joins the pack's current stance instead if an
+                // existing minion is already off attacking something specific, so the
+                // new recruit piles onto the same fight rather than going its own way
+                // (orders are pack-wide in Phase 1, see the `m` menu).
+                minion.order = MinionOrder::Aggressive;
                 for (const auto& existing : level.monsters) {
                   if (existing.allegiance == Allegiance::Player && existing.is_alive() &&
                       existing.order == MinionOrder::AttackTarget) {
@@ -3327,6 +3390,16 @@ int main(int argc, char* argv[]) {
         if (event.key.key == SDLK_F) {
           int ordered = for_each_commanded_minion([](Actor& m) { m.order = MinionOrder::Follow; });
           add_message(ordered == 1 ? "Your minion returns to your side." : "Your minions return to your side.");
+          commanding_all_minions = false;
+          mode = Mode::Playing;
+          continue;
+        }
+        if (event.key.key == SDLK_G) {
+          // Aggressive: same as Follow, but engages anything hostile it can see
+          // instead of waiting for something to wander into its own reach — see the
+          // MinionOrder doc comment in entity.hpp.
+          int ordered = for_each_commanded_minion([](Actor& m) { m.order = MinionOrder::Aggressive; });
+          add_message(ordered == 1 ? "Your minion goes on the offensive." : "Your minions go on the offensive.");
           commanding_all_minions = false;
           mode = Mode::Playing;
           continue;

@@ -376,6 +376,42 @@ void advance_projectiles(GameState& gs, bool instant_only) {
   }
 }
 
+void pick_up_ground_items(GameState& gs, const std::vector<ItemSlot>& slots) {
+  Level& level = gs.level();
+
+  // Collect indices per kind first, then erase in descending order. Erasing as we go
+  // would shift every later index in that vector down by one and start taking the wrong
+  // items — the same hazard the old single-pass loop avoided by walking backwards.
+  std::vector<int> weapons, armors, potions;
+  for (const ItemSlot& slot : slots) {
+    if (slot.kind == ItemKind::Weapon) weapons.push_back(slot.index);
+    else if (slot.kind == ItemKind::Armor) armors.push_back(slot.index);
+    else potions.push_back(slot.index);
+  }
+
+  // Messages are emitted in the order shown on screen, not erase order, so the log reads
+  // the way the menu did.
+  for (int i : weapons) {
+    add_message(gs, "You pick up a " + level.items[static_cast<size_t>(i)].weapon.name + ". Press 'w' to equip.");
+    gs.player.weapons.push_back(level.items[static_cast<size_t>(i)].weapon);
+  }
+  for (int i : armors) {
+    add_message(gs, "You pick up a " + level.armor_items[static_cast<size_t>(i)].armor.name + ". Press 'a' to equip.");
+    gs.player.armors.push_back(level.armor_items[static_cast<size_t>(i)].armor);
+  }
+  for (int i : potions) {
+    add_message(gs, "You pick up a " + level.potions[static_cast<size_t>(i)].potion.name + ". Press 'q' to drink.");
+    gs.player.potions.push_back(level.potions[static_cast<size_t>(i)].potion);
+  }
+
+  std::sort(weapons.rbegin(), weapons.rend());
+  std::sort(armors.rbegin(), armors.rend());
+  std::sort(potions.rbegin(), potions.rend());
+  for (int i : weapons) level.items.erase(level.items.begin() + i);
+  for (int i : armors) level.armor_items.erase(level.armor_items.begin() + i);
+  for (int i : potions) level.potions.erase(level.potions.begin() + i);
+}
+
 void start_new_game(GameState& gs) {
   gs.levels.clear();
   gs.levels.push_back(generate_level(MAP_WIDTH, MAP_HEIGHT, /*has_stairs_up=*/false, /*depth=*/1));

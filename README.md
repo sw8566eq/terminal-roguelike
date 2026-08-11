@@ -70,8 +70,10 @@ step 1.
 - `.` to wait a turn
 - `>` / `<` to take stairs down/up (must be standing on them); this costs a
   turn, and anything next to you gets a parting shot as you go
-- `g` to pick up everything on your tile, in one turn (nothing is picked up
-  automatically)
+- `g` to pick up (nothing is picked up automatically). A lone item is taken
+  straight away; with several on the tile a menu opens where letters toggle
+  what you want, `Shift+A` selects all or none, `Enter` takes everything
+  checked for one turn total, and `Esc` cancels for free
 - `w` to open the weapon menu and equip a carried weapon (or bare fists)
 - `a` to open the armor menu and equip a carried piece (or bare skin)
 - `q` to open the potion menu and drink one: healing, a temporary +5 boost to

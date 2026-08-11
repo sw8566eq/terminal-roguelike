@@ -213,3 +213,19 @@ Level generate_level(int width, int height, bool has_stairs_up, int depth) {
 
   return level;
 }
+
+std::vector<ItemSlot> ground_slots_at(const Level& level, int x, int y) {
+  std::vector<ItemSlot> slots;
+  for (size_t i = 0; i < level.items.size(); ++i) {
+    if (level.items[i].x == x && level.items[i].y == y) slots.push_back({ItemKind::Weapon, static_cast<int>(i)});
+  }
+  for (size_t i = 0; i < level.armor_items.size(); ++i) {
+    if (level.armor_items[i].x == x && level.armor_items[i].y == y) {
+      slots.push_back({ItemKind::Armor, static_cast<int>(i)});
+    }
+  }
+  for (size_t i = 0; i < level.potions.size(); ++i) {
+    if (level.potions[i].x == x && level.potions[i].y == y) slots.push_back({ItemKind::Potion, static_cast<int>(i)});
+  }
+  return slots;
+}

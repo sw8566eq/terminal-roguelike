@@ -906,6 +906,52 @@ void handle_look_input(GameState& gs, const SDL_Event& event) {
   return;
 }
 
+void handle_pickup_input(GameState& gs, const SDL_Event& event) {
+  Level& level = gs.level();
+  auto slots = ground_slots_at(level, gs.player.x, gs.player.y);
+
+  if (event.key.key == SDLK_ESCAPE) {
+    gs.mode = Mode::Playing;  // free cancel — nothing taken, no turn spent
+    return;
+  }
+
+  // Shift+A flips the whole list: all-on if anything is unchecked, all-off otherwise, so
+  // one key covers both "take everything" and "start from nothing". Scoped to this mode,
+  // like MinionRoster's Shift+A, so it can't collide with plain 'a' in normal play.
+  if (event.key.key == SDLK_A && (event.key.mod & SDL_KMOD_SHIFT)) {
+    bool any_off = false;
+    for (size_t i = 0; i < slots.size(); ++i) {
+      if (i >= gs.pickup_selected.size() || !gs.pickup_selected[i]) any_off = true;
+    }
+    gs.pickup_selected.assign(slots.size(), any_off);
+    return;
+  }
+
+  if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER) {
+    std::vector<ItemSlot> chosen;
+    for (size_t i = 0; i < slots.size(); ++i) {
+      if (i < gs.pickup_selected.size() && gs.pickup_selected[i]) chosen.push_back(slots[i]);
+    }
+    if (chosen.empty()) {
+      gs.mode = Mode::Playing;  // nothing checked: same free cancel as Esc
+      return;
+    }
+    pick_up_ground_items(gs, chosen);
+    gs.mode = Mode::Playing;
+    end_turn(gs);  // one turn total, however much was taken
+    return;
+  }
+
+  // Letters toggle. Free — selecting costs nothing until Enter commits.
+  if (event.key.key >= SDLK_A && event.key.key <= SDLK_Z) {
+    size_t idx = static_cast<size_t>(event.key.key - SDLK_A);
+    if (idx < slots.size() && idx < gs.pickup_selected.size()) {
+      gs.pickup_selected[idx] = !gs.pickup_selected[idx];
+    }
+    return;
+  }
+}
+
 void handle_drop_input(GameState& gs, const SDL_Event& event) {
   Level& level = gs.level();
   if (event.key.key == SDLK_ESCAPE) {
@@ -979,46 +1025,26 @@ void handle_playing_input(GameState& gs, const SDL_Event& event) {
     return;
   }
   if (event.key.key == SDLK_G) {
-    // Picks up *everything* on the player's current tile (no auto-pickup on step),
-    // each as its own message rather than one combined line. This used to take only
-    // the first item of each kind, which was fine when the floor was the only source
-    // of loot — but a dead monster now drops its whole pack on one tile (an Orc
-    // Archer leaves both a Short Bow and a Short Sword), and leaving half of it
-    // behind with no indication anything remained was just confusing. One turn
-    // total, however much is here.
+    // No auto-pickup on step, so this is the only way loot leaves the floor.
     //
-    // Each loop walks backwards so erasing the current element can't shift an
-    // unvisited one out from under the index.
-    bool picked_up_anything = false;
-    for (int i = static_cast<int>(level.items.size()) - 1; i >= 0; --i) {
-      const GroundItem& ground = level.items[static_cast<size_t>(i)];
-      if (ground.x != gs.player.x || ground.y != gs.player.y) continue;
-      add_message(gs, "You pick up a " + ground.weapon.name + ". Press 'w' to equip.");
-      gs.player.weapons.push_back(ground.weapon);
-      level.items.erase(level.items.begin() + i);
-      picked_up_anything = true;
-    }
-    for (int i = static_cast<int>(level.armor_items.size()) - 1; i >= 0; --i) {
-      const GroundArmor& ground = level.armor_items[static_cast<size_t>(i)];
-      if (ground.x != gs.player.x || ground.y != gs.player.y) continue;
-      add_message(gs, "You pick up a " + ground.armor.name + ". Press 'a' to equip.");
-      gs.player.armors.push_back(ground.armor);
-      level.armor_items.erase(level.armor_items.begin() + i);
-      picked_up_anything = true;
-    }
-    for (int i = static_cast<int>(level.potions.size()) - 1; i >= 0; --i) {
-      const GroundPotion& ground = level.potions[static_cast<size_t>(i)];
-      if (ground.x != gs.player.x || ground.y != gs.player.y) continue;
-      add_message(gs, "You pick up a " + ground.potion.name + ". Press 'q' to drink.");
-      gs.player.potions.push_back(ground.potion);
-      level.potions.erase(level.potions.begin() + i);
-      picked_up_anything = true;
-    }
-    if (picked_up_anything) {
-      end_turn(gs);
-    } else {
+    // One item is taken immediately — a menu to confirm a single obvious choice is
+    // friction. Two or more opens Mode::Pickup, since a dead monster drops its whole
+    // pack on one tile (an Orc Archer leaves both a Short Bow and a Short Sword) and
+    // taking all of it is often not what you want.
+    auto slots = ground_slots_at(level, gs.player.x, gs.player.y);
+    if (slots.empty()) {
       add_message(gs, "There's nothing here to pick up.");
+      return;
     }
+    if (slots.size() == 1) {
+      pick_up_ground_items(gs, slots);
+      end_turn(gs);
+      return;
+    }
+    // Everything starts checked, so g-then-Enter reproduces the old "take it all"
+    // behavior in two keystrokes and deselecting is the deliberate act.
+    gs.pickup_selected.assign(slots.size(), true);
+    gs.mode = Mode::Pickup;
     return;
   }
   if (event.key.key == SDLK_Z) {
@@ -1227,6 +1253,7 @@ void handle_event(GameState& gs, const SDL_Event& event) {
     case Mode::PotionMenu:   handle_potion_menu_input(gs, event);   return;
     case Mode::SpellMenu:    handle_spell_menu_input(gs, event);    return;
     case Mode::MinionRoster: handle_minion_roster_input(gs, event); return;
+    case Mode::Pickup:       handle_pickup_input(gs, event);       return;
     case Mode::MinionFocus:  handle_minion_focus_input(gs, event);  return;
     case Mode::Targeting:    handle_targeting_input(gs, event);     return;
     case Mode::RangedAttack: handle_ranged_input(gs, event);        return;

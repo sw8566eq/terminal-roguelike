@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "actors.hpp"
 #include "content.hpp"
 #include "entity.hpp"
 #include "map.hpp"
@@ -117,3 +118,16 @@ bool free_adjacent_tile(const Map& map, const std::vector<Actor>& monsters, int 
 // Builds and populates a fresh floor. depth is 1-indexed (matches the "Floor:N" HUD) and
 // gates which monsters, weapons, armor and potions can spawn here, plus how many.
 Level generate_level(int width, int height, bool has_stairs_up, int depth);
+
+// Everything lying on the tile at (x,y), as ItemKind + an index into the matching
+// Level vector. The ground counterpart of drop_slots(actor) in actors.hpp, and
+// deliberately the same ItemSlot shape: one mechanism describes both "what you're
+// carrying" and "what's at your feet", so the Drop and Pickup screens are the same
+// kind of list over different sources.
+//
+// Order is weapons, then armor, then potions, each ascending — stable for as long as
+// nothing mutates the Level, which is what lets the Pickup screen keep a selection as
+// a parallel vector of bools rather than copying the items themselves.
+//
+// Unlike drop_slots(), index is never -1: nothing on the ground is "equipped".
+std::vector<ItemSlot> ground_slots_at(const Level& level, int x, int y);

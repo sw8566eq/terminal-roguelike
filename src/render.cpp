@@ -176,6 +176,46 @@ void render_spell_menu(GameState& gs, tcod::Console& console) {
   }
 }
 
+// One line per item on the player's tile, with a checkbox. Parallel to
+// gs.pickup_selected by index — see ground_slots_at(), whose ordering is what makes that
+// safe. Describing an item reuses the same describe_* helpers the Drop screen uses.
+void render_pickup_screen(GameState& gs, tcod::Console& console) {
+  const Level& level = gs.level();
+  auto slots = ground_slots_at(level, gs.player.x, gs.player.y);
+
+  tcod::print(console, {0, 0}, "Pick up - letters to toggle, Enter to take, Esc to cancel",
+              tcod::ColorRGB{255, 255, 255}, std::nullopt);
+
+  int selected = 0;
+  for (size_t i = 0; i < slots.size(); ++i) {
+    bool on = i < gs.pickup_selected.size() && gs.pickup_selected[i];
+    if (on) ++selected;
+    char letter = static_cast<char>('a' + i);
+    std::string name, detail;
+    if (slots[i].kind == ItemKind::Weapon) {
+      const Weapon& w = level.items[static_cast<size_t>(slots[i].index)].weapon;
+      name = w.name;
+      detail = describe_weapon(w);
+    } else if (slots[i].kind == ItemKind::Armor) {
+      const Armor& a = level.armor_items[static_cast<size_t>(slots[i].index)].armor;
+      name = a.name;
+      detail = describe_armor(a);
+    } else {
+      const Potion& p = level.potions[static_cast<size_t>(slots[i].index)].potion;
+      name = p.name;
+      detail = describe_potion(p);
+    }
+    std::string line = std::string("  ") + letter + ") [" + (on ? "x" : " ") + "] " + name + " (" + detail + ")";
+    tcod::print(console, {0, 2 + static_cast<int>(i)}, line,
+                on ? tcod::ColorRGB{220, 220, 220} : tcod::ColorRGB{130, 130, 130}, std::nullopt);
+  }
+
+  int footer = 3 + static_cast<int>(slots.size());
+  tcod::print(console, {0, footer},
+              "  Enter) take " + std::to_string(selected) + " selected      Shift+A) select all / none",
+              tcod::ColorRGB{150, 150, 150}, std::nullopt);
+}
+
 void render_drop_screen(GameState& gs, tcod::Console& console) {
   tcod::print(console, {0, 0}, "Drop - press a letter to drop, Esc to cancel", tcod::ColorRGB{255, 255, 255},
               std::nullopt);
@@ -239,7 +279,7 @@ void render_help(tcod::Console& console) {
       "                                  swaps places with your own minion",
       ".                                 Wait a turn",
       ">  <                              Stairs down/up (must be standing on them)",
-      "g                                 Pick up everything on your tile",
+      "g                                 Pick up (menu if several items here)",
       "w  a  q                           Weapon / Armor / Potion menu (equip or drink)",
       "d                                 Drop a weapon, armor, or potion",
       "f                                 Fire the equipped ranged weapon (move to target,",
@@ -897,6 +937,7 @@ void render_frame(GameState& gs, tcod::Console& console) {
     case Mode::MessageLog:   render_message_log(gs, console);   return;
     case Mode::Help:         render_help(console);          return;
     case Mode::MinionRoster: render_minion_roster(gs, console); return;
+    case Mode::Pickup:       render_pickup_screen(gs, console); return;
     case Mode::SchoolChoice: render_school_choice(console); return;
     default: break;
   }

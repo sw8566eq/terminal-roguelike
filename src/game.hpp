@@ -45,6 +45,7 @@ enum class Mode {
   Help,
   MinionRoster,
   MinionFocus,
+  Pickup,
   Look,
   RangedAttack
 };
@@ -96,6 +97,12 @@ struct GameState {
   // the resulting order applies to every living minion instead of just focused_minion_id.
   // Doesn't touch focused_minion_id, so cycling position survives an "All" session.
   bool commanding_all_minions = false;
+
+  // Which entries of ground_slots_at(level, player.x, player.y) are checked, while
+  // Mode::Pickup. Parallel to that list rather than a copy of the items, which is safe
+  // because no turn passes while the menu is open, so the ground can't shift under it.
+  // Rebuilt every time the menu opens; meaningless outside Mode::Pickup.
+  std::vector<bool> pickup_selected;
 
   bool reveal_all = false;  // --reveal debug flag
   bool running = true;      // cleared to break the main loop
@@ -169,6 +176,13 @@ void resolve_attack(GameState& gs, Actor& attacker, Actor& defender, const Weapo
 // move would feel broken, while a genuinely slow projectile (Fireball's orb) is supposed
 // to be observably in flight and so must only advance on real world turns.
 void advance_projectiles(GameState& gs, bool instant_only = false);
+
+// Moves the given ground items into the player's inventory, each as its own log message,
+// and removes them from the floor. Shared by the single-item fast path and the Pickup
+// menu's confirm so "what picking up does" is defined once. Erases highest-index-first
+// within each kind, so removing one entry can't shift another out from under it.
+// Does not spend a turn — the caller decides that.
+void pick_up_ground_items(GameState& gs, const std::vector<ItemSlot>& slots);
 
 // (Re)generates the dungeon and resets the player, for both the initial game and every
 // restart after death.

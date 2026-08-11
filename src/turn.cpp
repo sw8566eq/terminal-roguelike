@@ -211,6 +211,20 @@ void run_hostile_ai(GameState& gs) {
         }
       }
 
+      // Perception, recorded before this monster decides what to *do*. Seeing where the
+      // player is isn't an action, so it has to happen ahead of every branch below that
+      // ends in `continue` — a caster spends every turn it can see you casting, and a
+      // Slinger shooting, and if the memory were only written further down (in the chase
+      // block, where it used to live) neither would ever record anything. They'd then
+      // have last_seen_player_x == -1 the moment you broke line of sight, and wander
+      // instead of following. Reuses the player's own FOV as the mutual-visibility
+      // proxy, same stand-in for per-monster sight as everywhere else in this loop.
+      bool can_see_player = level.map.is_in_fov(monster.x, monster.y);
+      if (can_see_player) {
+        monster.last_seen_player_x = gs.player.x;
+        monster.last_seen_player_y = gs.player.y;
+      }
+
       // Gear and consumables, decided before anything else this turn and using the same
       // code the player's own menus drive. Swapping to whichever carried weapon suits
       // the current distance is free (it's a draw, not a turn); actually drinking
@@ -293,22 +307,16 @@ void run_hostile_ai(GameState& gs) {
       bool target_is_player = target->is_player;
 
       // Out of range (or no line of sight): chase toward the chosen target if it's
-      // currently visible — for the player specifically, "visible" still means the
-      // FOV-reciprocity check below (can_see_player), same as always; a minion target
-      // was already required to be in_fov to be picked as the target at all, above.
-      // Otherwise, if the monster still remembers where it last saw the player
-      // specifically, head there instead of immediately giving up — once it arrives
-      // and the player isn't there, the memory clears and it falls back to idle
+      // currently visible — for the player specifically, "visible" means the
+      // FOV-reciprocity check (can_see_player, recorded up at the top of this turn);
+      // a minion target was already required to be in_fov to be picked as the target
+      // at all, above. Otherwise, if the monster still remembers where it last saw the
+      // player specifically, head there instead of immediately giving up — once it
+      // arrives and the player isn't there, the memory clears and it falls back to idle
       // wandering. Movement follows a real A* path (Map::find_path(), libtcod's
       // TCODPath) recomputed fresh every turn — cheap enough at this map size that
       // there's no need to cache it turn-to-turn — so a monster routes around a wall
       // segment instead of pacing against it.
-      bool can_see_player = level.map.is_in_fov(monster.x, monster.y);
-      if (can_see_player) {
-        monster.last_seen_player_x = gs.player.x;
-        monster.last_seen_player_y = gs.player.y;
-      }
-
       int move_dx = 0;
       int move_dy = 0;
       bool can_see_target = target_is_player ? can_see_player : true;  // minion targets are always is_in_fov, see above

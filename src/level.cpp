@@ -76,6 +76,12 @@ void drop_actor_gear(Level& level, const Actor& actor) {
 void update_monster_memory(Level& level) {
   for (const auto& monster : level.monsters) {
     if (!level.map.is_in_fov(monster.x, monster.y)) continue;
+    // Your own minions are exempt: the renderer draws them live wherever they are, in
+    // sight or not, because a summoner always knows where they are. Remembering one
+    // would leave a stale copy at its last-seen tile *and* draw the real one at its
+    // current tile — the same minion, twice. Memory is for things you might have lost
+    // track of, which yours never are.
+    if (monster.allegiance == Allegiance::Player) continue;
 
     bool updated = false;
     for (auto& remembered : level.remembered_monsters) {

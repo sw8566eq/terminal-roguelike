@@ -650,7 +650,18 @@ void render_map_panel(GameState& gs, tcod::Console& console, const Camera& camer
 
   for (const auto& monster : level.monsters) {
     bool visible = level.map.is_in_fov(monster.x, monster.y);
-    if (!visible && !gs.reveal_all) continue;
+    // Your own minions are drawn whether or not they're in sight. A summoner always
+    // knows where their own minions are — the rule closest_own_minion() states and
+    // Place Swap already relies on, since it can target a minion around a corner. Until
+    // now the renderer contradicted it: order a minion to Hold, walk away, and it
+    // vanished from a screen that would still happily swap you into it.
+    //
+    // Dimmed when out of sight, the same tier remembered terrain uses, so it reads as
+    // "known" rather than "seen". This grants no vision of anything *around* the
+    // minion — only the minion's own tile is drawn, and nothing here touches FOV or
+    // marks a tile explored.
+    bool always_known = monster.allegiance == Allegiance::Player;
+    if (!visible && !always_known && !gs.reveal_all) continue;
     if (!camera.in_view(monster.x, monster.y)) continue;
     auto& cell = console.at(camera.screen_x(monster.x), camera.screen_y(monster.y));
     cell.ch = monster.glyph;

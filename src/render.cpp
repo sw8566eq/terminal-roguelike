@@ -309,8 +309,6 @@ void render_school_choice(tcod::Console& console) {
   tcod::print(console, {0, 4},
               "Shift+M) Combat Mage -- self-buffs: Battle Fury, Iron Skin, Haste",
               tcod::ColorRGB{200, 200, 200}, std::nullopt);
-  tcod::print(console, {0, 6}, "Magic Dart and Energy Lance stay available whichever path you pick.",
-              tcod::ColorRGB{120, 120, 120}, std::nullopt);
 }
 
 void render_context_row(GameState& gs, tcod::Console& console) {

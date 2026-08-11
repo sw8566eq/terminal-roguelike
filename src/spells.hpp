@@ -79,8 +79,12 @@ struct Spell {
   // more than one is around — but Enter swaps the player's and the targeted minion's x/y
   // directly (a guaranteed effect, no dodge/damage roll, since it's cooperating with
   // your own ally) instead of launching anything, and only succeeds if the cursor is
-  // actually on a living minion. No FOV requirement when auto-aiming the cursor (see
-  // closest_own_minion()) — a minion's position is always known to its own summoner.
+  // actually on a living minion *and* there's a clear line to it (line_clear(), so a
+  // wall blocks the swap but a hole doesn't). The line-of-sight requirement is what
+  // keeps it from being a guaranteed escape from any fight: without it you could post a
+  // minion outside a room and teleport through solid rock whenever things went badly.
+  // Note this is a limit on the spell, not on what you know — your minions stay drawn
+  // even out of sight, and closest_own_minion() still applies no FOV-radius filter.
   // range still applies (how far a minion can be and still be swapped with).
   bool is_swap = false;
   // Which permanent spell school this spell belongs to (see SpellSchool in entity.hpp) —

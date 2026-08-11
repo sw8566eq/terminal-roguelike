@@ -79,13 +79,14 @@ int auto_target_hostile(const std::vector<Actor>& monsters, const Actor& player,
   return best_id;
 }
 
-int closest_own_minion(const std::vector<Actor>& monsters, const Actor& player, int range) {
+int closest_own_minion(const std::vector<Actor>& monsters, const Actor& player, const Map& map, int range) {
   int best_id = -1, best_dist = -1;
   for (const auto& m : monsters) {
     if (m.allegiance != Allegiance::Player || !m.is_alive()) continue;
     int dx = m.x - player.x, dy = m.y - player.y;
     int dist = dx * dx + dy * dy;
     if (dist > range * range) continue;
+    if (!line_clear(player.x, player.y, m.x, m.y, map)) continue;
     if (best_id == -1 || dist < best_dist) {
       best_id = m.id;
       best_dist = dist;

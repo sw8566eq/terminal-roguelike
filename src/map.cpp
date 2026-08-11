@@ -215,3 +215,19 @@ void Map::carve_hole_clusters(int entry_x, int entry_y, int stairs_x, int stairs
     }
   }
 }
+
+std::vector<std::pair<int, int>> trace_path(int from_x, int from_y, int to_x, int to_y) {
+  std::vector<std::pair<int, int>> path;
+  for (auto [x, y] : tcod::BresenhamLine({from_x, from_y}, {to_x, to_y}).without_start()) {
+    path.push_back({x, y});
+  }
+  return path;
+}
+
+bool line_clear(int fx, int fy, int tx, int ty, const Map& map) {
+  auto path = trace_path(fx, fy, tx, ty);
+  for (size_t i = 0; i + 1 < path.size(); ++i) {
+    if (map.blocks_projectile(path[i].first, path[i].second)) return false;
+  }
+  return true;
+}

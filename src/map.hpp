@@ -87,3 +87,21 @@ class Map {
   std::vector<Tile> tiles_;
   TCODMap fov_map_;
 };
+
+// --- Line geometry over a map -------------------------------------------------------
+
+// Every tile from just past (from_x,from_y) through (to_x,to_y), via libtcod's Bresenham
+// line. Excludes the starting tile so a projectile doesn't "hit" its caster. libtcod
+// already provides the line-tracing — don't hand-roll one.
+std::vector<std::pair<int, int>> trace_path(int from_x, int from_y, int to_x, int to_y);
+
+// Whether a straight line from (fx,fy) to (tx,ty) is unobstructed — used to let a ranged
+// attacker's reach, or a spell's, be blocked by terrain instead of passing straight
+// through it. Checks every tile the path crosses *except the last* (the target's own tile
+// doesn't need to be clear from the shooter's perspective — the target is standing on
+// it). For adjacent tiles trace_path()'s result is just the single target tile, so the
+// loop never runs and this is trivially true: melee is completely unaffected.
+//
+// Uses blocks_projectile(), so a wall stops it but a hole does not — you can shoot, cast
+// and swap across a pit you couldn't walk over.
+bool line_clear(int fx, int fy, int tx, int ty, const Map& map);

@@ -711,14 +711,17 @@ void render_targeting_overlay(GameState& gs, tcod::Console& console, const Camer
     const Spell& previewed_spell = kSpellTable[static_cast<size_t>(gs.casting_spell_index)];
 
     if (previewed_spell.is_swap) {
-      // No projectile/line to preview for a swap — just mark the target tile,
-      // colored by whether there's actually a minion there to swap with (matches
-      // the Enter-fire check in own_minion_at()).
+      // No projectile/line to preview for a swap — just mark the target tile, colored
+      // by whether the cast would actually succeed. Both conditions must match the
+      // Enter-fire handler exactly, or the preview promises a swap that gets rejected:
+      // a minion has to be there (own_minion_at()) *and* the line has to be clear
+      // (line_clear(), so a wall blocks it but a hole doesn't).
       if (camera.in_view(gs.target_x, gs.target_y)) {
         bool has_minion = own_minion_at(level.monsters, gs.target_x, gs.target_y) >= 0;
+        bool reachable = line_clear(gs.player.x, gs.player.y, gs.target_x, gs.target_y, level.map);
         auto& cell = console.at(camera.screen_x(gs.target_x), camera.screen_y(gs.target_y));
         cell.ch = 'X';
-        cell.fg = has_minion ? tcod::ColorRGB{100, 220, 255} : tcod::ColorRGB{120, 60, 60};
+        cell.fg = (has_minion && reachable) ? tcod::ColorRGB{100, 220, 255} : tcod::ColorRGB{120, 60, 60};
       }
     } else {
       // Preview the shot: trace the same path a cast would take, and stop drawing at

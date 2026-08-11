@@ -1,12 +1,5 @@
 #include "projectile.hpp"
 
-std::vector<std::pair<int, int>> trace_path(int from_x, int from_y, int to_x, int to_y) {
-  std::vector<std::pair<int, int>> path;
-  for (auto [x, y] : tcod::BresenhamLine({from_x, from_y}, {to_x, to_y}).without_start()) {
-    path.push_back({x, y});
-  }
-  return path;
-}
 
 std::pair<int, int> find_impact(const std::vector<std::pair<int, int>>& path, int start_x, int start_y, const Map& map,
                                 const std::vector<Actor>& monsters) {
@@ -20,13 +13,6 @@ std::pair<int, int> find_impact(const std::vector<std::pair<int, int>>& path, in
   return {prev_x, prev_y};  // reached the end of the path with nothing there
 }
 
-bool line_clear(int fx, int fy, int tx, int ty, const Map& map) {
-  auto path = trace_path(fx, fy, tx, ty);
-  for (size_t i = 0; i + 1 < path.size(); ++i) {
-    if (map.blocks_projectile(path[i].first, path[i].second)) return false;
-  }
-  return true;
-}
 
 std::string projectile_possessive(const Projectile& proj) {
   if (proj.owner_is_player) return "your";

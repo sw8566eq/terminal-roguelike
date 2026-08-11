@@ -64,11 +64,6 @@ struct Projectile {
   std::string owner_name;
 };
 
-// Every tile from just past (from_x,from_y) through (to_x,to_y), via libtcod's Bresenham
-// line. Excludes the starting tile so a projectile doesn't "hit" its caster. libtcod
-// already provides the line-tracing — don't hand-roll one.
-std::vector<std::pair<int, int>> trace_path(int from_x, int from_y, int to_x, int to_y);
-
 // Where a shot fired along `path` from (start_x,start_y) would come to rest, applying
 // the same three rules advance_projectiles() applies turn-by-turn: a wall stops it on
 // the tile just before the wall, a monster stops it on the monster's own tile, and
@@ -81,14 +76,6 @@ std::vector<std::pair<int, int>> trace_path(int from_x, int from_y, int to_x, in
 // needs no pierce-awareness (a piercing shot has no single impact point).
 std::pair<int, int> find_impact(const std::vector<std::pair<int, int>>& path, int start_x, int start_y, const Map& map,
                                 const std::vector<Actor>& monsters);
-
-// Whether a straight line from (fx,fy) to (tx,ty) is unobstructed by walls — used to let
-// a ranged attacker's reach be blocked by terrain instead of firing straight through it.
-// Checks every tile the path crosses *except the last* (the target's own tile doesn't
-// need to be walkable from the shooter's perspective — the target is standing on it).
-// For adjacent tiles trace_path()'s result is just the single target tile, so the loop
-// never runs and this is trivially true: melee is completely unaffected by this check.
-bool line_clear(int fx, int fy, int tx, int ty, const Map& map);
 
 // The Projectile counterparts of actor_possessive()/actor_subject(). They can't just call
 // those, because a Projectile only carries a snapshot of who fired it — the caster may be

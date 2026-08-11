@@ -370,10 +370,11 @@ void handle_spell_menu_input(GameState& gs, const SDL_Event& event) {
         }
       } else if (spell.is_swap) {
         gs.casting_spell_index = spell_idx;
-        // Auto-aim at the closest minion in range (no FOV requirement — see
-        // closest_own_minion()), else fall back to the player's own tile; Enter
-        // will just reject the cast with a message if nothing's actually there.
-        int auto_id = closest_own_minion(level.monsters, gs.player, spell.range);
+        // Auto-aim at the closest minion you could actually swap with — in range and
+        // with a clear line (see closest_own_minion()) — else fall back to the player's
+        // own tile; Enter rejects the cast with a message if the cursor isn't on a
+        // valid one.
+        int auto_id = closest_own_minion(level.monsters, gs.player, level.map, spell.range);
         int auto_idx = actor_index_by_id(level.monsters, auto_id);
         if (auto_idx >= 0) {
           gs.target_x = level.monsters[static_cast<size_t>(auto_idx)].x;
@@ -621,6 +622,16 @@ void handle_targeting_input(GameState& gs, const SDL_Event& event) {
       int minion_index = own_minion_at(level.monsters, gs.target_x, gs.target_y);
       if (minion_index < 0) {
         add_message(gs, "There's no minion there to swap places with.");
+        gs.mode = Mode::Playing;  // free cancel, same as Esc — no turn spent
+        return;
+      }
+      // A wall blocks the swap, the same way it blocks every other shot in the game.
+      // Without this you could post a minion outside a room and teleport out of any
+      // fight through solid rock — a guaranteed, undodgeable escape that no amount of
+      // mana cost balances. You still always *know* where your minions are (they stay
+      // drawn out of sight); you just can't swap to one you can't see.
+      if (!line_clear(gs.player.x, gs.player.y, gs.target_x, gs.target_y, level.map)) {
+        add_message(gs, "You can't see your minion from here.");
         gs.mode = Mode::Playing;  // free cancel, same as Esc — no turn spent
         return;
       }

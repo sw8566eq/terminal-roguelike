@@ -226,8 +226,8 @@ what's next.
   - Caster — Fireball (slow orb, 3x3 blast that can catch you too), Sandstorm
     (toggled aura that follows you and drains mana), Lightning Bolt (pierces
     every monster along its line)
-  - Summoner — Raise Skeleton, Place Swap (trade places with a minion),
-    Summon Demon (permanent and much stronger)
+  - Summoner — Raise Skeleton, Place Swap (trade places with a minion you can
+    see), Summon Demon (permanent and much stronger)
   - Combat Mage — Battle Fury (melee damage), Iron Skin (armor), Haste
 - [x] Mana, spent per cast and regenerated slowly
 - [x] Extra actions per turn: Haste lets you act twice for every turn the dungeon

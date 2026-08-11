@@ -65,11 +65,17 @@ int actor_index_by_id(const std::vector<Actor>& actors, int id);
 int auto_target_hostile(const std::vector<Actor>& monsters, const Actor& player, const Map& map, int last_target_id,
                         int range);
 
-// The closest living minion to the player within range (same squared-Euclidean metric)
-// — seeds the cursor when entering Mode::Targeting for Place Swap (Spell::is_swap).
-// Unlike auto_target_hostile(), there is deliberately no FOV filter: a minion's position
-// is always known to its own summoner, so one around a corner still qualifies.
-int closest_own_minion(const std::vector<Actor>& monsters, const Actor& player, int range);
+// The closest living minion the player could actually swap places with: within range
+// (same squared-Euclidean metric auto_target_hostile() uses) *and* with an unobstructed
+// line to it (line_clear(), so a wall blocks the swap but a hole doesn't — the same rule
+// every other shot in the game follows). Seeds the cursor when entering Mode::Targeting
+// for Place Swap (Spell::is_swap).
+//
+// Still no FOV-radius filter, unlike auto_target_hostile(): a minion's position is always
+// known to its own summoner, which is why the renderer draws yours out of sight. The
+// line-of-sight requirement is a separate, deliberate limit on the *spell* rather than on
+// what you know — swapping through a wall to leave a room was too strong an escape.
+int closest_own_minion(const std::vector<Actor>& monsters, const Actor& player, const Map& map, int range);
 
 // How many of the player's minions are currently alive on this floor (minions always
 // live on whichever floor the player is on — see move_minions_to_new_floor()). Checked

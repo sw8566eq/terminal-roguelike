@@ -53,8 +53,9 @@ const std::vector<Spell> kSpellTable = {
     // same +1 gap after Raise Skeleton (4) that it had after Raise Skeleton's old
     // unlock_int (5 -> 6), just shifted down. range=6 is a stated default. mana_cost=8
     // is deliberately steep, not cheap like a damage spell's cost — this is a
-    // guaranteed, no-dodge escape from any fight (swap to a minion standing somewhere
-    // safer) as much as it's an engage tool, so it's priced to be an emergency option,
+    // no-dodge escape (swap to a minion standing somewhere safer) as much as it's an
+    // engage tool — though it now needs line of sight, so it can't pull you through a
+    // wall — and is priced to be an emergency option,
     // not something to lean on every encounter: at the unlock threshold (max_mana=13
     // at INT 5) a single cast leaves barely a third of the bar, and takes a good chunk
     // of passive regen to recover. Scales down in relative cost as INT climbs further,

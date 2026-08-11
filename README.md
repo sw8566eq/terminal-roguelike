@@ -145,6 +145,10 @@ These are for development/testing, not normal play:
   inventory at startup (not equipped), by exact name across weapons,
   armor, and potions, e.g. `--give="Dagger,Potion of Teleportation"`;
   combinable with the other flags above
+- `--seed=N` — pin the random number generator, so the same seed builds the
+  same floors with the same monsters, gear and rolls every run. Makes a bug
+  reproducible instead of a one-off, and pairs with `--dump-loot` to diff
+  what actually changed between two builds
 
 ## Project layout
 

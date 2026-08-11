@@ -11,6 +11,8 @@ std::mt19937& rng_engine() {
 
 }  // namespace
 
+void seed_rng(unsigned int seed) { rng_engine().seed(seed); }
+
 int random_int(int lo, int hi) {
   std::uniform_int_distribution<int> dist(lo, hi);
   return dist(rng_engine());

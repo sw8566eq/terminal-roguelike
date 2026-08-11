@@ -1476,11 +1476,17 @@ void draw_panel(tcod::Console& console, int x, int y, int w, int h, const std::s
 }
 
 int main(int argc, char* argv[]) {
-  // Pre-scan for the one debug flag that has to be known before any level is generated
+  // Pre-scan for the debug flags that have to be known before any level is generated
   // — start_new_game() below builds floor 1, and --floor=N replays descend(), both well
-  // before the ordinary argv loop further down. See g_debug_fast_monsters.
+  // before the ordinary argv loop further down. See g_debug_fast_monsters, and seed_rng()
+  // in rng.hpp: seeding after floor 1 already exists would defeat the whole point.
   for (int i = 1; i < argc; ++i) {
-    if (std::string(argv[i]) == "--fast-monsters") g_debug_fast_monsters = true;
+    const std::string arg = argv[i];
+    if (arg == "--fast-monsters") g_debug_fast_monsters = true;
+    const std::string seed_prefix = "--seed=";
+    if (arg.rfind(seed_prefix, 0) == 0) {
+      seed_rng(static_cast<unsigned int>(std::stoul(arg.substr(seed_prefix.size()))));
+    }
   }
 
   // Sectioned HUD layout: a context-prompt row, then a map panel (left) and a
@@ -2759,6 +2765,11 @@ int main(int argc, char* argv[]) {
   // just skipping the walk), for testing a specific item without grinding to find one.
   // Comma-separated, e.g. --give="Dagger,Potion of Teleportation"; see
   // give_starting_item() above.
+  //
+  // `--seed=N` pins the shared RNG (see seed_rng() in rng.hpp) so a run is reproducible:
+  // the same seed builds the same floors with the same monsters, gear and rolls. Handled
+  // in the pre-scan at the top of main(), not here, since floor 1 is generated long
+  // before this loop runs. Pairs with --dump-loot to make floor contents diffable.
   bool reveal_mode = false;
   bool dump_loot = false;
   for (int i = 1; i < argc; ++i) {
@@ -2773,6 +2784,9 @@ int main(int argc, char* argv[]) {
     }
     if (arg == "--fast-monsters") {
       continue;  // already handled by the pre-scan at the top of main()
+    }
+    if (arg.rfind("--seed=", 0) == 0) {
+      continue;  // likewise — seeding has to happen before floor 1 exists
     }
     const std::string floor_prefix = "--floor=";
     if (arg.rfind(floor_prefix, 0) == 0) {

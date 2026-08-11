@@ -12,6 +12,7 @@
 
 #include "actors.hpp"
 #include "content.hpp"
+#include "game.hpp"
 #include "entity.hpp"
 #include "level.hpp"
 #include "map.hpp"
@@ -110,8 +111,6 @@ int main(int argc, char* argv[]) {
   // actual on-screen viewport, a scrolling window that follows the player (or the
   // aim cursor while targeting/commanding — see camera_x/camera_y) so the whole window
   // fits on a normal screen instead of rendering the entire floor at 1:1.
-  constexpr int MAP_WIDTH = 100;
-  constexpr int MAP_HEIGHT = 27;
   constexpr int MAP_VIEW_W = 50;
   constexpr int MAP_VIEW_H = 24;
   constexpr int MESSAGE_ROWS = 5;  // message-log panel's visible rows, oldest on top
@@ -138,7 +137,6 @@ int main(int argc, char* argv[]) {
   constexpr int SCREEN_WIDTH = LOG_PANEL_W;
   constexpr int SCREEN_HEIGHT = LOG_PANEL_Y + LOG_PANEL_H;
 
-  constexpr int FOV_RADIUS = 8;  // how far the player can see; unrelated to any spell's range
   constexpr int TILE_SIZE = 18;  // pixels per cell; square, so tiles aren't stretched
 
   auto console = tcod::Console{SCREEN_WIDTH, SCREEN_HEIGHT};  // Main console.
@@ -163,500 +161,20 @@ int main(int argc, char* argv[]) {
 
   auto context = tcod::Context(params);
 
-  // Just an Actor, with the same fields a Rat gets — is_player only affects how
-  // messages are phrased and where death/XP are routed (see Actor::is_player).
-  Actor player;
-  player.glyph = '@';
-  player.color = tcod::ColorRGB{255, 255, 0};
-  player.name = "Player";
-  player.is_player = true;
-  player.id = allocate_actor_id();
-
-  std::vector<std::string> message_log;  // full history; the HUD shows the last MESSAGE_ROWS entries
-  int log_scroll = 0;  // lines scrolled up from the bottom, while Mode::MessageLog
-  std::string death_cause;  // name of whatever last killed the player, for the death screen
-  int pending_attribute_points = 0;  // unspent level-up points forcing a Mode::LevelUp prompt
-
-  // Records a new, distinct message as its own log entry. Everything that happens
-  // becomes its own line, even multiple things on the same turn (e.g. an attack
-  // landing and the target retaliating) — nothing ever gets concatenated into one.
-  // Exception: if this is the exact same text as the last entry (e.g. waiting several
-  // turns in a row), it's coalesced into that entry with a "xN" counter instead of
-  // spamming a new identical line every time.
-  auto add_message = [&](const std::string& text) {
-    if (text.empty()) return;
-    if (!message_log.empty()) {
-      std::string& last = message_log.back();
-      std::string last_base = last;
-      int count = 1;
-      size_t suffix_pos = last.rfind(" x");
-      if (suffix_pos != std::string::npos) {
-        std::string suffix = last.substr(suffix_pos + 2);
-        bool all_digits = !suffix.empty();
-        for (char c : suffix) {
-          if (c < '0' || c > '9') {
-            all_digits = false;
-            break;
-          }
-        }
-        if (all_digits) {
-          last_base = last.substr(0, suffix_pos);
-          count = std::stoi(suffix);
-        }
-      }
-      if (last_base == text) {
-        last = text + " x" + std::to_string(count + 1);
-        return;
-      }
-    }
-    message_log.push_back(text);
-  };
-
-  enum class Mode {
-    Playing,
-    WeaponMenu,
-    ArmorMenu,
-    PotionMenu,
-    Drop,
-    Dead,
-    LevelUp,
-    SchoolChoice,
-    SpellMenu,
-    Targeting,
-    MessageLog,
-    Help,
-    MinionRoster,
-    MinionFocus,
-    Look,
-    RangedAttack
-  };
-  int casting_spell_index = -1;  // which kSpellTable entry is being aimed, while Mode::Targeting
-  int target_x = 0;  // cursor position, while Mode::Targeting, MinionFocus, Look, or RangedAttack
-  int target_y = 0;
-  // The id of the last hostile Targeting/RangedAttack's cursor was aimed at when the
-  // player fired (see auto_target_hostile()) — shared between the two modes the same
-  // way target_x/target_y already are. -1 until the first shot connects with something.
-  int last_target_id = -1;
-  // Index into kSpellTable of the currently-running toggle spell (e.g. Sandstorm), or
-  // -1 if none is active. Only one toggle spell can run at a time — simple on purpose,
-  // since there's only one so far; a second would need its own slot or a small vector.
-  int active_toggle_spell = -1;
-  // How many of the player's extra actions (total_actions_for(player) - 1, normally 0)
-  // have already been spent inside the current world turn. Session state rather than an
-  // Actor field, exactly like active_toggle_spell above: it's a property of where we are
-  // in the turn loop, not of the character. See end_turn()'s free-action guard, which is
-  // the only thing that reads or writes it.
-  int free_actions_used = 0;
-  // Which minion currently has command focus while cycling with o/p (see Mode::Playing's
-  // key handling) — persists across focus sessions so repeated o/p presses keep moving
-  // through the roster in order, not reset to the first minion every time. -1 = no
-  // minion individually focused (either never cycled, or Shift+P reset it).
-  int focused_minion_id = -1;
-  // True only during a Mode::MinionFocus session opened via the roster's "All" option
-  // (or the analogous pack-wide path) — the resulting order applies to every living
-  // minion instead of just the one named by focused_minion_id. Doesn't touch
-  // focused_minion_id itself, so cycling position is preserved across an "All" session.
-  bool commanding_all_minions = false;
-  Mode mode = Mode::Playing;
-
-  std::vector<Level> levels;
-  int current_level = 0;
-
-  // The one place the player's level actually advances: bumps `level` and queues one
-  // more forced attribute-point prompt (Mode::LevelUp), same as every other level-up.
-  // Deliberately doesn't touch XP itself — grant_xp (below) spends XP as it loops
-  // through however many thresholds one reward crosses; the --level= debug startup
-  // flag calls this directly to spawn pre-leveled without needing to fake XP. Either
-  // caller can call this more than once in a row (a big XP reward killing several
-  // monsters at once, or a debug spawn several levels up) — pending_attribute_points
-  // just keeps accumulating and the LevelUp prompt loops until it's spent, so double
-  // (or more) level-ups are handled by this one core path, not a special case anywhere.
-  auto level_up_once = [&]() {
-    player.level += 1;
-    pending_attribute_points += 1;
-    // The level-up itself grants HP (see max_hp_for_level_and_strength) regardless of
-    // which attribute the point later gets spent on — previously a run that never
-    // chose Strength never gained any max HP at all past character creation. Same
-    // "current-jump" convention every other permanent max_hp increase already uses
-    // (e.g. the LevelUp Shift+S handler below): current HP rises by the same delta,
-    // not just the ceiling.
-    // Any active temp Strength buff contributed its HP as a delta (see apply_potion),
-    // so it has to be re-added on top of the recomputed base or leveling up mid-buff
-    // would silently cancel the potion.
-    int new_max_hp = max_hp_for_level_and_strength(player.level, player.strength) +
-                     player.temp_str_bonus * kHpPerStrength;
-    player.hp += new_max_hp - player.max_hp;
-    player.max_hp = new_max_hp;
-  };
-
-  // Grants XP and processes any level-ups it triggers (normally one, but a large XP
-  // reward could trigger several), queuing a forced attribute-point prompt for each.
-  auto grant_xp = [&](int amount) {
-    player.xp += amount;
-    while (player.xp >= xp_needed_for_level(player.level)) {
-      player.xp -= xp_needed_for_level(player.level);
-      level_up_once();
-    }
-    // Only surface the prompt if the player is still standing. A kill can land *after*
-    // the player has already died this same turn — you die to your own Fireball in
-    // advance_projectiles(), and the Sandstorm tick that runs next finishes off a
-    // monster — and without this check the resulting level-up would overwrite
-    // Mode::Dead, taking the death screen away and letting play continue at <=0 HP.
-    // XP itself still accrues; only the mode transition is suppressed.
-    if (pending_attribute_points > 0 && player.is_alive()) mode = Mode::LevelUp;
-  };
-
-  // Drinking a potion, for anybody. The player's q menu and a monster deciding it's
-  // hurt enough to quaff its Heal Potion both land here, so an item's effect is defined
-  // exactly once and can't drift between "what it does for you" and "what it does for
-  // them".
-  //
-  // A buff's knock-on ceiling (Strength's max HP, Dexterity's evasion, Intelligence's
-  // max mana) is applied as a *delta* rather than by recomputing from the attribute.
-  // That's what lets one function serve both sides: the player's ceilings are derived
-  // from their attributes and a monster's are authored in its table row, but "+5 STR is
-  // worth +35 max HP" is true either way. Ceiling only, deliberately — unlike a
-  // level-up, current HP/mana don't jump with it.
-  auto apply_potion = [&](Actor& actor, const Potion& potion) {
-    Level& level = levels[static_cast<size_t>(current_level)];
-    // The player narrates each effect in first person below; for anyone else, one line
-    // saying what they drank is enough — and only if you can actually see them do it.
-    if (!actor.is_player && level.map.is_in_fov(actor.x, actor.y)) {
-      add_message(actor_subject(actor) + " drinks a " + potion.name + ".");
-    }
-
-    if (potion.heal_percent > 0) {
-      int heal_amount = actor.max_hp * potion.heal_percent / 100;
-      int before = actor.hp;
-      actor.hp = std::min(actor.hp + heal_amount, actor.max_hp);
-      if (actor.is_player) {
-        add_message("You drink the " + potion.name + " and recover " + std::to_string(actor.hp - before) + " HP.");
-      }
-      return;
-    }
-    if (potion.buff_stat == StatKind::Strength) {
-      // Re-drinking while already buffed just refreshes the timer, rather than stacking
-      // the bonus indefinitely.
-      if (actor.temp_str_turns <= 0) {
-        actor.temp_str_bonus = potion.buff_amount;
-        actor.max_hp += potion.buff_amount * kHpPerStrength;
-      }
-      actor.temp_str_turns = potion.buff_turns;
-      if (actor.is_player) {
-        add_message("You feel mighty! STR +" + std::to_string(potion.buff_amount) + " for " +
-                    std::to_string(potion.buff_turns) + " turns.");
-      }
-      return;
-    }
-    if (potion.buff_stat == StatKind::Dexterity) {
-      if (actor.temp_dex_turns <= 0) {
-        actor.temp_dex_bonus = potion.buff_amount;
-        actor.evasion += potion.buff_amount * kDodgePerDexPoint;
-      }
-      actor.temp_dex_turns = potion.buff_turns;
-      if (actor.is_player) {
-        add_message("You feel nimble! DEX +" + std::to_string(potion.buff_amount) + " for " +
-                    std::to_string(potion.buff_turns) + " turns.");
-      }
-      return;
-    }
-    if (potion.buff_stat == StatKind::Intelligence) {
-      if (actor.temp_int_turns <= 0) {
-        actor.temp_int_bonus = potion.buff_amount;
-        actor.max_mana += max_mana_for_intelligence(actor.intelligence + potion.buff_amount) -
-                          max_mana_for_intelligence(actor.intelligence);
-      }
-      actor.temp_int_turns = potion.buff_turns;
-      if (actor.is_player) {
-        add_message("You feel sharp! INT +" + std::to_string(potion.buff_amount) + " for " +
-                    std::to_string(potion.buff_turns) + " turns.");
-      }
-      return;
-    }
-    if (potion.teleports) {
-      std::vector<std::pair<int, int>> occupied;
-      for (const auto& m : level.monsters) occupied.push_back({m.x, m.y});
-      occupied.push_back({player.x, player.y});
-      auto [tx, ty] = random_free_tile(level.map, occupied);
-      actor.x = tx;
-      actor.y = ty;
-      if (actor.is_player) {
-        // Not an incremental step, so (unlike normal movement) FOV needs an explicit
-        // recompute — same as descend()/ascend() after a floor change.
-        level.map.update_fov(player.x, player.y, FOV_RADIUS);
-        add_message("You vanish and reappear elsewhere!");
-      }
-    }
-  };
-
-  // Whether this Actor decides to spend its turn drinking something. Deliberately
-  // simple, matching the "keep the same AI" brief: gulp a heal when badly hurt, pop a
-  // buff when a fight is actually on. The player never routes through this — they pick
-  // potions themselves from the q menu — but it calls the same apply_potion() they do.
-  // Returns true if a potion was drunk, in which case the caller skips the rest of that
-  // Actor's turn (drinking costs a turn for a monster exactly as it does for you).
-  auto try_actor_use_potion = [&](Actor& actor, bool enemy_near) -> bool {
-    if (actor.potions.empty()) return false;
-    bool badly_hurt = actor.hp * 100 < actor.max_hp * kAiDrinkHealBelowPercent;
-    for (size_t i = 0; i < actor.potions.size(); ++i) {
-      const Potion& potion = actor.potions[i];
-      bool want = false;
-      if (potion.heal_percent > 0) {
-        want = badly_hurt;
-      } else if (potion.buff_stat == StatKind::Strength) {
-        want = enemy_near && actor.temp_str_turns <= 0;
-      } else if (potion.buff_stat == StatKind::Dexterity) {
-        want = enemy_near && actor.temp_dex_turns <= 0;
-      } else if (potion.buff_stat == StatKind::Intelligence) {
-        want = false;  // nothing but the player casts, so INT does nothing for a monster
-      } else if (potion.teleports) {
-        want = badly_hurt;  // a last-ditch escape, same as a cornered player would use it
-      }
-      if (!want) continue;
-      Potion chosen = actor.potions[i];  // copy before erase invalidates the reference
-      actor.potions.erase(actor.potions.begin() + static_cast<long>(i));
-      apply_potion(actor, chosen);
-      return true;
-    }
-    return false;
-  };
-
-  // Everything that happens when an Actor's HP reaches 0, wherever the killing blow
-  // came from — a melee swing, a spell, an aura tick. Deliberately does NOT erase the
-  // victim: a single deferred sweep at the end of end_turn() does that, so no loop can
-  // have the vector shift out from under it mid-turn (see that sweep's comment).
-  //
-  // The two things here that only make sense for one side are exactly the two flagged
-  // on Actor::is_player: a dead player becomes a death screen instead of a corpse, and
-  // XP only flows to the player (including from a minion's kill — your minion's kill is
-  // still your kill).
-  auto on_actor_killed = [&](Actor& victim, bool killed_by_player_side, const std::string& cause) {
-    if (victim.is_player) {
-      death_cause = cause;
-      mode = Mode::Dead;
-      return;
-    }
-    drop_actor_gear(levels[static_cast<size_t>(current_level)], victim);
-    if (killed_by_player_side) grant_xp(victim.xp_reward);
-  };
-
-  // The one and only melee/ranged attack resolution, for every possible pairing: you
-  // hitting a Goblin, a Goblin hitting you, a Goblin hitting your minion, your minion
-  // hitting the Goblin. Dodge, damage, armor and death are computed identically in all
-  // four cases; only the wording of the log line differs, and that comes out of the
-  // actor_subject()/actor_object() helpers rather than from a branch here.
-  auto resolve_attack = [&](Actor& attacker, Actor& defender, const Weapon& weapon) {
-    if (random_int(1, 100) <= dodge_chance(defender, attacker, weapon)) {
-      add_message(actor_subject(defender) + actor_verb(defender, " dodge") + " " + actor_possessive(attacker) +
-                  " attack!");
-      return;
-    }
-
-    int raw_damage = roll_damage(weapon) + damage_bonus_for(attacker, weapon);
-    // Battle Fury: flat melee-only damage, not accuracy. resolve_attack() is also how
-    // a ranged monster (e.g. a Goblin Slinger's Rock) resolves its attack — melee-only
-    // is what keeps this off of that case too, not "player only."
-    if (weapon.attack_range <= 1) raw_damage += attacker.temp_melee_damage_bonus;
-    int damage = std::max(raw_damage - defender.armor.defense - defender.temp_armor_bonus, 0);
-    defender.hp -= damage;
-
-    std::string wielder = attacker.is_player ? "your " : "its ";
-    if (defender.is_alive()) {
-      add_message(actor_subject(attacker) + actor_verb(attacker, " hit") + " " + actor_object(defender) + " with " +
-                  wielder + weapon.name + " for " + std::to_string(damage) + ".");
-      return;
-    }
-    add_message(actor_subject(attacker) + actor_verb(attacker, " slay") + " " + actor_object(defender) + " with " +
-                wielder + weapon.name + "!");
-    on_actor_killed(defender, attacker.is_player || attacker.allegiance == Allegiance::Player, attacker.name);
-  };
-
-  // Advances every in-flight projectile on the current floor by its speed (in tiles),
-  // checking each tile it passes through this turn for a wall or monster to hit.
-  // Called once per player turn, from end_turn().
-  //
-  // instant_only restricts it to hit-scan shots (speed >= kInstantSpellSpeed: Magic
-  // Dart, Energy Lance, Lightning Bolt, the Bow — everything that always crosses the
-  // whole map in the turn it's fired). That's the mode a hasted player's *free* action
-  // runs in: an instant shot has no travel to observe, so making it wait for the world
-  // to move would just feel broken, while a genuinely slow projectile (Fireball's orb)
-  // is supposed to be observably in flight and so must only advance on real world turns.
-  auto advance_projectiles = [&](bool instant_only = false) {
-    Level& level = levels[static_cast<size_t>(current_level)];
-
-    // Deals independently-rolled damage to every living monster within aoe_radius tiles
-    // (Chebyshev distance, so a radius of 1 is a 3x3 box) of (cx,cy) — same per-target
-    // math as the single-target hit below, just applied to more than one target. Used
-    // for spells with aoe_radius > 0 (e.g. Fireball); see find_impact() for how (cx,cy)
-    // is chosen to match what the Targeting preview showed the player.
-    //
-    // The caster's own side isn't exempt from its own blast: if the player is within
-    // radius of a blast they own (a point-blank cast, or a wall/monster close enough that
-    // the impact lands next to them), they take the same roll. This is the actual
-    // deterrent against casting an AoE on something adjacent. Their armor soaks it like
-    // anyone else's would, but they get no dodge roll — you can't evade your own
-    // point-blank explosion. Someone *else's* blast is an ordinary attack and does get a
-    // dodge roll, which is the one place the two cases differ.
-    auto explode = [&](Projectile& proj, int cx, int cy) {
-      bool from_player_side = proj.owner_allegiance == Allegiance::Player;
-      add_message(projectile_subject(proj) + " explodes!");
-      for (auto& target : level.monsters) {
-        // A blast never catches its own side: the player's own minions stand in their
-        // Fireball untouched, and a hostile caster's blast likewise spares other
-        // hostiles. Same rule from either direction, no longer hard-coded to one.
-        if (target.allegiance == proj.owner_allegiance || !target.is_alive()) continue;
-        if (std::abs(target.x - cx) > proj.aoe_radius || std::abs(target.y - cy) > proj.aoe_radius) continue;
-
-        int dodge = dodge_chance_vs_accuracy(
-            target, proj.accuracy_bonus + roll_dice(proj.hit_dice_count, proj.hit_dice_sides));
-        if (random_int(1, 100) <= dodge) {
-          add_message(actor_subject(target) + actor_verb(target, " dodge") + " the blast!");
-          continue;
-        }
-        int damage = std::max(
-            roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus - target.armor.defense - target.temp_armor_bonus,
-            0);
-        target.hp -= damage;
-        if (!target.is_alive()) {
-          add_message("The blast kills " + actor_object(target) + "!");
-          on_actor_killed(target, from_player_side, proj.name);
-          continue;
-        }
-        add_message("The blast hits " + actor_object(target) + " for " + std::to_string(damage) + ".");
-      }
-
-      // The player is never in level.monsters, so they need their own check either way.
-      if (player.is_alive() && std::abs(player.x - cx) <= proj.aoe_radius && std::abs(player.y - cy) <= proj.aoe_radius) {
-        bool hit = true;
-        if (!from_player_side) {
-          // Someone else's blast: an ordinary attack, so it can be dodged.
-          int dodge = dodge_chance_vs_accuracy(
-              player, proj.accuracy_bonus + roll_dice(proj.hit_dice_count, proj.hit_dice_sides));
-          if (random_int(1, 100) <= dodge) {
-            add_message("You dodge the blast!");
-            hit = false;
-          }
-        }
-        if (hit) {
-          int raw_damage = roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus;
-          int damage = std::max(raw_damage - player.armor.defense - player.temp_armor_bonus, 0);
-          player.hp -= damage;
-          if (from_player_side) {
-            add_message("You're caught in your own " + proj.name + " for " + std::to_string(damage) + "!");
-          } else {
-            add_message("The blast hits you for " + std::to_string(damage) + "!");
-          }
-          if (!player.is_alive()) {
-            on_actor_killed(player, /*killed_by_player_side=*/false,
-                            from_player_side ? proj.name + " you cast" : projectile_possessive(proj) + " " + proj.name);
-          }
-        }
-      }
-    };
-
-    // One projectile hit against one target, used by both the walk below's monster branch
-    // and its player branch — dodge roll, armor-reduced damage, death, and the three log
-    // lines, all phrased from the projectile's owner rather than assuming it's yours.
-    auto resolve_projectile_hit = [&](const Projectile& proj, Actor& target) {
-      int dodge = dodge_chance_vs_accuracy(
-          target, proj.accuracy_bonus + roll_dice(proj.hit_dice_count, proj.hit_dice_sides));
-      if (random_int(1, 100) <= dodge) {
-        add_message(actor_subject(target) + actor_verb(target, " dodge") + " " + projectile_possessive(proj) + " " +
-                    proj.name + "!");
-        return;
-      }
-      int damage = std::max(
-          roll_dice(proj.dice_count, proj.dice_sides) + proj.bonus - target.armor.defense - target.temp_armor_bonus, 0);
-      target.hp -= damage;
-      if (!target.is_alive()) {
-        add_message(projectile_subject(proj) + " kills " + actor_object(target) + "!");
-        on_actor_killed(target, proj.owner_allegiance == Allegiance::Player, proj.name);
-        return;
-      }
-      add_message(projectile_subject(proj) + " hits " + actor_object(target) + " for " + std::to_string(damage) + ".");
-    };
-
-    for (size_t i = 0; i < level.projectiles.size();) {
-      Projectile& proj = level.projectiles[i];
-      if (instant_only && proj.speed < kInstantSpellSpeed) {
-        ++i;  // leave it exactly where it is; it moves on the next real world turn
-        continue;
-      }
-      bool consumed = false;
-
-      for (int step = 0; step < proj.speed && !consumed; ++step) {
-        if (proj.path_index >= proj.path.size()) {
-          // Reached the end of its range with nothing there. A single-target spell just
-          // dissipates, as before; an AoE spell still goes off at its destination, since
-          // that's the "reaches its destination" case (may still catch nearby monsters).
-          if (proj.aoe_radius > 0) explode(proj, proj.prev_x, proj.prev_y);
-          consumed = true;
-          break;
-        }
-        auto [x, y] = proj.path[proj.path_index];
-        ++proj.path_index;
-
-        if (level.map.blocks_projectile(x, y)) {
-          if (proj.aoe_radius > 0) {
-            explode(proj, proj.prev_x, proj.prev_y);  // last open tile before the wall
-          } else {
-            add_message(projectile_subject(proj) + " fizzles against a wall.");
-          }
-          consumed = true;
-          break;
-        }
-
-        // The player's own tile. Checked separately from the monster lookup below purely
-        // because the player isn't in level.monsters, and only for an enemy shot — your
-        // own spells pass straight over you, with the sole exception of an AoE's splash,
-        // which explode() handles on its own terms.
-        if (proj.owner_allegiance == Allegiance::Hostile && player.is_alive() && x == player.x && y == player.y) {
-          if (proj.aoe_radius > 0) {
-            explode(proj, x, y);
-            consumed = true;
-          } else {
-            resolve_projectile_hit(proj, player);
-            if (!proj.pierces) consumed = true;
-          }
-          if (consumed) break;
-        }
-
-        int target_index = projectile_target_at(level.monsters, x, y, proj.owner_allegiance);
-        if (target_index >= 0) {
-          if (proj.aoe_radius > 0) {
-            explode(proj, x, y);  // the target's own tile is a valid, walkable center
-            consumed = true;
-          } else {
-            resolve_projectile_hit(proj, level.monsters[static_cast<size_t>(target_index)]);
-            // A piercing spell (Lightning Bolt) keeps traveling through a hit instead of
-            // stopping — everything along the line takes its own independently-rolled
-            // dodge/damage, the same idiom explode() already uses for multiple targets,
-            // just walked one tile at a time instead of scanned by radius.
-            if (!proj.pierces) consumed = true;
-          }
-          if (consumed) break;
-        }
-
-        // Empty, walkable tile — or a hostile tile a piercing spell just passed
-        // through without stopping: the spell keeps going. Remember it as the last
-        // open tile in case the very next one stops it (the aoe_radius wall-hit case
-        // above).
-        proj.prev_x = x;
-        proj.prev_y = y;
-      }
-
-      if (consumed) {
-        level.projectiles.erase(level.projectiles.begin() + static_cast<long>(i));
-      } else {
-        ++i;
-      }
-    }
-  };
+  // The entire mutable state of the run. Everything below operates on this rather than
+  // on a pile of locals, which is what lets the turn loop, the renderer and the input
+  // handlers live in their own translation units (see game.hpp).
+  GameState gs;
+  gs.player.glyph = '@';
+  gs.player.color = tcod::ColorRGB{255, 255, 0};
+  gs.player.name = "Player";
+  gs.player.is_player = true;
+  gs.player.id = allocate_actor_id();
 
   // Runs after the player's turn: every living monster still adjacent to the player
   // gets to attack. (Movement/chasing AI will plug into this same turn boundary later.)
   auto end_turn = [&]() {
-    Level& level = levels[static_cast<size_t>(current_level)];
+    Level& level = gs.level();
 
     // Extra actions (Haste, or a boss-style Actor::extra_actions): this is where the
     // player spends theirs. end_turn() is the single hook every turn-consuming player
@@ -671,12 +189,12 @@ int main(int argc, char* argv[]) {
     // Only hit-scan projectiles resolve on a free action — see advance_projectiles()'s
     // instant_only parameter for why. Nothing else runs: no upkeep (so buff timers count
     // *world* turns, meaning Haste's 8 turns is 16 actions), no aura tick, no AI.
-    if (free_actions_used < total_actions_for(player) - 1 && mode != Mode::Dead) {
-      ++free_actions_used;
-      advance_projectiles(/*instant_only=*/true);
+    if (gs.free_actions_used < total_actions_for(gs.player) - 1 && gs.mode != Mode::Dead) {
+      ++gs.free_actions_used;
+      advance_projectiles(gs, /*instant_only=*/true);
       return;
     }
-    free_actions_used = 0;
+    gs.free_actions_used = 0;
 
     // Per-turn upkeep, run identically for every living Actor on the floor: passive HP
     // and mana regen, then any temporary stat buff counting down. A monster that drank a
@@ -723,43 +241,43 @@ int main(int argc, char* argv[]) {
         actor.max_hp -= actor.temp_str_bonus * kHpPerStrength;
         actor.hp = std::min(actor.hp, actor.max_hp);  // clamp in case regen filled past the new, lower ceiling
         actor.temp_str_bonus = 0;
-        if (actor.is_player) add_message("Your surge of strength fades.");
+        if (actor.is_player) add_message(gs, "Your surge of strength fades.");
       }
       if (actor.temp_dex_turns > 0 && --actor.temp_dex_turns == 0) {
         actor.evasion -= actor.temp_dex_bonus * kDodgePerDexPoint;
         actor.temp_dex_bonus = 0;
-        if (actor.is_player) add_message("Your surge of agility fades.");
+        if (actor.is_player) add_message(gs, "Your surge of agility fades.");
       }
       if (actor.temp_int_turns > 0 && --actor.temp_int_turns == 0) {
         actor.max_mana -= max_mana_for_intelligence(actor.intelligence + actor.temp_int_bonus) -
                           max_mana_for_intelligence(actor.intelligence);
         actor.mana = std::min(actor.mana, actor.max_mana);  // clamp past the new, lower ceiling
         actor.temp_int_bonus = 0;
-        if (actor.is_player) add_message("Your surge of insight fades.");
+        if (actor.is_player) add_message(gs, "Your surge of insight fades.");
       }
       // Combat Mage buffs (Battle Fury / Iron Skin) — simpler than STR/DEX/INT above,
       // since neither feeds a derived ceiling; reverting is just zeroing the bonus.
       if (actor.temp_melee_damage_turns > 0 && --actor.temp_melee_damage_turns == 0) {
         actor.temp_melee_damage_bonus = 0;
-        if (actor.is_player) add_message("Your battle fury fades.");
+        if (actor.is_player) add_message(gs, "Your battle fury fades.");
       }
       if (actor.temp_armor_turns > 0 && --actor.temp_armor_turns == 0) {
         actor.temp_armor_bonus = 0;
-        if (actor.is_player) add_message("Your iron skin fades.");
+        if (actor.is_player) add_message(gs, "Your iron skin fades.");
       }
       // Haste. Nothing to unwind beyond zeroing the bonus: free_actions_used is reset at
       // the top of every real turn (see end_turn()'s guard), and this only ever runs on a
       // real turn, so an expiry can't strand a half-spent action budget.
       if (actor.temp_extra_actions_turns > 0 && --actor.temp_extra_actions_turns == 0) {
         actor.temp_extra_actions_bonus = 0;
-        if (actor.is_player) add_message("You slow back to normal speed.");
+        if (actor.is_player) add_message(gs, "You slow back to normal speed.");
       }
     };
 
-    tick_upkeep(player);
+    tick_upkeep(gs.player);
     for (auto& actor : level.monsters) tick_upkeep(actor);
 
-    advance_projectiles();
+    advance_projectiles(gs);
 
     // Minion duration: a timed minion (duration_turns > 0, see MinionTemplate) expires
     // on its own once it hits 0, same "tick down, then resolve" shape as the temp stat
@@ -771,7 +289,7 @@ int main(int argc, char* argv[]) {
       if (m.allegiance != Allegiance::Player || !m.is_alive() || m.duration_turns <= 0) continue;
       m.duration_turns -= 1;
       if (m.duration_turns == 0) {
-        add_message("Your " + m.name + " collapses into dust.");
+        add_message(gs, "Your " + m.name + " collapses into dust.");
         m.hp = 0;
         drop_actor_gear(level, m);  // anything it was carrying outlives it, same as a kill
       }
@@ -789,34 +307,34 @@ int main(int argc, char* argv[]) {
     // player is dead — they can die earlier in this same turn (their own Fireball, in
     // advance_projectiles() above), and a corpse's aura shouldn't keep draining mana and
     // killing things. The two AI loops below carry the same guard.
-    if (active_toggle_spell >= 0 && mode != Mode::Dead) {
-      const Spell& storm = kSpellTable[static_cast<size_t>(active_toggle_spell)];
-      if (player.mana < storm.tick_mana_cost) {
-        add_message("Your " + storm.name + " dies down - out of mana.");
-        active_toggle_spell = -1;
+    if (gs.active_toggle_spell >= 0 && gs.mode != Mode::Dead) {
+      const Spell& storm = kSpellTable[static_cast<size_t>(gs.active_toggle_spell)];
+      if (gs.player.mana < storm.tick_mana_cost) {
+        add_message(gs, "Your " + storm.name + " dies down - out of mana.");
+        gs.active_toggle_spell = -1;
       } else {
-        player.mana -= storm.tick_mana_cost;
+        gs.player.mana -= storm.tick_mana_cost;
         for (auto& target : level.monsters) {
           // Minions stand in the storm untouched — see explode()'s identical
           // exemption for Fireball's blast.
           if (target.allegiance == Allegiance::Player || !target.is_alive()) continue;
-          if (std::abs(target.x - player.x) > storm.aoe_radius || std::abs(target.y - player.y) > storm.aoe_radius) {
+          if (std::abs(target.x - gs.player.x) > storm.aoe_radius || std::abs(target.y - gs.player.y) > storm.aoe_radius) {
             continue;
           }
           int dodge = dodge_chance_vs_accuracy(
-              target, accuracy_roll(player, storm.hit_dice_count, storm.hit_dice_sides));
+              target, accuracy_roll(gs.player, storm.hit_dice_count, storm.hit_dice_sides));
           if (random_int(1, 100) <= dodge) {
-            add_message("The " + target.name + " dodges the " + storm.name + "!");
+            add_message(gs, "The " + target.name + " dodges the " + storm.name + "!");
             continue;
           }
           int damage = std::max(storm.tick_damage - target.armor.defense - target.temp_armor_bonus, 0);
           target.hp -= damage;
           if (!target.is_alive()) {
-            add_message("Your " + storm.name + " kills the " + target.name + "!");
-            on_actor_killed(target, /*killed_by_player_side=*/true, storm.name);
+            add_message(gs, "Your " + storm.name + " kills the " + target.name + "!");
+            on_actor_killed(gs, target, /*killed_by_player_side=*/true, storm.name);
             continue;
           }
-          add_message("Your " + storm.name + " hits the " + target.name + " for " + std::to_string(damage) + ".");
+          add_message(gs, "Your " + storm.name + " hits the " + target.name + " for " + std::to_string(damage) + ".");
         }
       }
     }
@@ -831,7 +349,7 @@ int main(int argc, char* argv[]) {
       int nx = m.x + step_dx;
       int ny = m.y + step_dy;
       if (!level.map.is_walkable(nx, ny)) return false;
-      if (nx == player.x && ny == player.y) return false;
+      if (nx == gs.player.x && ny == gs.player.y) return false;
       for (const auto& other : level.monsters) {
         if (&other != &m && other.is_alive() && other.x == nx && other.y == ny) return false;
       }
@@ -847,7 +365,7 @@ int main(int argc, char* argv[]) {
     };
 
     for (auto& monster : level.monsters) {
-      if (mode == Mode::Dead) break;  // player already died to an earlier monster this turn
+      if (gs.mode == Mode::Dead) break;  // player already died to an earlier monster this turn
       if (!monster.is_alive() || monster.allegiance != Allegiance::Hostile) continue;
       // Extra actions: an ordinary monster runs this body once, and a boss/elite row
       // with extra_actions > 0 runs it again for each extra. Every "this creature is
@@ -859,7 +377,7 @@ int main(int argc, char* argv[]) {
       for (int action = 0; action < total_actions_for(monster); ++action) {
         // Re-checked per action, not just per monster: the player can die to this
         // monster's first swing, and nothing should get a second one after that.
-        if (mode == Mode::Dead || !monster.is_alive()) break;
+        if (gs.mode == Mode::Dead || !monster.is_alive()) break;
 
         // Picks this monster's target for the turn: the player, or the closest living
         // minion whose tile is currently in the player's FOV (there's no separate
@@ -869,8 +387,8 @@ int main(int argc, char* argv[]) {
         // last position" the way the player does (last_seen_player_x/y below is still
         // player-specific) — a Phase 1 simplification. With zero minions on the floor
         // this always resolves to the player, so solo-player behavior is unchanged.
-        Actor* target = &player;
-        int best_dist = distance_between(monster, player);
+        Actor* target = &gs.player;
+        int best_dist = distance_between(monster, gs.player);
         for (auto& candidate : level.monsters) {
           if (candidate.allegiance != Allegiance::Player || !candidate.is_alive()) continue;
           if (!level.map.is_in_fov(candidate.x, candidate.y)) continue;
@@ -886,7 +404,7 @@ int main(int argc, char* argv[]) {
         // the current distance is free (it's a draw, not a turn); actually drinking
         // something costs the turn, exactly as it does for the player.
         equip_best_weapon_for_range(monster, best_dist);
-        if (try_actor_use_potion(monster, /*enemy_near=*/best_dist <= kAiBuffPotionRange)) continue;
+        if (try_actor_use_potion(gs, monster, /*enemy_near=*/best_dist <= kAiBuffPotionRange)) continue;
 
         // Spellcasting, for a monster whose row gave it a spell (Actor::spell_index — the
         // Goblin Shaman today). Deliberately built from the same pieces the player's own
@@ -940,7 +458,7 @@ int main(int argc, char* argv[]) {
             proj.owner_is_player = false;
             proj.owner_name = monster.name;
             level.projectiles.push_back(proj);
-            add_message(actor_subject(monster) + actor_verb(monster, " cast") + " " + spell.name + ".");
+            add_message(gs, actor_subject(monster) + actor_verb(monster, " cast") + " " + spell.name + ".");
             continue;  // casting is this monster's whole action
           }
         }
@@ -954,12 +472,12 @@ int main(int argc, char* argv[]) {
         int effective_range = monster.melee_engaged ? 1 : monster.weapon.attack_range;
         bool in_range = best_dist <= effective_range && best_dist > 0;
         if (in_range && line_clear(monster.x, monster.y, target->x, target->y, level.map)) {
-          resolve_attack(monster, *target, monster.weapon);
+          resolve_attack(gs, monster, *target, monster.weapon);
           continue;
         }
 
-        int target_x = target->x;
-        int target_y = target->y;
+        int tgt_x = target->x;
+        int tgt_y = target->y;
         bool target_is_player = target->is_player;
 
         // Out of range (or no line of sight): chase toward the chosen target if it's
@@ -975,8 +493,8 @@ int main(int argc, char* argv[]) {
         // segment instead of pacing against it.
         bool can_see_player = level.map.is_in_fov(monster.x, monster.y);
         if (can_see_player) {
-          monster.last_seen_player_x = player.x;
-          monster.last_seen_player_y = player.y;
+          monster.last_seen_player_x = gs.player.x;
+          monster.last_seen_player_y = gs.player.y;
         }
 
         int move_dx = 0;
@@ -984,8 +502,8 @@ int main(int argc, char* argv[]) {
         bool can_see_target = target_is_player ? can_see_player : true;  // minion targets are always is_in_fov, see above
         bool has_chase_target = can_see_target || monster.last_seen_player_x >= 0;
         if (has_chase_target) {
-          int chase_x = can_see_target ? target_x : monster.last_seen_player_x;
-          int chase_y = can_see_target ? target_y : monster.last_seen_player_y;
+          int chase_x = can_see_target ? tgt_x : monster.last_seen_player_x;
+          int chase_y = can_see_target ? tgt_y : monster.last_seen_player_y;
           if (chase_x == monster.x && chase_y == monster.y) {
             // Arrived at the last-known spot and nothing's here: give up the chase.
             // Falls through to a wander roll below this turn, same as if there'd never
@@ -1035,7 +553,7 @@ int main(int argc, char* argv[]) {
     // only zeroes HP and drops gear (the deferred sweep does the erasing), so
     // level.monsters can't reshuffle here. If a minion ever casts, the minion loop below
     // needs the mirror of this call.
-    advance_projectiles(/*instant_only=*/true);
+    advance_projectiles(gs, /*instant_only=*/true);
 
     // Distance to the nearest living hostile, or -1 if there are none left on the floor.
     // Used to decide whether a minion should draw a melee weapon or pop a buff potion,
@@ -1068,7 +586,7 @@ int main(int argc, char* argv[]) {
         }
       }
       if (best_hostile == nullptr) return false;
-      resolve_attack(minion, *best_hostile, minion.weapon);
+      resolve_attack(gs, minion, *best_hostile, minion.weapon);
       return true;
     };
 
@@ -1084,21 +602,21 @@ int main(int argc, char* argv[]) {
     // to Follow and just holds position for the rest of this turn, picking up the
     // chase next turn.
     for (auto& minion : level.monsters) {
-      if (mode == Mode::Dead) break;
+      if (gs.mode == Mode::Dead) break;
       if (!minion.is_alive() || minion.allegiance != Allegiance::Player) continue;
       // Same extra-actions inner loop the hostile loop above uses, for exactly the same
       // reason — a minion is an Actor, so a fast summon (MinionTemplate::extra_actions,
       // 0 on every row today) gets its extra actions through the same one function the
       // player and every monster do.
       for (int action = 0; action < total_actions_for(minion); ++action) {
-        if (mode == Mode::Dead || !minion.is_alive()) break;
+        if (gs.mode == Mode::Dead || !minion.is_alive()) break;
 
         // Same gear/consumable upkeep the hostile loop runs, through the same helpers —
         // a minion carrying a spare weapon or a potion uses it on exactly the same terms
         // a monster does.
         int hostile_dist = nearest_hostile_distance(minion);
         if (hostile_dist >= 0) equip_best_weapon_for_range(minion, hostile_dist);
-        if (try_actor_use_potion(minion, /*enemy_near=*/hostile_dist >= 0 && hostile_dist <= kAiBuffPotionRange)) {
+        if (try_actor_use_potion(gs, minion, /*enemy_near=*/hostile_dist >= 0 && hostile_dist <= kAiBuffPotionRange)) {
           continue;
         }
 
@@ -1111,7 +629,7 @@ int main(int argc, char* argv[]) {
           Actor& target = level.monsters[static_cast<size_t>(ti)];
           bool in_range = distance_between(minion, target) <= minion.weapon.attack_range;
           if (in_range && line_clear(minion.x, minion.y, target.x, target.y, level.map)) {
-            resolve_attack(minion, target, minion.weapon);
+            resolve_attack(gs, minion, target, minion.weapon);
             continue;
           }
           auto path = level.map.find_path(minion.x, minion.y, target.x, target.y);
@@ -1171,7 +689,7 @@ int main(int argc, char* argv[]) {
             Actor& target = level.monsters[static_cast<size_t>(ti)];
             bool in_range = distance_between(minion, target) <= minion.weapon.attack_range;
             if (in_range && line_clear(minion.x, minion.y, target.x, target.y, level.map)) {
-              resolve_attack(minion, target, minion.weapon);
+              resolve_attack(gs, minion, target, minion.weapon);
               continue;
             }
             auto path = level.map.find_path(minion.x, minion.y, target.x, target.y);
@@ -1194,7 +712,7 @@ int main(int argc, char* argv[]) {
         // auto-defend attempt already happened above in that case). Close the distance
         // to the player; try_monster_step already refuses to step onto the player's own
         // tile, so this naturally stops once adjacent rather than trying to stack on them.
-        auto path = level.map.find_path(minion.x, minion.y, player.x, player.y);
+        auto path = level.map.find_path(minion.x, minion.y, gs.player.x, gs.player.y);
         if (!path.empty()) {
           int move_dx = path[0].first - minion.x;
           int move_dy = path[0].second - minion.y;
@@ -1225,126 +743,7 @@ int main(int argc, char* argv[]) {
     }
   };
 
-  // (Re)generates the dungeon and populates it, for both the initial game and every
-  // restart after death.
-  auto start_new_game = [&]() {
-    levels.clear();
-    levels.push_back(generate_level(MAP_WIDTH, MAP_HEIGHT, /*has_stairs_up=*/false, /*depth=*/1));
-    current_level = 0;
-
-    Level& level = levels[static_cast<size_t>(current_level)];
-    player.x = level.entry_x;
-    player.y = level.entry_y;
-    player.strength = 2;
-    player.dexterity = 2;
-    player.intelligence = 2;
-    player.level = 1;
-    player.xp = 0;
-    player.max_hp = max_hp_for_level_and_strength(player.level, player.strength);
-    player.hp = player.max_hp;
-    // Derived from Dexterity, where a monster's is read straight off its table row —
-    // both land in the same Actor::evasion the one dodge formula reads.
-    player.evasion = evasion_for_dexterity(player.dexterity);
-    player.melee_engaged = false;
-    // The player is the one Actor that regenerates; every monster/minion table row
-    // leaves hp_regen_turns at 0. See Actor::hp_regen_turns.
-    player.hp_regen_turns = kHpRegenTurns;
-    player.hp_regen_accumulator = 0.0f;
-    player.mana_regen_turns = kManaRegenTurns;  // gated now (see Actor::mana_regen_turns)
-    player.max_mana = max_mana_for_intelligence(player.intelligence);
-    player.mana = player.max_mana;
-    player.mana_regen_accumulator = 0.0f;
-    player.weapon = kFists;
-    player.armor = kNoArmor;
-    player.temp_str_bonus = 0;
-    player.temp_str_turns = 0;
-    player.temp_dex_bonus = 0;
-    player.temp_dex_turns = 0;
-    player.temp_int_bonus = 0;
-    player.temp_int_turns = 0;
-    player.temp_melee_damage_bonus = 0;
-    player.temp_melee_damage_turns = 0;
-    player.temp_armor_bonus = 0;
-    player.temp_armor_turns = 0;
-    player.temp_extra_actions_bonus = 0;
-    player.temp_extra_actions_turns = 0;
-    free_actions_used = 0;  // session state, but a restart must not inherit a part-spent turn
-    level.map.update_fov(player.x, player.y, FOV_RADIUS);
-
-    player.weapons.clear();
-    player.armors.clear();
-    player.potions.clear();
-    pending_attribute_points = 0;
-    active_toggle_spell = -1;
-    message_log.clear();
-    add_message("Welcome to the dungeon. Press '?' for controls.");
-    mode = Mode::Playing;
-  };
-
-  // Goes down the stairs the player is currently standing on, generating the floor
-  // below the first time it's visited.
-  // Moves every one of the player's minions from `from_level` to `to_level`,
-  // positioned near the player's new spot — called by descend()/ascend() so minions
-  // follow the player between floors instead of being left behind (floors are
-  // otherwise fully independent/persistent — see the Level comment). Falls back to
-  // any free tile on the new floor if the immediate area around the player is too
-  // crowded to fit everyone adjacent.
-  auto move_minions_to_new_floor = [&](Level& from_level, Level& to_level) {
-    for (size_t i = 0; i < from_level.monsters.size();) {
-      if (from_level.monsters[i].allegiance != Allegiance::Player) {
-        ++i;
-        continue;
-      }
-      Actor minion = from_level.monsters[i];
-      from_level.monsters.erase(from_level.monsters.begin() + static_cast<long>(i));
-      int nx, ny;
-      if (free_adjacent_tile(to_level.map, to_level.monsters, player.x, player.y, nx, ny)) {
-        minion.x = nx;
-        minion.y = ny;
-      } else {
-        std::vector<std::pair<int, int>> occupied = {{player.x, player.y}};
-        for (const auto& m : to_level.monsters) occupied.push_back({m.x, m.y});
-        auto [rx, ry] = random_free_tile(to_level.map, occupied);
-        minion.x = rx;
-        minion.y = ry;
-      }
-      to_level.monsters.push_back(minion);
-      // Don't advance i — the erase above shifted the next element into slot i.
-    }
-  };
-
-  auto descend = [&]() {
-    int old_index = current_level;
-    current_level += 1;
-    if (static_cast<size_t>(current_level) >= levels.size()) {
-      levels.push_back(generate_level(MAP_WIDTH, MAP_HEIGHT, /*has_stairs_up=*/true, /*depth=*/current_level + 1));
-    }
-    // Both re-fetched fresh, after the possible push_back above — which can reallocate
-    // `levels` and would dangle a reference taken any earlier (same hazard noted where
-    // the render loop re-fetches `level` per event).
-    Level& old_level = levels[static_cast<size_t>(old_index)];
-    Level& level = levels[static_cast<size_t>(current_level)];
-    player.x = level.entry_x;
-    player.y = level.entry_y;
-    move_minions_to_new_floor(old_level, level);
-    level.map.update_fov(player.x, player.y, FOV_RADIUS);
-    add_message("You descend the stairs.");
-  };
-
-  // Goes back up to the floor above, landing on the stairs down that was taken from it.
-  auto ascend = [&]() {
-    int old_index = current_level;
-    current_level -= 1;
-    Level& old_level = levels[static_cast<size_t>(old_index)];
-    Level& level = levels[static_cast<size_t>(current_level)];
-    player.x = level.stairs_down_x;
-    player.y = level.stairs_down_y;
-    move_minions_to_new_floor(old_level, level);
-    level.map.update_fov(player.x, player.y, FOV_RADIUS);
-    add_message("You ascend the stairs.");
-  };
-
-  start_new_game();
+  start_new_game(gs);
 
   // Debug convenience: `--floor=N` jumps straight to floor N at startup, so testing
   // deep floors doesn't require a long walk down through every floor above it. Not
@@ -1376,12 +775,11 @@ int main(int argc, char* argv[]) {
   // the same seed builds the same floors with the same monsters, gear and rolls. Handled
   // in the pre-scan at the top of main(), not here, since floor 1 is generated long
   // before this loop runs. Pairs with --dump-loot to make floor contents diffable.
-  bool reveal_mode = false;
   bool dump_loot = false;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--reveal") {
-      reveal_mode = true;
+      gs.reveal_all = true;
       continue;
     }
     if (arg == "--dump-loot") {
@@ -1397,13 +795,13 @@ int main(int argc, char* argv[]) {
     const std::string floor_prefix = "--floor=";
     if (arg.rfind(floor_prefix, 0) == 0) {
       int target_floor = std::atoi(arg.c_str() + floor_prefix.size());
-      for (int f = 1; f < target_floor; ++f) descend();
+      for (int f = 1; f < target_floor; ++f) descend(gs);
       continue;
     }
     const std::string level_prefix = "--level=";
     if (arg.rfind(level_prefix, 0) == 0) {
       int target_level = std::atoi(arg.c_str() + level_prefix.size());
-      for (int lv = player.level; lv < target_level; ++lv) level_up_once();
+      for (int lv = gs.player.level; lv < target_level; ++lv) level_up_once(gs);
       continue;
     }
     const std::string give_prefix = "--give=";
@@ -1414,10 +812,10 @@ int main(int argc, char* argv[]) {
         size_t comma = names.find(',', pos);
         std::string name = names.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
         if (!name.empty()) {
-          if (give_starting_item(name, player)) {
-            add_message("Debug: added " + name + " to inventory.");
+          if (give_starting_item(name, gs.player)) {
+            add_message(gs, "Debug: added " + name + " to inventory.");
           } else {
-            add_message("Debug: no item named \"" + name + "\" found.");
+            add_message(gs, "Debug: no item named \"" + name + "\" found.");
           }
         }
         if (comma == std::string::npos) break;
@@ -1427,11 +825,11 @@ int main(int argc, char* argv[]) {
     }
   }
   // Surfaces the LevelUp prompt if --level= queued any points, same as grant_xp does.
-  if (pending_attribute_points > 0) mode = Mode::LevelUp;
+  if (gs.pending_attribute_points > 0) gs.mode = Mode::LevelUp;
 
   if (dump_loot) {
-    Level& level = levels[static_cast<size_t>(current_level)];
-    std::cout << "Floor " << (current_level + 1) << " loot:\n";
+    Level& level = gs.level();
+    std::cout << "Floor " << (gs.current_level + 1) << " loot:\n";
     for (const auto& item : level.items) {
       std::cout << "  weapon: " << item.weapon.name << " (" << describe_weapon(item.weapon) << ")\n";
     }
@@ -1444,7 +842,7 @@ int main(int argc, char* argv[]) {
     }
     // Monsters carry gear now, and everything non-intrinsic here is what they'll drop —
     // worth printing, since that's a real part of a floor's loot.
-    std::cout << "Floor " << (current_level + 1) << " monsters:\n";
+    std::cout << "Floor " << (gs.current_level + 1) << " monsters:\n";
     for (const auto& monster : level.monsters) {
       std::cout << "  " << monster.name << " (" << monster.hp << " HP, " << monster.weapon.name << " "
                 << describe_weapon(monster.weapon) << ", STR " << monster.strength << ", DEX " << monster.dexterity
@@ -1464,71 +862,69 @@ int main(int argc, char* argv[]) {
     return 0;
   }
 
-  bool running = true;
-
-  while (running) {
-    Level& level = levels[static_cast<size_t>(current_level)];
+  while (gs.running) {
+    Level& level = gs.level();
 
     // --- Render ---
     console.clear();
 
-    if (mode == Mode::WeaponMenu) {
+    if (gs.mode == Mode::WeaponMenu) {
       tcod::print(console, {0, 0}, "Weapons - press a letter to equip, Esc to close", tcod::ColorRGB{255, 255, 255},
                   std::nullopt);
-      tcod::print(console, {0, 1}, "Equipped: " + player.weapon.name + " (" + describe_weapon(player.weapon) + ")",
+      tcod::print(console, {0, 1}, "Equipped: " + gs.player.weapon.name + " (" + describe_weapon(gs.player.weapon) + ")",
                   tcod::ColorRGB{200, 200, 100}, std::nullopt);
 
       // Fists is always slot 'a', so you can always bail back to unarmed; carried
       // weapons fill 'b' onward.
       std::string fists_line = "a) Fists (" + describe_weapon(kFists) + ")";
-      if (player.weapon.is_intrinsic) fists_line += " [equipped]";
+      if (gs.player.weapon.is_intrinsic) fists_line += " [equipped]";
       tcod::print(console, {0, 3}, fists_line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
 
-      for (size_t i = 0; i < player.weapons.size(); ++i) {
-        std::string line = std::string(1, static_cast<char>('b' + i)) + ") " + player.weapons[i].name + " (" +
-                            describe_weapon(player.weapons[i]) + ")";
+      for (size_t i = 0; i < gs.player.weapons.size(); ++i) {
+        std::string line = std::string(1, static_cast<char>('b' + i)) + ") " + gs.player.weapons[i].name + " (" +
+                            describe_weapon(gs.player.weapons[i]) + ")";
         tcod::print(console, {0, 4 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
       }
-    } else if (mode == Mode::ArmorMenu) {
+    } else if (gs.mode == Mode::ArmorMenu) {
       tcod::print(console, {0, 0}, "Armor - press a letter to equip, Esc to close", tcod::ColorRGB{255, 255, 255},
                   std::nullopt);
-      tcod::print(console, {0, 1}, "Equipped: " + player.armor.name + " (" + describe_armor(player.armor) + ")",
+      tcod::print(console, {0, 1}, "Equipped: " + gs.player.armor.name + " (" + describe_armor(gs.player.armor) + ")",
                   tcod::ColorRGB{200, 200, 100}, std::nullopt);
 
       // "Nothing" is always slot 'a', so you can always bail back to unarmored; carried
       // armor fills 'b' onward.
       std::string none_line = "a) " + kNoArmor.name + " (" + describe_armor(kNoArmor) + ")";
-      if (player.armor.is_intrinsic) none_line += " [equipped]";
+      if (gs.player.armor.is_intrinsic) none_line += " [equipped]";
       tcod::print(console, {0, 3}, none_line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
 
-      for (size_t i = 0; i < player.armors.size(); ++i) {
-        std::string line = std::string(1, static_cast<char>('b' + i)) + ") " + player.armors[i].name + " (" +
-                            describe_armor(player.armors[i]) + ")";
+      for (size_t i = 0; i < gs.player.armors.size(); ++i) {
+        std::string line = std::string(1, static_cast<char>('b' + i)) + ") " + gs.player.armors[i].name + " (" +
+                            describe_armor(gs.player.armors[i]) + ")";
         tcod::print(console, {0, 4 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
       }
-    } else if (mode == Mode::PotionMenu) {
+    } else if (gs.mode == Mode::PotionMenu) {
       tcod::print(console, {0, 0}, "Potions - press a letter to drink, Esc to close", tcod::ColorRGB{255, 255, 255},
                   std::nullopt);
 
-      if (player.potions.empty()) {
+      if (gs.player.potions.empty()) {
         tcod::print(console, {0, 2}, "(no potions carried)", tcod::ColorRGB{120, 120, 120}, std::nullopt);
       }
-      for (size_t i = 0; i < player.potions.size(); ++i) {
-        std::string line = std::string(1, static_cast<char>('a' + i)) + ") " + player.potions[i].name + " (" +
-                            describe_potion(player.potions[i]) + ")";
+      for (size_t i = 0; i < gs.player.potions.size(); ++i) {
+        std::string line = std::string(1, static_cast<char>('a' + i)) + ") " + gs.player.potions[i].name + " (" +
+                            describe_potion(gs.player.potions[i]) + ")";
         tcod::print(console, {0, 2 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
       }
-    } else if (mode == Mode::SpellMenu) {
+    } else if (gs.mode == Mode::SpellMenu) {
       tcod::print(console, {0, 0}, "Spells - press a letter to cast, Esc to close", tcod::ColorRGB{255, 255, 255},
                   std::nullopt);
 
-      auto known = known_spell_indices(player.intelligence, player.chosen_school);
+      auto known = known_spell_indices(gs.player.intelligence, gs.player.chosen_school);
       if (known.empty()) {
         tcod::print(console, {0, 2}, "(no spells known yet)", tcod::ColorRGB{120, 120, 120}, std::nullopt);
       }
       for (size_t i = 0; i < known.size(); ++i) {
         const Spell& s = kSpellTable[static_cast<size_t>(known[i])];
-        bool is_active = active_toggle_spell == known[i];
+        bool is_active = gs.active_toggle_spell == known[i];
         std::string line;
         bool at_minion_cap = false;
         if (s.is_toggle) {
@@ -1563,15 +959,15 @@ int main(int argc, char* argv[]) {
         // Dimmed red instead of the usual grey once you can't actually afford it — a
         // currently-active toggle is always "affordable" to select again (turning it
         // off is always free) so it doesn't get the red treatment.
-        bool affordable = is_active || (player.mana >= s.mana_cost && !at_minion_cap);
+        bool affordable = is_active || (gs.player.mana >= s.mana_cost && !at_minion_cap);
         tcod::print(console, {0, 2 + static_cast<int>(i)}, line,
                     affordable ? tcod::ColorRGB{200, 200, 200} : tcod::ColorRGB{150, 80, 80}, std::nullopt);
       }
-    } else if (mode == Mode::Drop) {
+    } else if (gs.mode == Mode::Drop) {
       tcod::print(console, {0, 0}, "Drop - press a letter to drop, Esc to cancel", tcod::ColorRGB{255, 255, 255},
                   std::nullopt);
 
-      auto slots = drop_slots(player);
+      auto slots = drop_slots(gs.player);
       if (slots.empty()) {
         tcod::print(console, {0, 2}, "(nothing to drop)", tcod::ColorRGB{120, 120, 120}, std::nullopt);
       }
@@ -1579,43 +975,43 @@ int main(int argc, char* argv[]) {
         char letter = static_cast<char>('a' + i);
         std::string line;
         if (slots[i].kind == ItemKind::Weapon) {
-          const Weapon& w = (slots[i].index == -1) ? player.weapon : player.weapons[static_cast<size_t>(slots[i].index)];
+          const Weapon& w = (slots[i].index == -1) ? gs.player.weapon : gs.player.weapons[static_cast<size_t>(slots[i].index)];
           line = std::string(1, letter) + ") " + w.name + " (" + describe_weapon(w) + ")";
           if (slots[i].index == -1) line += " [equipped]";
         } else if (slots[i].kind == ItemKind::Armor) {
-          const Armor& a = (slots[i].index == -1) ? player.armor : player.armors[static_cast<size_t>(slots[i].index)];
+          const Armor& a = (slots[i].index == -1) ? gs.player.armor : gs.player.armors[static_cast<size_t>(slots[i].index)];
           line = std::string(1, letter) + ") " + a.name + " (" + describe_armor(a) + ")";
           if (slots[i].index == -1) line += " [equipped]";
         } else {
-          const Potion& p = player.potions[static_cast<size_t>(slots[i].index)];
+          const Potion& p = gs.player.potions[static_cast<size_t>(slots[i].index)];
           line = std::string(1, letter) + ") " + p.name + " (" + describe_potion(p) + ")";
         }
         tcod::print(console, {0, 2 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
       }
-    } else if (mode == Mode::Dead) {
-      tcod::print(console, {0, 0}, "You died, slain by the " + death_cause + ".", tcod::ColorRGB{255, 80, 80},
+    } else if (gs.mode == Mode::Dead) {
+      tcod::print(console, {0, 0}, "You died, slain by the " + gs.death_cause + ".", tcod::ColorRGB{255, 80, 80},
                   std::nullopt);
       tcod::print(console, {0, 2}, "Press any key to start a new game, or Esc to quit.", tcod::ColorRGB{200, 200, 200},
                   std::nullopt);
-    } else if (mode == Mode::MessageLog) {
+    } else if (gs.mode == Mode::MessageLog) {
       tcod::print(console, {0, 0}, "Message Log - j/k or arrows to scroll, ']' or Esc to close",
                   tcod::ColorRGB{255, 255, 255}, std::nullopt);
 
       int visible_rows = SCREEN_HEIGHT - 1;
-      int total = static_cast<int>(message_log.size());
+      int total = static_cast<int>(gs.message_log.size());
       int max_scroll = std::max(0, total - visible_rows);
-      log_scroll = std::min(log_scroll, max_scroll);  // clamp in case the log shrank (e.g. after a restart)
+      gs.log_scroll = std::min(gs.log_scroll, max_scroll);  // clamp in case the log shrank (e.g. after a restart)
 
       // Oldest at top, newest at bottom, like a terminal scrollback — log_scroll is how
       // many lines scrolled up from the bottom (0 = showing the most recent messages).
-      int end_index = total - log_scroll;
+      int end_index = total - gs.log_scroll;
       int start_index = std::max(0, end_index - visible_rows);
       for (int i = start_index; i < end_index; ++i) {
         int row = 1 + (i - start_index);
-        tcod::print(console, {0, row}, message_log[static_cast<size_t>(i)], tcod::ColorRGB{200, 200, 200},
+        tcod::print(console, {0, row}, gs.message_log[static_cast<size_t>(i)], tcod::ColorRGB{200, 200, 200},
                     std::nullopt);
       }
-    } else if (mode == Mode::Help) {
+    } else if (gs.mode == Mode::Help) {
       tcod::print(console, {0, 0}, "Controls - '?' or Esc to close", tcod::ColorRGB{255, 255, 255}, std::nullopt);
       static const std::vector<std::string> kHelpLines = {
           "",
@@ -1650,7 +1046,7 @@ int main(int argc, char* argv[]) {
         tcod::print(console, {0, 1 + static_cast<int>(i)}, kHelpLines[i], tcod::ColorRGB{200, 200, 200},
                     std::nullopt);
       }
-    } else if (mode == Mode::MinionRoster) {
+    } else if (gs.mode == Mode::MinionRoster) {
       tcod::print(console, {0, 0}, "Command a minion - press a letter, Esc to close", tcod::ColorRGB{255, 255, 255},
                   std::nullopt);
       // "All" is a fixed hotkey (Shift+A) pinned above the roster rather than a letter
@@ -1671,7 +1067,7 @@ int main(int argc, char* argv[]) {
         ++row;
         ++letter;
       }
-    } else if (mode == Mode::SchoolChoice) {
+    } else if (gs.mode == Mode::SchoolChoice) {
       // Full-screen forced prompt, same shape as MinionRoster above rather than
       // LevelUp's one-line CONTEXT_ROW style — this needs room to explain all three
       // paths, since it's a permanent, run-defining choice rather than a quick stat bump.
@@ -1696,32 +1092,32 @@ int main(int argc, char* argv[]) {
       // minion command) when one of those modes is active. Deliberately separate from
       // the message-log panel below — a long-running prompt shouldn't crowd out or get
       // crowded out by ordinary log messages.
-      if (mode == Mode::LevelUp) {
-        std::string prompt = "*** LEVEL UP (now level " + std::to_string(player.level) +
+      if (gs.mode == Mode::LevelUp) {
+        std::string prompt = "*** LEVEL UP (now level " + std::to_string(gs.player.level) +
                               ")! Press Shift+S/D/I to raise Strength/Dexterity/Intelligence. ***";
         tcod::print(console, {0, CONTEXT_ROW}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
-      } else if (mode == Mode::Targeting) {
-        const Spell& casting_spell = kSpellTable[static_cast<size_t>(casting_spell_index)];
+      } else if (gs.mode == Mode::Targeting) {
+        const Spell& casting_spell = kSpellTable[static_cast<size_t>(gs.casting_spell_index)];
         std::string prompt = "Casting " + casting_spell.name + " (" + std::to_string(casting_spell.mana_cost) +
                               " MP) - move to target, Enter to fire, Esc to cancel.";
         tcod::print(console, {0, CONTEXT_ROW}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
-      } else if (mode == Mode::MinionFocus) {
+      } else if (gs.mode == Mode::MinionFocus) {
         std::string who = "your minion";
-        if (commanding_all_minions) {
+        if (gs.commanding_all_minions) {
           who = "all minions";
         } else {
-          int fi = actor_index_by_id(level.monsters, focused_minion_id);
+          int fi = actor_index_by_id(level.monsters, gs.focused_minion_id);
           if (fi >= 0) who = level.monsters[static_cast<size_t>(fi)].name;
         }
         std::string prompt = "Commanding " + who +
                               " - move to a monster (attack), your own tile (follow), or elsewhere "
                               "(hold), Enter to confirm, F to follow, Esc to cancel.";
         tcod::print(console, {0, CONTEXT_ROW}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
-      } else if (mode == Mode::Look) {
+      } else if (gs.mode == Mode::Look) {
         tcod::print(console, {0, CONTEXT_ROW}, "Looking around - move the cursor to inspect, Esc to close.",
                     tcod::ColorRGB{255, 255, 100}, std::nullopt);
-      } else if (mode == Mode::RangedAttack) {
-        std::string prompt = "Firing your " + player.weapon.name + " - move to target, Enter to fire, Esc to cancel.";
+      } else if (gs.mode == Mode::RangedAttack) {
+        std::string prompt = "Firing your " + gs.player.weapon.name + " - move to target, Enter to fire, Esc to cancel.";
         tcod::print(console, {0, CONTEXT_ROW}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
       }
 
@@ -1747,11 +1143,11 @@ int main(int argc, char* argv[]) {
         ++sb_row;
       };
 
-      sb_print("HP: " + std::to_string(player.hp) + "/" + std::to_string(player.max_hp),
+      sb_print("HP: " + std::to_string(gs.player.hp) + "/" + std::to_string(gs.player.max_hp),
                tcod::ColorRGB{255, 255, 255});
-      sb_print("MP: " + std::to_string(player.mana) + "/" + std::to_string(player.max_mana),
+      sb_print("MP: " + std::to_string(gs.player.mana) + "/" + std::to_string(gs.player.max_mana),
                tcod::ColorRGB{255, 255, 255});
-      sb_print("Lvl: " + std::to_string(player.level) + "  Floor: " + std::to_string(current_level + 1),
+      sb_print("Lvl: " + std::to_string(gs.player.level) + "  Floor: " + std::to_string(gs.current_level + 1),
                tcod::ColorRGB{255, 255, 255});
 
       // Appends "+N" to a stat only while its temp buff is active, so the HUD reflects
@@ -1759,20 +1155,20 @@ int main(int argc, char* argv[]) {
       auto stat_str = [](int base, int bonus) {
         return std::to_string(base) + (bonus > 0 ? "+" + std::to_string(bonus) : "");
       };
-      sb_print("STR: " + stat_str(player.strength, player.temp_str_bonus), tcod::ColorRGB{200, 200, 200});
-      sb_print("DEX: " + stat_str(player.dexterity, player.temp_dex_bonus), tcod::ColorRGB{200, 200, 200});
-      sb_print("INT: " + stat_str(player.intelligence, player.temp_int_bonus), tcod::ColorRGB{200, 200, 200});
+      sb_print("STR: " + stat_str(gs.player.strength, gs.player.temp_str_bonus), tcod::ColorRGB{200, 200, 200});
+      sb_print("DEX: " + stat_str(gs.player.dexterity, gs.player.temp_dex_bonus), tcod::ColorRGB{200, 200, 200});
+      sb_print("INT: " + stat_str(gs.player.intelligence, gs.player.temp_int_bonus), tcod::ColorRGB{200, 200, 200});
       // Evasion is a real, comparable number now — the same rating a monster's table row
       // authors — so it's worth showing rather than leaving DEX's effect implicit.
-      sb_print("Eva: " + std::to_string(player.evasion), tcod::ColorRGB{200, 200, 200});
-      sb_print("Wpn: " + player.weapon.name, tcod::ColorRGB{200, 200, 200});
-      sb_print("  (" + describe_weapon(player.weapon) + ")", tcod::ColorRGB{150, 150, 150});
-      sb_print("Arm: " + player.armor.name, tcod::ColorRGB{200, 200, 200});
-      sb_print("  (" + describe_armor(player.armor) + ")", tcod::ColorRGB{150, 150, 150});
+      sb_print("Eva: " + std::to_string(gs.player.evasion), tcod::ColorRGB{200, 200, 200});
+      sb_print("Wpn: " + gs.player.weapon.name, tcod::ColorRGB{200, 200, 200});
+      sb_print("  (" + describe_weapon(gs.player.weapon) + ")", tcod::ColorRGB{150, 150, 150});
+      sb_print("Arm: " + gs.player.armor.name, tcod::ColorRGB{200, 200, 200});
+      sb_print("  (" + describe_armor(gs.player.armor) + ")", tcod::ColorRGB{150, 150, 150});
       // A running toggle spell (e.g. Sandstorm) has no other on-screen presence besides
       // its aura tile overlay — this tag is the only text indicator it's still active.
-      if (active_toggle_spell >= 0) {
-        sb_print("[" + kSpellTable[static_cast<size_t>(active_toggle_spell)].name + "]",
+      if (gs.active_toggle_spell >= 0) {
+        sb_print("[" + kSpellTable[static_cast<size_t>(gs.active_toggle_spell)].name + "]",
                  tcod::ColorRGB{255, 255, 100});
       }
 
@@ -1794,17 +1190,17 @@ int main(int argc, char* argv[]) {
           sb_print("  " + label + " +" + std::to_string(bonus) + " (" + std::to_string(turns) + ")",
                    tcod::ColorRGB{160, 255, 160});
         };
-        bool any_buff = player.temp_str_turns > 0 || player.temp_dex_turns > 0 || player.temp_int_turns > 0 ||
-                        player.temp_melee_damage_turns > 0 || player.temp_armor_turns > 0 ||
-                        player.temp_extra_actions_turns > 0;
+        bool any_buff = gs.player.temp_str_turns > 0 || gs.player.temp_dex_turns > 0 || gs.player.temp_int_turns > 0 ||
+                        gs.player.temp_melee_damage_turns > 0 || gs.player.temp_armor_turns > 0 ||
+                        gs.player.temp_extra_actions_turns > 0;
         if (any_buff) {
           sb_print("Buffs:", tcod::ColorRGB{200, 255, 200});
-          buff_row("STR", player.temp_str_bonus, player.temp_str_turns);
-          buff_row("DEX", player.temp_dex_bonus, player.temp_dex_turns);
-          buff_row("INT", player.temp_int_bonus, player.temp_int_turns);
-          buff_row("Melee dmg", player.temp_melee_damage_bonus, player.temp_melee_damage_turns);
-          buff_row("Armor", player.temp_armor_bonus, player.temp_armor_turns);
-          buff_row("Actions", player.temp_extra_actions_bonus, player.temp_extra_actions_turns);
+          buff_row("STR", gs.player.temp_str_bonus, gs.player.temp_str_turns);
+          buff_row("DEX", gs.player.temp_dex_bonus, gs.player.temp_dex_turns);
+          buff_row("INT", gs.player.temp_int_bonus, gs.player.temp_int_turns);
+          buff_row("Melee dmg", gs.player.temp_melee_damage_bonus, gs.player.temp_melee_damage_turns);
+          buff_row("Armor", gs.player.temp_armor_bonus, gs.player.temp_armor_turns);
+          buff_row("Actions", gs.player.temp_extra_actions_bonus, gs.player.temp_extra_actions_turns);
         }
       }
 
@@ -1812,31 +1208,31 @@ int main(int argc, char* argv[]) {
       // silently dropped by sb_print's bottom-of-panel clamp when the pack/enemy
       // lists below run long — the thing you're actively examining is the more
       // important thing to keep on screen right now.
-      if (mode == Mode::Look) {
+      if (gs.mode == Mode::Look) {
         ++sb_row;
         sb_print("Looking:", tcod::ColorRGB{200, 200, 255});
-        bool explored = level.map.is_explored(target_x, target_y);
-        if (!explored && !reveal_mode) {
+        bool explored = level.map.is_explored(gs.target_x, gs.target_y);
+        if (!explored && !gs.reveal_all) {
           sb_print("  (unexplored)", tcod::ColorRGB{120, 120, 120});
         } else {
-          bool tile_in_fov = level.map.is_in_fov(target_x, target_y);
-          bool is_stairs_down = (target_x == level.stairs_down_x && target_y == level.stairs_down_y);
-          bool is_stairs_up = level.has_stairs_up && (target_x == level.entry_x && target_y == level.entry_y);
+          bool tile_in_fov = level.map.is_in_fov(gs.target_x, gs.target_y);
+          bool is_stairs_down = (gs.target_x == level.stairs_down_x && gs.target_y == level.stairs_down_y);
+          bool is_stairs_up = level.has_stairs_up && (gs.target_x == level.entry_x && gs.target_y == level.entry_y);
           std::string terrain = is_stairs_down                             ? "Stairs down"
                                  : is_stairs_up                             ? "Stairs up"
-                                 : level.map.at(target_x, target_y).is_hole ? "Hole"
-                                 : level.map.is_walkable(target_x, target_y) ? "Floor"
+                                 : level.map.at(gs.target_x, gs.target_y).is_hole ? "Hole"
+                                 : level.map.is_walkable(gs.target_x, gs.target_y) ? "Floor"
                                                                               : "Wall";
           sb_print("  " + terrain, tcod::ColorRGB{200, 200, 200});
 
-          if (!tile_in_fov && !reveal_mode) {
+          if (!tile_in_fov && !gs.reveal_all) {
             // Remembered terrain layout is fine to show, but not live occupant
             // details — same rule the map rendering itself already follows (items/
             // monsters only ever show up while actually in view).
             sb_print("  (out of view)", tcod::ColorRGB{120, 120, 120});
           } else {
             bool found_anything = false;
-            int mi = monster_at(level.monsters, target_x, target_y);
+            int mi = monster_at(level.monsters, gs.target_x, gs.target_y);
             if (mi >= 0) {
               const Actor& m = level.monsters[static_cast<size_t>(mi)];
               sb_print("  " + m.name, m.color);
@@ -1870,18 +1266,18 @@ int main(int argc, char* argv[]) {
               found_anything = true;
             }
             for (const auto& gi : level.items) {
-              if (gi.x != target_x || gi.y != target_y) continue;
+              if (gi.x != gs.target_x || gi.y != gs.target_y) continue;
               sb_print("  " + gi.weapon.name + " (" + describe_weapon(gi.weapon) + ")",
                        tcod::ColorRGB{200, 200, 255});
               found_anything = true;
             }
             for (const auto& ga : level.armor_items) {
-              if (ga.x != target_x || ga.y != target_y) continue;
+              if (ga.x != gs.target_x || ga.y != gs.target_y) continue;
               sb_print("  " + ga.armor.name + " (" + describe_armor(ga.armor) + ")", tcod::ColorRGB{180, 220, 200});
               found_anything = true;
             }
             for (const auto& gp : level.potions) {
-              if (gp.x != target_x || gp.y != target_y) continue;
+              if (gp.x != gs.target_x || gp.y != gs.target_y) continue;
               sb_print("  " + gp.potion.name + " (" + describe_potion(gp.potion) + ")", gp.potion.color);
               found_anything = true;
             }
@@ -1906,7 +1302,7 @@ int main(int argc, char* argv[]) {
       bool any_minion = false;
       for (const auto& m : level.monsters) {
         if (m.allegiance != Allegiance::Player || !m.is_alive()) continue;
-        bool focused = !commanding_all_minions && m.id == focused_minion_id;
+        bool focused = !gs.commanding_all_minions && m.id == gs.focused_minion_id;
         tcod::ColorRGB color = focused ? tcod::ColorRGB{255, 255, 100} : m.color;
         // [F]ollow / [H]old / [A]ttack — a flag instead of describe_minion_order()'s
         // full sentence, which could run past the sidebar's width once it named an
@@ -1920,11 +1316,11 @@ int main(int argc, char* argv[]) {
       // messages, oldest on top, one per line — never wrapped or combined, even if
       // several things happened on the same turn. (']' opens full scrollback.)
       draw_panel(console, LOG_PANEL_X, LOG_PANEL_Y, LOG_PANEL_W, LOG_PANEL_H, "Log");
-      int log_total = static_cast<int>(message_log.size());
+      int log_total = static_cast<int>(gs.message_log.size());
       for (int row = 0; row < MESSAGE_ROWS; ++row) {
         int idx = log_total - MESSAGE_ROWS + row;
         if (idx < 0) continue;
-        tcod::print(console, {LOG_PANEL_X + 1, LOG_PANEL_Y + 1 + row}, message_log[static_cast<size_t>(idx)],
+        tcod::print(console, {LOG_PANEL_X + 1, LOG_PANEL_Y + 1 + row}, gs.message_log[static_cast<size_t>(idx)],
                     tcod::ColorRGB{255, 255, 100}, std::nullopt);
       }
 
@@ -1936,12 +1332,12 @@ int main(int argc, char* argv[]) {
       // RangedAttack) never drifts off-screen. Clamped so the viewport never scrolls
       // past the map's edge — same clamp-to-bounds shape regardless of which point
       // it's following.
-      int camera_focus_x = player.x;
-      int camera_focus_y = player.y;
-      if (mode == Mode::Targeting || mode == Mode::MinionFocus || mode == Mode::Look ||
-          mode == Mode::RangedAttack) {
-        camera_focus_x = target_x;
-        camera_focus_y = target_y;
+      int camera_focus_x = gs.player.x;
+      int camera_focus_y = gs.player.y;
+      if (gs.mode == Mode::Targeting || gs.mode == Mode::MinionFocus || gs.mode == Mode::Look ||
+          gs.mode == Mode::RangedAttack) {
+        camera_focus_x = gs.target_x;
+        camera_focus_y = gs.target_y;
       }
       int camera_x = std::clamp(camera_focus_x - MAP_VIEW_W / 2, 0, std::max(0, level.map.width() - MAP_VIEW_W));
       int camera_y = std::clamp(camera_focus_y - MAP_VIEW_H / 2, 0, std::max(0, level.map.height() - MAP_VIEW_H));
@@ -1953,14 +1349,14 @@ int main(int argc, char* argv[]) {
       };
 
       draw_panel(console, MAP_PANEL_X, MAP_PANEL_Y, MAP_PANEL_W, MAP_PANEL_H,
-                 "Floor " + std::to_string(current_level + 1));
+                 "Floor " + std::to_string(gs.current_level + 1));
 
       int view_x_end = std::min(camera_x + MAP_VIEW_W, level.map.width());
       int view_y_end = std::min(camera_y + MAP_VIEW_H, level.map.height());
       for (int y = camera_y; y < view_y_end; ++y) {
         for (int x = camera_x; x < view_x_end; ++x) {
           // Never seen and not revealing: leave blank.
-          if (!level.map.is_explored(x, y) && !reveal_mode) continue;
+          if (!level.map.is_explored(x, y) && !gs.reveal_all) continue;
 
           bool walkable = level.map.is_walkable(x, y);
           bool is_hole = level.map.at(x, y).is_hole;
@@ -2015,7 +1411,7 @@ int main(int argc, char* argv[]) {
       // dimmed, same tier as remembered terrain/monsters.
       for (const auto& item : level.items) {
         bool visible = level.map.is_in_fov(item.x, item.y);
-        if (!visible && !reveal_mode) continue;
+        if (!visible && !gs.reveal_all) continue;
         if (!in_view(item.x, item.y)) continue;
         auto& cell = console.at(MAP_ORIGIN_X + item.x - camera_x, MAP_ORIGIN_Y + item.y - camera_y);
         cell.ch = '/';
@@ -2025,7 +1421,7 @@ int main(int argc, char* argv[]) {
 
       for (const auto& armor_item : level.armor_items) {
         bool visible = level.map.is_in_fov(armor_item.x, armor_item.y);
-        if (!visible && !reveal_mode) continue;
+        if (!visible && !gs.reveal_all) continue;
         if (!in_view(armor_item.x, armor_item.y)) continue;
         auto& cell = console.at(MAP_ORIGIN_X + armor_item.x - camera_x, MAP_ORIGIN_Y + armor_item.y - camera_y);
         cell.ch = '[';
@@ -2035,7 +1431,7 @@ int main(int argc, char* argv[]) {
 
       for (const auto& ground_potion : level.potions) {
         bool visible = level.map.is_in_fov(ground_potion.x, ground_potion.y);
-        if (!visible && !reveal_mode) continue;
+        if (!visible && !gs.reveal_all) continue;
         if (!in_view(ground_potion.x, ground_potion.y)) continue;
         auto& cell =
             console.at(MAP_ORIGIN_X + ground_potion.x - camera_x, MAP_ORIGIN_Y + ground_potion.y - camera_y);
@@ -2045,7 +1441,7 @@ int main(int argc, char* argv[]) {
 
       for (const auto& monster : level.monsters) {
         bool visible = level.map.is_in_fov(monster.x, monster.y);
-        if (!visible && !reveal_mode) continue;
+        if (!visible && !gs.reveal_all) continue;
         if (!in_view(monster.x, monster.y)) continue;
         auto& cell = console.at(MAP_ORIGIN_X + monster.x - camera_x, MAP_ORIGIN_Y + monster.y - camera_y);
         cell.ch = monster.glyph;
@@ -2065,8 +1461,8 @@ int main(int argc, char* argv[]) {
 
       // The player is always inside the viewport by construction (the camera clamp
       // keeps whatever it's centered on in view), so this is drawn unconditionally.
-      console.at(MAP_ORIGIN_X + player.x - camera_x, MAP_ORIGIN_Y + player.y - camera_y).ch = player.glyph;
-      console.at(MAP_ORIGIN_X + player.x - camera_x, MAP_ORIGIN_Y + player.y - camera_y).fg = player.color;
+      console.at(MAP_ORIGIN_X + gs.player.x - camera_x, MAP_ORIGIN_Y + gs.player.y - camera_y).ch = gs.player.glyph;
+      console.at(MAP_ORIGIN_X + gs.player.x - camera_x, MAP_ORIGIN_Y + gs.player.y - camera_y).fg = gs.player.color;
 
       // A running toggle spell (e.g. Sandstorm) gets a persistent highlight around the
       // player showing its current radius, recentered every frame since the aura
@@ -2074,37 +1470,37 @@ int main(int argc, char* argv[]) {
       // treatment as the AoE targeting preview below, so monsters/terrain inside it
       // stay visible. Uses the spell's own color so different toggle spells (if more
       // are ever added) read as visually distinct auras.
-      if (active_toggle_spell >= 0) {
-        const Spell& storm = kSpellTable[static_cast<size_t>(active_toggle_spell)];
-        for (int by = player.y - storm.aoe_radius; by <= player.y + storm.aoe_radius; ++by) {
-          for (int bx = player.x - storm.aoe_radius; bx <= player.x + storm.aoe_radius; ++bx) {
+      if (gs.active_toggle_spell >= 0) {
+        const Spell& storm = kSpellTable[static_cast<size_t>(gs.active_toggle_spell)];
+        for (int by = gs.player.y - storm.aoe_radius; by <= gs.player.y + storm.aoe_radius; ++by) {
+          for (int bx = gs.player.x - storm.aoe_radius; bx <= gs.player.x + storm.aoe_radius; ++bx) {
             if (bx < 0 || by < 0 || bx >= level.map.width() || by >= level.map.height()) continue;
-            if (!level.map.is_explored(bx, by) && !reveal_mode) continue;
+            if (!level.map.is_explored(bx, by) && !gs.reveal_all) continue;
             if (!in_view(bx, by)) continue;
             console.at(MAP_ORIGIN_X + bx - camera_x, MAP_ORIGIN_Y + by - camera_y).fg = storm.color;
           }
         }
         // Re-mark the player's own tile on top so they stay visible inside the tint.
-        console.at(MAP_ORIGIN_X + player.x - camera_x, MAP_ORIGIN_Y + player.y - camera_y).fg = player.color;
+        console.at(MAP_ORIGIN_X + gs.player.x - camera_x, MAP_ORIGIN_Y + gs.player.y - camera_y).fg = gs.player.color;
       }
 
-      if (mode == Mode::Targeting) {
-        const Spell& previewed_spell = kSpellTable[static_cast<size_t>(casting_spell_index)];
+      if (gs.mode == Mode::Targeting) {
+        const Spell& previewed_spell = kSpellTable[static_cast<size_t>(gs.casting_spell_index)];
 
         if (previewed_spell.is_swap) {
           // No projectile/line to preview for a swap — just mark the target tile,
           // colored by whether there's actually a minion there to swap with (matches
           // the Enter-fire check in own_minion_at()).
-          if (in_view(target_x, target_y)) {
-            bool has_minion = own_minion_at(level.monsters, target_x, target_y) >= 0;
-            auto& cell = console.at(MAP_ORIGIN_X + target_x - camera_x, MAP_ORIGIN_Y + target_y - camera_y);
+          if (in_view(gs.target_x, gs.target_y)) {
+            bool has_minion = own_minion_at(level.monsters, gs.target_x, gs.target_y) >= 0;
+            auto& cell = console.at(MAP_ORIGIN_X + gs.target_x - camera_x, MAP_ORIGIN_Y + gs.target_y - camera_y);
             cell.ch = 'X';
             cell.fg = has_minion ? tcod::ColorRGB{100, 220, 255} : tcod::ColorRGB{120, 60, 60};
           }
         } else {
           // Preview the shot: trace the same path a cast would take, and stop drawing at
           // the first tile that would actually stop it, so what you see is what you'd hit.
-          auto preview = trace_path(player.x, player.y, target_x, target_y);
+          auto preview = trace_path(gs.player.x, gs.player.y, gs.target_x, gs.target_y);
           for (size_t i = 0; i < preview.size(); ++i) {
             auto [x, y] = preview[i];
             bool blocked = level.map.blocks_projectile(x, y);
@@ -2129,12 +1525,12 @@ int main(int argc, char* argv[]) {
           // would do. Recolors tiles rather than overwriting their glyph, so monsters/
           // terrain caught in the blast stay visible underneath the highlight.
           if (previewed_spell.aoe_radius > 0) {
-            auto [impact_x, impact_y] = find_impact(preview, player.x, player.y, level.map, level.monsters);
+            auto [impact_x, impact_y] = find_impact(preview, gs.player.x, gs.player.y, level.map, level.monsters);
             int radius = previewed_spell.aoe_radius;
             for (int by = impact_y - radius; by <= impact_y + radius; ++by) {
               for (int bx = impact_x - radius; bx <= impact_x + radius; ++bx) {
                 if (bx < 0 || by < 0 || bx >= level.map.width() || by >= level.map.height()) continue;
-                if (!level.map.is_explored(bx, by) && !reveal_mode) continue;
+                if (!level.map.is_explored(bx, by) && !gs.reveal_all) continue;
                 if (!in_view(bx, by)) continue;
                 console.at(MAP_ORIGIN_X + bx - camera_x, MAP_ORIGIN_Y + by - camera_y).fg = tcod::ColorRGB{255, 140, 60};
               }
@@ -2149,10 +1545,10 @@ int main(int argc, char* argv[]) {
         }
       }
 
-      if (mode == Mode::RangedAttack) {
+      if (gs.mode == Mode::RangedAttack) {
         // Same aim-preview line as Mode::Targeting above, minus the AoE step — no
         // player weapon has a blast radius today, so there's nothing extra to predict.
-        auto preview = trace_path(player.x, player.y, target_x, target_y);
+        auto preview = trace_path(gs.player.x, gs.player.y, gs.target_x, gs.target_y);
         for (size_t i = 0; i < preview.size(); ++i) {
           auto [x, y] = preview[i];
           bool blocked = level.map.blocks_projectile(x, y);
@@ -2167,16 +1563,16 @@ int main(int argc, char* argv[]) {
         }
       }
 
-      if (mode == Mode::MinionFocus) {
+      if (gs.mode == Mode::MinionFocus) {
         // Highlights whichever minion(s) are currently being commanded — once the
         // cursor wanders away from a minion's own tile there's otherwise no way to
         // tell who you're still aiming for. Recolors the glyph (keeps it, rather than
         // overwriting with a marker) so it still reads as "that minion", just lit up.
         for (const auto& m : level.monsters) {
           if (m.allegiance != Allegiance::Player || !m.is_alive()) continue;
-          if (!commanding_all_minions && m.id != focused_minion_id) continue;
+          if (!gs.commanding_all_minions && m.id != gs.focused_minion_id) continue;
           bool visible = level.map.is_in_fov(m.x, m.y);
-          if (!visible && !reveal_mode) continue;  // not drawn at all this frame either way
+          if (!visible && !gs.reveal_all) continue;  // not drawn at all this frame either way
           if (!in_view(m.x, m.y)) continue;
           console.at(MAP_ORIGIN_X + m.x - camera_x, MAP_ORIGIN_Y + m.y - camera_y).fg = tcod::ColorRGB{255, 255, 100};
         }
@@ -2188,14 +1584,14 @@ int main(int argc, char* argv[]) {
         // tell which one is actually assigned versus just standing nearby.
         for (const auto& m : level.monsters) {
           if (m.allegiance != Allegiance::Player || !m.is_alive()) continue;
-          if (!commanding_all_minions && m.id != focused_minion_id) continue;
+          if (!gs.commanding_all_minions && m.id != gs.focused_minion_id) continue;
           if (m.order != MinionOrder::AttackTarget && m.order != MinionOrder::Aggressive) continue;
           int ti = actor_index_by_id(level.monsters, m.attack_target_id);
           if (ti < 0) continue;  // no current target — AttackTarget will revert to Follow on its own,
                                   // Aggressive just has nothing in view to chase yet
           const Actor& target = level.monsters[static_cast<size_t>(ti)];
           bool target_visible = level.map.is_in_fov(target.x, target.y);
-          if (!target_visible && !reveal_mode) continue;
+          if (!target_visible && !gs.reveal_all) continue;
           if (!in_view(target.x, target.y)) continue;
           console.at(MAP_ORIGIN_X + target.x - camera_x, MAP_ORIGIN_Y + target.y - camera_y).fg =
               tcod::ColorRGB{255, 60, 255};
@@ -2209,13 +1605,13 @@ int main(int argc, char* argv[]) {
         // (a wall, or something already standing there that isn't a valid target). The
         // camera follows this cursor (see camera_focus_x/y above) so it's always in
         // view, unlike a spell's range-limited targeting cursor.
-        if (in_view(target_x, target_y)) {
-          auto& cell = console.at(MAP_ORIGIN_X + target_x - camera_x, MAP_ORIGIN_Y + target_y - camera_y);
-          bool walkable = level.map.is_walkable(target_x, target_y);
-          int hostile_hit = hostile_monster_at(level.monsters, target_x, target_y);
+        if (in_view(gs.target_x, gs.target_y)) {
+          auto& cell = console.at(MAP_ORIGIN_X + gs.target_x - camera_x, MAP_ORIGIN_Y + gs.target_y - camera_y);
+          bool walkable = level.map.is_walkable(gs.target_x, gs.target_y);
+          int hostile_hit = hostile_monster_at(level.monsters, gs.target_x, gs.target_y);
           if (hostile_hit >= 0) {
             cell.fg = tcod::ColorRGB{255, 60, 60};
-          } else if (walkable && monster_at(level.monsters, target_x, target_y) < 0) {
+          } else if (walkable && monster_at(level.monsters, gs.target_x, gs.target_y) < 0) {
             cell.ch = 'X';
             cell.fg = tcod::ColorRGB{100, 220, 140};
           } else {
@@ -2225,12 +1621,12 @@ int main(int argc, char* argv[]) {
         }
       }
 
-      if (mode == Mode::Look) {
+      if (gs.mode == Mode::Look) {
         // Plain recolor, no glyph override — unlike Targeting/MinionFocus there's no
         // action being previewed here, just "this is what the cursor is on", so
         // whatever's actually there (terrain/item/monster) should stay fully visible.
-        if (in_view(target_x, target_y)) {
-          console.at(MAP_ORIGIN_X + target_x - camera_x, MAP_ORIGIN_Y + target_y - camera_y).fg =
+        if (in_view(gs.target_x, gs.target_y)) {
+          console.at(MAP_ORIGIN_X + gs.target_x - camera_x, MAP_ORIGIN_Y + gs.target_y - camera_y).fg =
               tcod::ColorRGB{255, 255, 255};
         }
       }
@@ -2245,7 +1641,7 @@ int main(int argc, char* argv[]) {
       context.convert_event_coordinates(event);
 
       if (event.type == SDL_EVENT_QUIT) {
-        running = false;
+        gs.running = false;
         continue;
       }
       if (event.type != SDL_EVENT_KEY_DOWN) continue;
@@ -2253,7 +1649,7 @@ int main(int argc, char* argv[]) {
       // Re-fetched fresh for every event (not reused from the outer render-time `level`
       // above): descend() can push_back onto `levels`, which may reallocate and would
       // dangle a reference held across more than one queued event in the same batch.
-      Level& level = levels[static_cast<size_t>(current_level)];
+      Level& level = gs.level();
 
       // Moves command focus to the next (direction=+1) or previous (direction=-1)
       // living minion, in level.monsters order, wrapping around; if focused_minion_id
@@ -2273,7 +1669,7 @@ int main(int argc, char* argv[]) {
         if (minion_ids.empty()) return false;
         int current = -1;
         for (size_t i = 0; i < minion_ids.size(); ++i) {
-          if (minion_ids[i] == focused_minion_id) {
+          if (minion_ids[i] == gs.focused_minion_id) {
             current = static_cast<int>(i);
             break;
           }
@@ -2285,85 +1681,85 @@ int main(int argc, char* argv[]) {
           next_index = (current + direction + static_cast<int>(minion_ids.size())) %
                        static_cast<int>(minion_ids.size());
         }
-        focused_minion_id = minion_ids[static_cast<size_t>(next_index)];
-        commanding_all_minions = false;
-        int fi = actor_index_by_id(level.monsters, focused_minion_id);
-        target_x = level.monsters[static_cast<size_t>(fi)].x;
-        target_y = level.monsters[static_cast<size_t>(fi)].y;
+        gs.focused_minion_id = minion_ids[static_cast<size_t>(next_index)];
+        gs.commanding_all_minions = false;
+        int fi = actor_index_by_id(level.monsters, gs.focused_minion_id);
+        gs.target_x = level.monsters[static_cast<size_t>(fi)].x;
+        gs.target_y = level.monsters[static_cast<size_t>(fi)].y;
         return true;
       };
 
-      if (mode == Mode::Dead) {
+      if (gs.mode == Mode::Dead) {
         if (event.key.key == SDLK_ESCAPE) {
-          running = false;
+          gs.running = false;
         } else {
-          start_new_game();
+          start_new_game(gs);
         }
         continue;
       }
 
-      if (mode == Mode::MessageLog) {
+      if (gs.mode == Mode::MessageLog) {
         if (event.key.key == SDLK_ESCAPE || event.key.key == SDLK_RIGHTBRACKET) {
-          mode = Mode::Playing;
+          gs.mode = Mode::Playing;
         } else if (event.key.key == SDLK_K || event.key.key == SDLK_UP) {
           int visible_rows = SCREEN_HEIGHT - 1;
-          int max_scroll = std::max(0, static_cast<int>(message_log.size()) - visible_rows);
-          log_scroll = std::min(log_scroll + 1, max_scroll);
+          int max_scroll = std::max(0, static_cast<int>(gs.message_log.size()) - visible_rows);
+          gs.log_scroll = std::min(gs.log_scroll + 1, max_scroll);
         } else if (event.key.key == SDLK_J || event.key.key == SDLK_DOWN) {
-          log_scroll = std::max(log_scroll - 1, 0);
+          gs.log_scroll = std::max(gs.log_scroll - 1, 0);
         }
         continue;
       }
 
-      if (mode == Mode::Help) {
+      if (gs.mode == Mode::Help) {
         // Same unshifted-keycode-plus-modifier check the stairs keys use below, since
         // '?' is Shift+/ on a US layout.
         bool pressed_question =
             event.key.key == SDLK_QUESTION || (event.key.key == SDLK_SLASH && (event.key.mod & SDL_KMOD_SHIFT));
-        if (event.key.key == SDLK_ESCAPE || pressed_question) mode = Mode::Playing;
+        if (event.key.key == SDLK_ESCAPE || pressed_question) gs.mode = Mode::Playing;
         continue;
       }
 
-      if (mode == Mode::LevelUp) {
+      if (gs.mode == Mode::LevelUp) {
         // No menu for this on purpose: just force S/D/I directly, one point at a time.
         // Requires actual Shift+S/D/I (not the bare lowercase letter) since 'd' and 'i'
         // already mean something in normal play — a permanent stat point shouldn't be
         // one stray unshifted keypress away from being spent on the wrong thing.
         bool shift_held = (event.key.mod & SDL_KMOD_SHIFT) != 0;
         if (event.key.key == SDLK_ESCAPE) {
-          running = false;
+          gs.running = false;
         // Each of these raises the attribute and then applies that point's knock-on
         // ceiling as a delta, rather than recomputing the ceiling from the attribute —
         // the same rule apply_potion() follows, so spending a level-up point while a
         // stat potion is running doesn't quietly cancel the potion. Current HP/mana rise
         // with the ceiling here (unlike a temporary buff, which only lifts the ceiling).
         } else if (shift_held && event.key.key == SDLK_S) {
-          player.strength += 1;
-          player.max_hp += kHpPerStrength;
-          player.hp += kHpPerStrength;
-          add_message("Strength increased to " + std::to_string(player.strength) + "!");
-          pending_attribute_points -= 1;
+          gs.player.strength += 1;
+          gs.player.max_hp += kHpPerStrength;
+          gs.player.hp += kHpPerStrength;
+          add_message(gs, "Strength increased to " + std::to_string(gs.player.strength) + "!");
+          gs.pending_attribute_points -= 1;
         } else if (shift_held && event.key.key == SDLK_D) {
           // Dexterity is now worth accuracy on every attack as well as evasion — see
           // the combat-formula block at the top of this file.
-          player.dexterity += 1;
-          player.evasion += kDodgePerDexPoint;
-          add_message("Dexterity increased to " + std::to_string(player.dexterity) + "!");
-          pending_attribute_points -= 1;
+          gs.player.dexterity += 1;
+          gs.player.evasion += kDodgePerDexPoint;
+          add_message(gs, "Dexterity increased to " + std::to_string(gs.player.dexterity) + "!");
+          gs.pending_attribute_points -= 1;
         } else if (shift_held && event.key.key == SDLK_I) {
-          auto known_before = known_spell_indices(player.intelligence, player.chosen_school);
+          auto known_before = known_spell_indices(gs.player.intelligence, gs.player.chosen_school);
           int mana_delta =
-              max_mana_for_intelligence(player.intelligence + 1) - max_mana_for_intelligence(player.intelligence);
-          player.intelligence += 1;
-          auto known_after = known_spell_indices(player.intelligence, player.chosen_school);
-          player.max_mana += mana_delta;
-          player.mana += mana_delta;
-          add_message("Intelligence increased to " + std::to_string(player.intelligence) + "!");
+              max_mana_for_intelligence(gs.player.intelligence + 1) - max_mana_for_intelligence(gs.player.intelligence);
+          gs.player.intelligence += 1;
+          auto known_after = known_spell_indices(gs.player.intelligence, gs.player.chosen_school);
+          gs.player.max_mana += mana_delta;
+          gs.player.mana += mana_delta;
+          add_message(gs, "Intelligence increased to " + std::to_string(gs.player.intelligence) + "!");
           for (int spell_idx : known_after) {
             bool already_known = std::find(known_before.begin(), known_before.end(), spell_idx) != known_before.end();
-            if (!already_known) add_message("You can now cast " + kSpellTable[static_cast<size_t>(spell_idx)].name + "!");
+            if (!already_known) add_message(gs, "You can now cast " + kSpellTable[static_cast<size_t>(spell_idx)].name + "!");
           }
-          pending_attribute_points -= 1;
+          gs.pending_attribute_points -= 1;
           // The first time Intelligence reaches 4, interrupt with the forced
           // Caster/Summoner pick (Mode::SchoolChoice) instead of falling straight back
           // into Mode::Playing/another LevelUp prompt — known_spell_indices() above
@@ -2371,41 +1767,41 @@ int main(int argc, char* argv[]) {
           // chosen_school is still None at this point (only the shared Magic Dart-style
           // spells show up from this diff; the school's own entry spell is announced
           // from Mode::SchoolChoice's handler once a path is actually picked).
-          if (player.chosen_school == SpellSchool::None && player.intelligence >= 4) {
-            mode = Mode::SchoolChoice;
+          if (gs.player.chosen_school == SpellSchool::None && gs.player.intelligence >= 4) {
+            gs.mode = Mode::SchoolChoice;
           }
         }
         // Guarded so the same keypress that just triggered Mode::SchoolChoice above
         // (the common case — a level-up grants exactly one point, so
         // pending_attribute_points usually also hits 0 right when INT crosses 4)
         // doesn't immediately stomp it back to Mode::Playing before it's ever seen.
-        if (mode != Mode::SchoolChoice && pending_attribute_points <= 0) mode = Mode::Playing;
+        if (gs.mode != Mode::SchoolChoice && gs.pending_attribute_points <= 0) gs.mode = Mode::Playing;
         continue;
       }
 
-      if (mode == Mode::SchoolChoice) {
+      if (gs.mode == Mode::SchoolChoice) {
         // Mandatory, same as LevelUp's own Esc — quitting rather than silently leaving
         // chosen_school stuck at None forever, which would permanently lock out every
         // school's spells.
         bool shift_held = (event.key.mod & SDL_KMOD_SHIFT) != 0;
         if (event.key.key == SDLK_ESCAPE) {
-          running = false;
+          gs.running = false;
         } else if (shift_held && (event.key.key == SDLK_C || event.key.key == SDLK_U || event.key.key == SDLK_M)) {
-          auto known_before = known_spell_indices(player.intelligence, player.chosen_school);
+          auto known_before = known_spell_indices(gs.player.intelligence, gs.player.chosen_school);
           if (event.key.key == SDLK_C) {
-            player.chosen_school = SpellSchool::Caster;
+            gs.player.chosen_school = SpellSchool::Caster;
           } else if (event.key.key == SDLK_U) {
-            player.chosen_school = SpellSchool::Summoner;
+            gs.player.chosen_school = SpellSchool::Summoner;
           } else {
-            player.chosen_school = SpellSchool::CombatMage;
+            gs.player.chosen_school = SpellSchool::CombatMage;
           }
-          auto known_after = known_spell_indices(player.intelligence, player.chosen_school);
-          if (player.chosen_school == SpellSchool::Caster) {
-            add_message("You have specialized in Caster magic!");
-          } else if (player.chosen_school == SpellSchool::Summoner) {
-            add_message("You have specialized in Summoner magic!");
+          auto known_after = known_spell_indices(gs.player.intelligence, gs.player.chosen_school);
+          if (gs.player.chosen_school == SpellSchool::Caster) {
+            add_message(gs, "You have specialized in Caster magic!");
+          } else if (gs.player.chosen_school == SpellSchool::Summoner) {
+            add_message(gs, "You have specialized in Summoner magic!");
           } else {
-            add_message("You have specialized in Combat Mage magic!");
+            add_message(gs, "You have specialized in Combat Mage magic!");
           }
           // Same before/after diff idiom as the Shift+I handler above, reused rather
           // than duplicated, so "what's newly known" can't drift between the two call
@@ -2414,18 +1810,18 @@ int main(int argc, char* argv[]) {
           // fires the instant Intelligence crosses 4.
           for (int spell_idx : known_after) {
             bool already_known = std::find(known_before.begin(), known_before.end(), spell_idx) != known_before.end();
-            if (!already_known) add_message("You can now cast " + kSpellTable[static_cast<size_t>(spell_idx)].name + "!");
+            if (!already_known) add_message(gs, "You can now cast " + kSpellTable[static_cast<size_t>(spell_idx)].name + "!");
           }
           // Resume any level-up points still queued (e.g. mid-drain from --level=N)
           // instead of always dropping straight back to Playing.
-          mode = pending_attribute_points > 0 ? Mode::LevelUp : Mode::Playing;
+          gs.mode = gs.pending_attribute_points > 0 ? Mode::LevelUp : Mode::Playing;
         }
         continue;
       }
 
-      if (mode == Mode::WeaponMenu) {
+      if (gs.mode == Mode::WeaponMenu) {
         if (event.key.key == SDLK_ESCAPE) {
-          mode = Mode::Playing;
+          gs.mode = Mode::Playing;
         } else if (event.key.key >= SDLK_A && event.key.key <= SDLK_Z) {
           size_t idx = static_cast<size_t>(event.key.key - SDLK_A);
           // Slot 'a' is always fists; carried weapons fill 'b' onward.
@@ -2434,27 +1830,27 @@ int main(int argc, char* argv[]) {
           if (idx == 0) {
             chosen = kFists;
             valid = true;
-          } else if (idx - 1 < player.weapons.size()) {
-            chosen = player.weapons[idx - 1];
-            player.weapons.erase(player.weapons.begin() + static_cast<long>(idx - 1));
+          } else if (idx - 1 < gs.player.weapons.size()) {
+            chosen = gs.player.weapons[idx - 1];
+            gs.player.weapons.erase(gs.player.weapons.begin() + static_cast<long>(idx - 1));
             valid = true;
           }
           if (valid) {
             // Swap the old weapon back into the pack, unless it's an intrinsic one
             // like bare fists, which isn't a real item.
-            if (!player.weapon.is_intrinsic) player.weapons.push_back(player.weapon);
-            player.weapon = chosen;
-            add_message("You equip the " + chosen.name + ".");
-            mode = Mode::Playing;
+            if (!gs.player.weapon.is_intrinsic) gs.player.weapons.push_back(gs.player.weapon);
+            gs.player.weapon = chosen;
+            add_message(gs, "You equip the " + chosen.name + ".");
+            gs.mode = Mode::Playing;
             end_turn();  // fiddling with gear takes time; adjacent monsters get a free hit
           }
         }
         continue;
       }
 
-      if (mode == Mode::ArmorMenu) {
+      if (gs.mode == Mode::ArmorMenu) {
         if (event.key.key == SDLK_ESCAPE) {
-          mode = Mode::Playing;
+          gs.mode = Mode::Playing;
         } else if (event.key.key >= SDLK_A && event.key.key <= SDLK_Z) {
           size_t idx = static_cast<size_t>(event.key.key - SDLK_A);
           // Slot 'a' is always "Nothing"; carried armor fills 'b' onward.
@@ -2463,81 +1859,81 @@ int main(int argc, char* argv[]) {
           if (idx == 0) {
             chosen = kNoArmor;
             valid = true;
-          } else if (idx - 1 < player.armors.size()) {
-            chosen = player.armors[idx - 1];
-            player.armors.erase(player.armors.begin() + static_cast<long>(idx - 1));
+          } else if (idx - 1 < gs.player.armors.size()) {
+            chosen = gs.player.armors[idx - 1];
+            gs.player.armors.erase(gs.player.armors.begin() + static_cast<long>(idx - 1));
             valid = true;
           }
           if (valid) {
-            if (!player.armor.is_intrinsic) player.armors.push_back(player.armor);
-            player.armor = chosen;
-            add_message("You equip the " + chosen.name + ".");
-            mode = Mode::Playing;
+            if (!gs.player.armor.is_intrinsic) gs.player.armors.push_back(gs.player.armor);
+            gs.player.armor = chosen;
+            add_message(gs, "You equip the " + chosen.name + ".");
+            gs.mode = Mode::Playing;
             end_turn();  // fiddling with gear takes time; adjacent monsters get a free hit
           }
         }
         continue;
       }
 
-      if (mode == Mode::PotionMenu) {
+      if (gs.mode == Mode::PotionMenu) {
         if (event.key.key == SDLK_ESCAPE) {
-          mode = Mode::Playing;
+          gs.mode = Mode::Playing;
         } else if (event.key.key >= SDLK_A && event.key.key <= SDLK_Z) {
           size_t idx = static_cast<size_t>(event.key.key - SDLK_A);
-          if (idx < player.potions.size()) {
+          if (idx < gs.player.potions.size()) {
             // Same call an Orc Archer makes when it decides to quaff its own Heal
             // Potion — see apply_potion(), where every potion effect is defined once.
-            Potion chosen = player.potions[idx];
-            player.potions.erase(player.potions.begin() + static_cast<long>(idx));
-            apply_potion(player, chosen);
-            mode = Mode::Playing;
+            Potion chosen = gs.player.potions[idx];
+            gs.player.potions.erase(gs.player.potions.begin() + static_cast<long>(idx));
+            apply_potion(gs, gs.player, chosen);
+            gs.mode = Mode::Playing;
             end_turn();  // drinking takes a moment; adjacent monsters get a free hit
           }
         }
         continue;
       }
 
-      if (mode == Mode::SpellMenu) {
+      if (gs.mode == Mode::SpellMenu) {
         if (event.key.key == SDLK_ESCAPE) {
-          mode = Mode::Playing;
+          gs.mode = Mode::Playing;
         } else if (event.key.key >= SDLK_A && event.key.key <= SDLK_Z) {
-          auto known = known_spell_indices(player.intelligence, player.chosen_school);
+          auto known = known_spell_indices(gs.player.intelligence, gs.player.chosen_school);
           size_t idx = static_cast<size_t>(event.key.key - SDLK_A);
           if (idx < known.size()) {
             int spell_idx = known[idx];
             const Spell& spell = kSpellTable[static_cast<size_t>(spell_idx)];
             if (spell.is_toggle) {
-              if (active_toggle_spell == spell_idx) {
+              if (gs.active_toggle_spell == spell_idx) {
                 // Turning off is always free — no mana cost, but still takes the turn,
                 // same as every other spell-menu action.
-                active_toggle_spell = -1;
-                add_message("Your " + spell.name + " dissipates.");
-                mode = Mode::Playing;
+                gs.active_toggle_spell = -1;
+                add_message(gs, "Your " + spell.name + " dissipates.");
+                gs.mode = Mode::Playing;
                 end_turn();
-              } else if (player.mana < spell.mana_cost) {
-                add_message("Not enough mana to cast " + spell.name + ".");
-                mode = Mode::Playing;  // free cancel, no turn spent
+              } else if (gs.player.mana < spell.mana_cost) {
+                add_message(gs, "Not enough mana to cast " + spell.name + ".");
+                gs.mode = Mode::Playing;  // free cancel, no turn spent
               } else {
-                player.mana -= spell.mana_cost;
-                add_message("You summon a " + spell.name + " around yourself!");
-                mode = Mode::Playing;
+                gs.player.mana -= spell.mana_cost;
+                add_message(gs, "You summon a " + spell.name + " around yourself!");
+                gs.mode = Mode::Playing;
                 end_turn();  // this turn only pays the flat activation cost above
-                active_toggle_spell = spell_idx;  // set after end_turn(), so the
+                gs.active_toggle_spell = spell_idx;  // set after end_turn(), so the
                                                    // per-turn tick starts next turn
               }
             } else if (spell.is_summon) {
               int spawn_x, spawn_y;
               if (count_minions(level.monsters) >= kMaxMinions) {
-                add_message("You can't command any more minions right now.");
-                mode = Mode::Playing;  // free cancel, no turn spent
-              } else if (player.mana < spell.mana_cost) {
-                add_message("Not enough mana to cast " + spell.name + ".");
-                mode = Mode::Playing;  // free cancel, no turn spent
-              } else if (!free_adjacent_tile(level.map, level.monsters, player.x, player.y, spawn_x, spawn_y)) {
-                add_message("There's no room to summon here!");
-                mode = Mode::Playing;  // free cancel, no turn spent
+                add_message(gs, "You can't command any more minions right now.");
+                gs.mode = Mode::Playing;  // free cancel, no turn spent
+              } else if (gs.player.mana < spell.mana_cost) {
+                add_message(gs, "Not enough mana to cast " + spell.name + ".");
+                gs.mode = Mode::Playing;  // free cancel, no turn spent
+              } else if (!free_adjacent_tile(level.map, level.monsters, gs.player.x, gs.player.y, spawn_x, spawn_y)) {
+                add_message(gs, "There's no room to summon here!");
+                gs.mode = Mode::Playing;  // free cancel, no turn spent
               } else {
-                player.mana -= spell.mana_cost;
+                gs.player.mana -= spell.mana_cost;
                 const MinionTemplate& tmpl = kMinionTable[static_cast<size_t>(spell.summon_template_index)];
                 Actor minion = spawn_minion(tmpl, spawn_x, spawn_y);
                 // Defaults to Aggressive — a fresh recruit engages anything hostile it
@@ -2556,104 +1952,104 @@ int main(int argc, char* argv[]) {
                   }
                 }
                 level.monsters.push_back(minion);
-                add_message("You raise a " + tmpl.name + " to fight for you!");
-                mode = Mode::Playing;
+                add_message(gs, "You raise a " + tmpl.name + " to fight for you!");
+                gs.mode = Mode::Playing;
                 end_turn();
               }
             } else if (spell.is_melee_buff) {
-              if (player.mana < spell.mana_cost) {
-                add_message("Not enough mana to cast " + spell.name + ".");
-                mode = Mode::Playing;  // free cancel, no turn spent
+              if (gs.player.mana < spell.mana_cost) {
+                add_message(gs, "Not enough mana to cast " + spell.name + ".");
+                gs.mode = Mode::Playing;  // free cancel, no turn spent
               } else {
-                player.mana -= spell.mana_cost;
+                gs.player.mana -= spell.mana_cost;
                 // Refresh-not-stack, same idiom apply_potion() uses for STR/DEX/INT.
-                if (player.temp_melee_damage_turns <= 0) player.temp_melee_damage_bonus = spell.buff_amount;
-                player.temp_melee_damage_turns = spell.buff_turns;
-                add_message("Your strikes grow fiercer! Melee damage +" + std::to_string(spell.buff_amount) +
+                if (gs.player.temp_melee_damage_turns <= 0) gs.player.temp_melee_damage_bonus = spell.buff_amount;
+                gs.player.temp_melee_damage_turns = spell.buff_turns;
+                add_message(gs, "Your strikes grow fiercer! Melee damage +" + std::to_string(spell.buff_amount) +
                             " for " + std::to_string(spell.buff_turns) + " turns.");
-                mode = Mode::Playing;
+                gs.mode = Mode::Playing;
                 end_turn();
               }
             } else if (spell.is_armor_buff) {
-              if (player.mana < spell.mana_cost) {
-                add_message("Not enough mana to cast " + spell.name + ".");
-                mode = Mode::Playing;  // free cancel, no turn spent
+              if (gs.player.mana < spell.mana_cost) {
+                add_message(gs, "Not enough mana to cast " + spell.name + ".");
+                gs.mode = Mode::Playing;  // free cancel, no turn spent
               } else {
-                player.mana -= spell.mana_cost;
-                if (player.temp_armor_turns <= 0) player.temp_armor_bonus = spell.buff_amount;
-                player.temp_armor_turns = spell.buff_turns;
-                add_message("Your skin hardens! Armor +" + std::to_string(spell.buff_amount) + " for " +
+                gs.player.mana -= spell.mana_cost;
+                if (gs.player.temp_armor_turns <= 0) gs.player.temp_armor_bonus = spell.buff_amount;
+                gs.player.temp_armor_turns = spell.buff_turns;
+                add_message(gs, "Your skin hardens! Armor +" + std::to_string(spell.buff_amount) + " for " +
                             std::to_string(spell.buff_turns) + " turns.");
-                mode = Mode::Playing;
+                gs.mode = Mode::Playing;
                 end_turn();
               }
             } else if (spell.is_haste_buff) {
-              if (player.mana < spell.mana_cost) {
-                add_message("Not enough mana to cast " + spell.name + ".");
-                mode = Mode::Playing;  // free cancel, no turn spent
+              if (gs.player.mana < spell.mana_cost) {
+                add_message(gs, "Not enough mana to cast " + spell.name + ".");
+                gs.mode = Mode::Playing;  // free cancel, no turn spent
               } else {
-                player.mana -= spell.mana_cost;
-                add_message("You blur into motion! +" + std::to_string(spell.buff_amount) +
+                gs.player.mana -= spell.mana_cost;
+                add_message(gs, "You blur into motion! +" + std::to_string(spell.buff_amount) +
                             " action per turn for " + std::to_string(spell.buff_turns) + " turns.");
-                mode = Mode::Playing;
+                gs.mode = Mode::Playing;
                 // The buff is applied *after* end_turn(), so casting Haste costs a whole
                 // turn like any other spell instead of immediately refunding itself as a
                 // free action. Exactly the reason active_toggle_spell is set after
                 // end_turn() when a toggle spell is switched on — otherwise the cheapest
                 // way to use the spell would be to keep re-casting it.
                 end_turn();
-                if (player.temp_extra_actions_turns <= 0) player.temp_extra_actions_bonus = spell.buff_amount;
-                player.temp_extra_actions_turns = spell.buff_turns;  // refresh-not-stack, as above
+                if (gs.player.temp_extra_actions_turns <= 0) gs.player.temp_extra_actions_bonus = spell.buff_amount;
+                gs.player.temp_extra_actions_turns = spell.buff_turns;  // refresh-not-stack, as above
               }
             } else if (spell.is_swap) {
-              casting_spell_index = spell_idx;
+              gs.casting_spell_index = spell_idx;
               // Auto-aim at the closest minion in range (no FOV requirement — see
               // closest_own_minion()), else fall back to the player's own tile; Enter
               // will just reject the cast with a message if nothing's actually there.
-              int auto_id = closest_own_minion(level.monsters, player, spell.range);
+              int auto_id = closest_own_minion(level.monsters, gs.player, spell.range);
               int auto_idx = actor_index_by_id(level.monsters, auto_id);
               if (auto_idx >= 0) {
-                target_x = level.monsters[static_cast<size_t>(auto_idx)].x;
-                target_y = level.monsters[static_cast<size_t>(auto_idx)].y;
+                gs.target_x = level.monsters[static_cast<size_t>(auto_idx)].x;
+                gs.target_y = level.monsters[static_cast<size_t>(auto_idx)].y;
               } else {
-                target_x = player.x;
-                target_y = player.y;
+                gs.target_x = gs.player.x;
+                gs.target_y = gs.player.y;
               }
-              mode = Mode::Targeting;
+              gs.mode = Mode::Targeting;
             } else {
-              casting_spell_index = spell_idx;
+              gs.casting_spell_index = spell_idx;
               // Auto-aim at the most recently targeted hostile if it still qualifies,
               // else the closest qualifying one, else fall back to the player's own
               // tile (the old default) — see auto_target_hostile().
-              int auto_id = auto_target_hostile(level.monsters, player, level.map, last_target_id, spell.range);
+              int auto_id = auto_target_hostile(level.monsters, gs.player, level.map, gs.last_target_id, spell.range);
               int auto_idx = actor_index_by_id(level.monsters, auto_id);
               if (auto_idx >= 0) {
-                target_x = level.monsters[static_cast<size_t>(auto_idx)].x;
-                target_y = level.monsters[static_cast<size_t>(auto_idx)].y;
+                gs.target_x = level.monsters[static_cast<size_t>(auto_idx)].x;
+                gs.target_y = level.monsters[static_cast<size_t>(auto_idx)].y;
               } else {
-                target_x = player.x;
-                target_y = player.y;
+                gs.target_x = gs.player.x;
+                gs.target_y = gs.player.y;
               }
-              mode = Mode::Targeting;
+              gs.mode = Mode::Targeting;
             }
           }
         }
         continue;
       }
 
-      if (mode == Mode::MinionRoster) {
+      if (gs.mode == Mode::MinionRoster) {
         if (event.key.key == SDLK_ESCAPE) {
-          mode = Mode::Playing;
+          gs.mode = Mode::Playing;
           continue;
         }
         if (event.key.key == SDLK_A && (event.key.mod & SDL_KMOD_SHIFT) != 0) {
           // Shift+A always means "All", regardless of which letter it actually landed
           // on this frame (that shifts with the pack's current size) — a fast path so
           // you don't have to read the list to find the right letter every time.
-          commanding_all_minions = true;
-          target_x = player.x;
-          target_y = player.y;
-          mode = Mode::MinionFocus;
+          gs.commanding_all_minions = true;
+          gs.target_x = gs.player.x;
+          gs.target_y = gs.player.y;
+          gs.mode = Mode::MinionFocus;
           continue;
         }
         if (event.key.key >= SDLK_A && event.key.key <= SDLK_Z) {
@@ -2666,25 +2062,25 @@ int main(int argc, char* argv[]) {
           }
           size_t idx = static_cast<size_t>(event.key.key - SDLK_A);
           if (idx < minion_ids.size()) {
-            focused_minion_id = minion_ids[idx];
-            commanding_all_minions = false;
-            int fi = actor_index_by_id(level.monsters, focused_minion_id);
-            target_x = level.monsters[static_cast<size_t>(fi)].x;
-            target_y = level.monsters[static_cast<size_t>(fi)].y;
-            mode = Mode::MinionFocus;
+            gs.focused_minion_id = minion_ids[idx];
+            gs.commanding_all_minions = false;
+            int fi = actor_index_by_id(level.monsters, gs.focused_minion_id);
+            gs.target_x = level.monsters[static_cast<size_t>(fi)].x;
+            gs.target_y = level.monsters[static_cast<size_t>(fi)].y;
+            gs.mode = Mode::MinionFocus;
           }
         }
         continue;
       }
 
-      if (mode == Mode::MinionFocus) {
+      if (gs.mode == Mode::MinionFocus) {
         // Applies `fn` to every currently-commanded minion — all of them if this
         // session came from the roster's "All", otherwise just the one named by
         // focused_minion_id. Shared by F (Follow) and Enter (Attack/Hold) below so
         // the "who does this apply to" logic can't drift between the two.
         auto for_each_commanded_minion = [&](auto&& fn) {
           int count = 0;
-          if (commanding_all_minions) {
+          if (gs.commanding_all_minions) {
             for (auto& m : level.monsters) {
               if (m.allegiance == Allegiance::Player && m.is_alive()) {
                 fn(m);
@@ -2692,7 +2088,7 @@ int main(int argc, char* argv[]) {
               }
             }
           } else {
-            int fi = actor_index_by_id(level.monsters, focused_minion_id);
+            int fi = actor_index_by_id(level.monsters, gs.focused_minion_id);
             if (fi >= 0) {
               fn(level.monsters[static_cast<size_t>(fi)]);
               count = 1;
@@ -2706,9 +2102,9 @@ int main(int argc, char* argv[]) {
           // Esc just backs out of this one planning action; Shift+P additionally
           // resets cycle position, so the next 'o'/'p' starts over from the top —
           // "focusing back on the player instantly."
-          if (event.key.key == SDLK_P) focused_minion_id = -1;
-          commanding_all_minions = false;
-          mode = Mode::Playing;
+          if (event.key.key == SDLK_P) gs.focused_minion_id = -1;
+          gs.commanding_all_minions = false;
+          gs.mode = Mode::Playing;
           continue;
         }
         if (event.key.key == SDLK_O || (event.key.key == SDLK_P && !shift_held)) {
@@ -2716,16 +2112,16 @@ int main(int argc, char* argv[]) {
           // play in between — plan one, tab, plan the next, same as 'o'/'p' do from
           // Mode::Playing (see cycle_minion_focus above), just without leaving this mode.
           if (!cycle_minion_focus(event.key.key == SDLK_O ? 1 : -1)) {
-            add_message("You have no minions to command.");
-            mode = Mode::Playing;
+            add_message(gs, "You have no minions to command.");
+            gs.mode = Mode::Playing;
           }
           continue;
         }
         if (event.key.key == SDLK_F) {
           int ordered = for_each_commanded_minion([](Actor& m) { m.order = MinionOrder::Follow; });
-          add_message(ordered == 1 ? "Your minion returns to your side." : "Your minions return to your side.");
-          commanding_all_minions = false;
-          mode = Mode::Playing;
+          add_message(gs, ordered == 1 ? "Your minion returns to your side." : "Your minions return to your side.");
+          gs.commanding_all_minions = false;
+          gs.mode = Mode::Playing;
           continue;
         }
         if (event.key.key == SDLK_G) {
@@ -2733,13 +2129,13 @@ int main(int argc, char* argv[]) {
           // instead of waiting for something to wander into its own reach — see the
           // MinionOrder doc comment in entity.hpp.
           int ordered = for_each_commanded_minion([](Actor& m) { m.order = MinionOrder::Aggressive; });
-          add_message(ordered == 1 ? "Your minion goes on the offensive." : "Your minions go on the offensive.");
-          commanding_all_minions = false;
-          mode = Mode::Playing;
+          add_message(gs, ordered == 1 ? "Your minion goes on the offensive." : "Your minions go on the offensive.");
+          gs.commanding_all_minions = false;
+          gs.mode = Mode::Playing;
           continue;
         }
         if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER) {
-          int hostile_hit = hostile_monster_at(level.monsters, target_x, target_y);
+          int hostile_hit = hostile_monster_at(level.monsters, gs.target_x, gs.target_y);
           if (hostile_hit >= 0) {
             int target_id = level.monsters[static_cast<size_t>(hostile_hit)].id;
             std::string target_name = level.monsters[static_cast<size_t>(hostile_hit)].name;
@@ -2747,13 +2143,13 @@ int main(int argc, char* argv[]) {
               m.order = MinionOrder::AttackTarget;
               m.attack_target_id = target_id;
             });
-            add_message((ordered == 1 ? "Your minion attacks the " : "Your minions attack the ") + target_name +
+            add_message(gs, (ordered == 1 ? "Your minion attacks the " : "Your minions attack the ") + target_name +
                         "!");
-            commanding_all_minions = false;
-            mode = Mode::Playing;
+            gs.commanding_all_minions = false;
+            gs.mode = Mode::Playing;
             continue;
           }
-          if (target_x == player.x && target_y == player.y) {
+          if (gs.target_x == gs.player.x && gs.target_y == gs.player.y) {
             // Targeting yourself reads as "come back to me" — the same Follow order
             // 'F' gives directly, just reachable without moving the cursor off your
             // own tile first. (Previously this fell through to the tile_free/Hold
@@ -2761,27 +2157,27 @@ int main(int argc, char* argv[]) {
             // invisible to monster_at() — would silently issue a Hold planted on the
             // player's exact tile instead of anything resembling a rejection.)
             int ordered = for_each_commanded_minion([](Actor& m) { m.order = MinionOrder::Follow; });
-            add_message(ordered == 1 ? "Your minion returns to your side." : "Your minions return to your side.");
-            commanding_all_minions = false;
-            mode = Mode::Playing;
+            add_message(gs, ordered == 1 ? "Your minion returns to your side." : "Your minions return to your side.");
+            gs.commanding_all_minions = false;
+            gs.mode = Mode::Playing;
             continue;
           }
-          bool tile_free = level.map.is_walkable(target_x, target_y) &&
-                            monster_at(level.monsters, target_x, target_y) < 0;
+          bool tile_free = level.map.is_walkable(gs.target_x, gs.target_y) &&
+                            monster_at(level.monsters, gs.target_x, gs.target_y) < 0;
           if (tile_free) {
-            int hx = target_x;
-            int hy = target_y;
+            int hx = gs.target_x;
+            int hy = gs.target_y;
             int ordered = for_each_commanded_minion([&](Actor& m) {
               m.order = MinionOrder::Hold;
               m.hold_x = hx;
               m.hold_y = hy;
             });
-            add_message(ordered == 1 ? "Your minion holds position." : "Your minions hold position.");
-            commanding_all_minions = false;
-            mode = Mode::Playing;
+            add_message(gs, ordered == 1 ? "Your minion holds position." : "Your minions hold position.");
+            gs.commanding_all_minions = false;
+            gs.mode = Mode::Playing;
             continue;
           }
-          add_message("You can't send them there.");
+          add_message(gs, "You can't send them there.");
           continue;  // stay in this mode, no turn spent — try again
         }
 
@@ -2827,46 +2223,46 @@ int main(int argc, char* argv[]) {
             break;
         }
         if (tdx != 0 || tdy != 0) {
-          int nx = target_x + tdx;
-          int ny = target_y + tdy;
+          int nx = gs.target_x + tdx;
+          int ny = gs.target_y + tdy;
           if (level.map.in_bounds(nx, ny)) {
-            target_x = nx;
-            target_y = ny;
+            gs.target_x = nx;
+            gs.target_y = ny;
           }
         }
         continue;
       }
 
-      if (mode == Mode::Targeting) {
-        const Spell& spell = kSpellTable[static_cast<size_t>(casting_spell_index)];
+      if (gs.mode == Mode::Targeting) {
+        const Spell& spell = kSpellTable[static_cast<size_t>(gs.casting_spell_index)];
 
         if (event.key.key == SDLK_ESCAPE) {
-          mode = Mode::Playing;
+          gs.mode = Mode::Playing;
           continue;
         }
         if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER) {
-          if (player.mana < spell.mana_cost) {
-            add_message("Not enough mana to cast " + spell.name + ".");
-            mode = Mode::Playing;  // free cancel, same as Esc — no turn spent
+          if (gs.player.mana < spell.mana_cost) {
+            add_message(gs, "Not enough mana to cast " + spell.name + ".");
+            gs.mode = Mode::Playing;  // free cancel, same as Esc — no turn spent
             continue;
           }
 
           if (spell.is_swap) {
-            int minion_index = own_minion_at(level.monsters, target_x, target_y);
+            int minion_index = own_minion_at(level.monsters, gs.target_x, gs.target_y);
             if (minion_index < 0) {
-              add_message("There's no minion there to swap places with.");
-              mode = Mode::Playing;  // free cancel, same as Esc — no turn spent
+              add_message(gs, "There's no minion there to swap places with.");
+              gs.mode = Mode::Playing;  // free cancel, same as Esc — no turn spent
               continue;
             }
             Actor& minion = level.monsters[static_cast<size_t>(minion_index)];
-            std::swap(player.x, minion.x);
-            std::swap(player.y, minion.y);
+            std::swap(gs.player.x, minion.x);
+            std::swap(gs.player.y, minion.y);
             // Not an incremental step, so (unlike normal movement) FOV needs an
             // explicit recompute — same as the Potion of Teleportation's effect.
-            level.map.update_fov(player.x, player.y, FOV_RADIUS);
-            player.mana -= spell.mana_cost;
-            add_message("You swap places with your " + minion.name + ".");
-            mode = Mode::Playing;
+            level.map.update_fov(gs.player.x, gs.player.y, FOV_RADIUS);
+            gs.player.mana -= spell.mana_cost;
+            add_message(gs, "You swap places with your " + minion.name + ".");
+            gs.mode = Mode::Playing;
             end_turn();
             continue;
           }
@@ -2875,13 +2271,13 @@ int main(int argc, char* argv[]) {
           // Targeting/RangedAttack opens it re-aims at the same monster (see
           // auto_target_hostile()). Left unchanged if the shot is aimed at empty
           // ground (e.g. an AoE spell dropped on open floor).
-          int hit_index = hostile_monster_at(level.monsters, target_x, target_y);
-          if (hit_index >= 0) last_target_id = level.monsters[static_cast<size_t>(hit_index)].id;
+          int hit_index = hostile_monster_at(level.monsters, gs.target_x, gs.target_y);
+          if (hit_index >= 0) gs.last_target_id = level.monsters[static_cast<size_t>(hit_index)].id;
 
           // Any tile is a legal target now: the spell travels and resolves against
           // whatever (if anything) it actually reaches, not necessarily the cursor tile.
           Projectile proj;
-          proj.path = trace_path(player.x, player.y, target_x, target_y);
+          proj.path = trace_path(gs.player.x, gs.player.y, gs.target_x, gs.target_y);
           proj.speed = spell.speed;
           proj.dice_count = spell.dice_count;
           proj.dice_sides = spell.dice_sides;
@@ -2889,18 +2285,18 @@ int main(int argc, char* argv[]) {
           proj.hit_dice_sides = spell.hit_dice_sides;
           proj.aoe_radius = spell.aoe_radius;
           proj.pierces = spell.pierces;
-          proj.prev_x = player.x;  // seeds the "last open tile" for an immediate wall hit
-          proj.prev_y = player.y;
+          proj.prev_x = gs.player.x;  // seeds the "last open tile" for an immediate wall hit
+          proj.prev_y = gs.player.y;
           // Locked in now, not re-read when it lands. Temporary INT (from a Potion of
           // Intelligence) boosts this the same as permanent INT would — only spell
           // *unlocking* (known_spell_indices, above) ignores the temporary bonus.
-          proj.bonus = (player.intelligence + player.temp_int_bonus) / 3;
+          proj.bonus = (gs.player.intelligence + gs.player.temp_int_bonus) / 3;
           // A spell's accuracy is built the same way a weapon swing's is: the caster's
           // Dexterity term plus the spell's own hit-dice, rolled on impact. Locking the
           // Dexterity half in here (rather than reading it when the projectile lands
           // several turns later) is what makes a slow Fireball as accurate as the moment
           // it was thrown.
-          proj.accuracy_bonus = (player.dexterity + player.temp_dex_bonus) * kAccuracyPerDexPoint;
+          proj.accuracy_bonus = (gs.player.dexterity + gs.player.temp_dex_bonus) * kAccuracyPerDexPoint;
           proj.name = spell.name;
           proj.glyph = spell.glyph;
           proj.color = spell.color;
@@ -2910,10 +2306,10 @@ int main(int argc, char* argv[]) {
           proj.owner_allegiance = Allegiance::Player;
           proj.owner_is_player = true;
           level.projectiles.push_back(proj);
-          player.mana -= spell.mana_cost;
+          gs.player.mana -= spell.mana_cost;
 
-          add_message("You cast " + spell.name + ".");
-          mode = Mode::Playing;
+          add_message(gs, "You cast " + spell.name + ".");
+          gs.mode = Mode::Playing;
           end_turn();  // advance_projectiles() may resolve this immediately for fast spells
           continue;
         }
@@ -2958,24 +2354,24 @@ int main(int argc, char* argv[]) {
             break;
         }
         if (tdx != 0 || tdy != 0) {
-          int nx = target_x + tdx;
-          int ny = target_y + tdy;
-          int rdx = nx - player.x;
-          int rdy = ny - player.y;
+          int nx = gs.target_x + tdx;
+          int ny = gs.target_y + tdy;
+          int rdx = nx - gs.player.x;
+          int rdy = ny - gs.player.y;
           bool in_range = rdx * rdx + rdy * rdy <= spell.range * spell.range;
           if (level.map.in_bounds(nx, ny) && in_range) {
-            target_x = nx;
-            target_y = ny;
+            gs.target_x = nx;
+            gs.target_y = ny;
           }
         }
         continue;
       }
 
-      if (mode == Mode::RangedAttack) {
-        const Weapon& weapon = player.weapon;
+      if (gs.mode == Mode::RangedAttack) {
+        const Weapon& weapon = gs.player.weapon;
 
         if (event.key.key == SDLK_ESCAPE) {
-          mode = Mode::Playing;
+          gs.mode = Mode::Playing;
           continue;
         }
         if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER) {
@@ -2989,20 +2385,20 @@ int main(int argc, char* argv[]) {
 
           // Remember what's under the cursor now, before firing — see the Targeting
           // handler's identical comment above.
-          int hit_index = hostile_monster_at(level.monsters, target_x, target_y);
-          if (hit_index >= 0) last_target_id = level.monsters[static_cast<size_t>(hit_index)].id;
+          int hit_index = hostile_monster_at(level.monsters, gs.target_x, gs.target_y);
+          if (hit_index >= 0) gs.last_target_id = level.monsters[static_cast<size_t>(hit_index)].id;
 
           Projectile proj;
-          proj.path = trace_path(player.x, player.y, target_x, target_y);
+          proj.path = trace_path(gs.player.x, gs.player.y, gs.target_x, gs.target_y);
           proj.speed = kInstantSpellSpeed;
           proj.dice_count = weapon.dice_count;
           proj.dice_sides = weapon.dice_sides;
           proj.hit_dice_count = weapon.hit_dice_count;
           proj.hit_dice_sides = weapon.hit_dice_sides;
-          proj.prev_x = player.x;
-          proj.prev_y = player.y;
-          proj.bonus = weapon.bonus + damage_bonus_for(player, weapon);
-          proj.accuracy_bonus = (player.dexterity + player.temp_dex_bonus) * kAccuracyPerDexPoint;
+          proj.prev_x = gs.player.x;
+          proj.prev_y = gs.player.y;
+          proj.bonus = weapon.bonus + damage_bonus_for(gs.player, weapon);
+          proj.accuracy_bonus = (gs.player.dexterity + gs.player.temp_dex_bonus) * kAccuracyPerDexPoint;
           proj.name = weapon.name;
           proj.glyph = '-';
           proj.color = tcod::ColorRGB{200, 170, 100};
@@ -3010,8 +2406,8 @@ int main(int argc, char* argv[]) {
           proj.owner_is_player = true;
           level.projectiles.push_back(proj);
 
-          add_message("You fire your " + weapon.name + ".");
-          mode = Mode::Playing;
+          add_message(gs, "You fire your " + weapon.name + ".");
+          gs.mode = Mode::Playing;
           end_turn();
           continue;
         }
@@ -3057,22 +2453,22 @@ int main(int argc, char* argv[]) {
             break;
         }
         if (tdx != 0 || tdy != 0) {
-          int nx = target_x + tdx;
-          int ny = target_y + tdy;
-          int rdx = nx - player.x;
-          int rdy = ny - player.y;
+          int nx = gs.target_x + tdx;
+          int ny = gs.target_y + tdy;
+          int rdx = nx - gs.player.x;
+          int rdy = ny - gs.player.y;
           bool in_range = rdx * rdx + rdy * rdy <= weapon.attack_range * weapon.attack_range;
           if (level.map.in_bounds(nx, ny) && in_range) {
-            target_x = nx;
-            target_y = ny;
+            gs.target_x = nx;
+            gs.target_y = ny;
           }
         }
         continue;
       }
 
-      if (mode == Mode::Look) {
+      if (gs.mode == Mode::Look) {
         if (event.key.key == SDLK_ESCAPE || event.key.key == SDLK_X) {
-          mode = Mode::Playing;
+          gs.mode = Mode::Playing;
           continue;
         }
 
@@ -3117,21 +2513,21 @@ int main(int argc, char* argv[]) {
             break;
         }
         if (tdx != 0 || tdy != 0) {
-          int nx = target_x + tdx;
-          int ny = target_y + tdy;
+          int nx = gs.target_x + tdx;
+          int ny = gs.target_y + tdy;
           if (level.map.in_bounds(nx, ny)) {
-            target_x = nx;
-            target_y = ny;
+            gs.target_x = nx;
+            gs.target_y = ny;
           }
         }
         continue;
       }
 
-      if (mode == Mode::Drop) {
+      if (gs.mode == Mode::Drop) {
         if (event.key.key == SDLK_ESCAPE) {
-          mode = Mode::Playing;
+          gs.mode = Mode::Playing;
         } else if (event.key.key >= SDLK_A && event.key.key <= SDLK_Z) {
-          auto slots = drop_slots(player);
+          auto slots = drop_slots(gs.player);
           size_t idx = static_cast<size_t>(event.key.key - SDLK_A);
           if (idx < slots.size()) {
             const ItemSlot& slot = slots[idx];
@@ -3139,36 +2535,36 @@ int main(int argc, char* argv[]) {
             if (slot.kind == ItemKind::Weapon) {
               Weapon dropped;
               if (slot.index == -1) {
-                dropped = player.weapon;
-                player.weapon = kFists;
+                dropped = gs.player.weapon;
+                gs.player.weapon = kFists;
               } else {
                 size_t inv_idx = static_cast<size_t>(slot.index);
-                dropped = player.weapons[inv_idx];
-                player.weapons.erase(player.weapons.begin() + static_cast<long>(inv_idx));
+                dropped = gs.player.weapons[inv_idx];
+                gs.player.weapons.erase(gs.player.weapons.begin() + static_cast<long>(inv_idx));
               }
-              level.items.push_back(GroundItem{player.x, player.y, dropped});
+              level.items.push_back(GroundItem{gs.player.x, gs.player.y, dropped});
               dropped_name = dropped.name;
             } else if (slot.kind == ItemKind::Armor) {
               Armor dropped;
               if (slot.index == -1) {
-                dropped = player.armor;
-                player.armor = kNoArmor;
+                dropped = gs.player.armor;
+                gs.player.armor = kNoArmor;
               } else {
                 size_t inv_idx = static_cast<size_t>(slot.index);
-                dropped = player.armors[inv_idx];
-                player.armors.erase(player.armors.begin() + static_cast<long>(inv_idx));
+                dropped = gs.player.armors[inv_idx];
+                gs.player.armors.erase(gs.player.armors.begin() + static_cast<long>(inv_idx));
               }
-              level.armor_items.push_back(GroundArmor{player.x, player.y, dropped});
+              level.armor_items.push_back(GroundArmor{gs.player.x, gs.player.y, dropped});
               dropped_name = dropped.name;
             } else {
               size_t inv_idx = static_cast<size_t>(slot.index);
-              Potion dropped = player.potions[inv_idx];
-              player.potions.erase(player.potions.begin() + static_cast<long>(inv_idx));
-              level.potions.push_back(GroundPotion{player.x, player.y, dropped});
+              Potion dropped = gs.player.potions[inv_idx];
+              gs.player.potions.erase(gs.player.potions.begin() + static_cast<long>(inv_idx));
+              level.potions.push_back(GroundPotion{gs.player.x, gs.player.y, dropped});
               dropped_name = dropped.name;
             }
-            add_message("You drop the " + dropped_name + ".");
-            mode = Mode::Playing;
+            add_message(gs, "You drop the " + dropped_name + ".");
+            gs.mode = Mode::Playing;
             end_turn();
           }
         }
@@ -3177,24 +2573,24 @@ int main(int argc, char* argv[]) {
 
       // Mode::Playing
       if (event.key.key == SDLK_ESCAPE) {
-        running = false;
+        gs.running = false;
         continue;
       }
 
       if (event.key.key == SDLK_W) {
-        mode = Mode::WeaponMenu;
+        gs.mode = Mode::WeaponMenu;
         continue;
       }
       if (event.key.key == SDLK_A) {
-        mode = Mode::ArmorMenu;
+        gs.mode = Mode::ArmorMenu;
         continue;
       }
       if (event.key.key == SDLK_D) {
-        mode = Mode::Drop;
+        gs.mode = Mode::Drop;
         continue;
       }
       if (event.key.key == SDLK_Q) {
-        mode = Mode::PotionMenu;
+        gs.mode = Mode::PotionMenu;
         continue;
       }
       if (event.key.key == SDLK_G) {
@@ -3211,66 +2607,66 @@ int main(int argc, char* argv[]) {
         bool picked_up_anything = false;
         for (int i = static_cast<int>(level.items.size()) - 1; i >= 0; --i) {
           const GroundItem& ground = level.items[static_cast<size_t>(i)];
-          if (ground.x != player.x || ground.y != player.y) continue;
-          add_message("You pick up a " + ground.weapon.name + ". Press 'w' to equip.");
-          player.weapons.push_back(ground.weapon);
+          if (ground.x != gs.player.x || ground.y != gs.player.y) continue;
+          add_message(gs, "You pick up a " + ground.weapon.name + ". Press 'w' to equip.");
+          gs.player.weapons.push_back(ground.weapon);
           level.items.erase(level.items.begin() + i);
           picked_up_anything = true;
         }
         for (int i = static_cast<int>(level.armor_items.size()) - 1; i >= 0; --i) {
           const GroundArmor& ground = level.armor_items[static_cast<size_t>(i)];
-          if (ground.x != player.x || ground.y != player.y) continue;
-          add_message("You pick up a " + ground.armor.name + ". Press 'a' to equip.");
-          player.armors.push_back(ground.armor);
+          if (ground.x != gs.player.x || ground.y != gs.player.y) continue;
+          add_message(gs, "You pick up a " + ground.armor.name + ". Press 'a' to equip.");
+          gs.player.armors.push_back(ground.armor);
           level.armor_items.erase(level.armor_items.begin() + i);
           picked_up_anything = true;
         }
         for (int i = static_cast<int>(level.potions.size()) - 1; i >= 0; --i) {
           const GroundPotion& ground = level.potions[static_cast<size_t>(i)];
-          if (ground.x != player.x || ground.y != player.y) continue;
-          add_message("You pick up a " + ground.potion.name + ". Press 'q' to drink.");
-          player.potions.push_back(ground.potion);
+          if (ground.x != gs.player.x || ground.y != gs.player.y) continue;
+          add_message(gs, "You pick up a " + ground.potion.name + ". Press 'q' to drink.");
+          gs.player.potions.push_back(ground.potion);
           level.potions.erase(level.potions.begin() + i);
           picked_up_anything = true;
         }
         if (picked_up_anything) {
           end_turn();
         } else {
-          add_message("There's nothing here to pick up.");
+          add_message(gs, "There's nothing here to pick up.");
         }
         continue;
       }
       if (event.key.key == SDLK_Z) {
-        mode = Mode::SpellMenu;
+        gs.mode = Mode::SpellMenu;
         continue;
       }
       if (event.key.key == SDLK_F) {
         // Fire the equipped weapon at range — only meaningful for a ranged weapon
         // (Weapon::attack_range > 1, e.g. Bow); a melee weapon still only attacks by
         // bumping into an adjacent monster.
-        if (player.weapon.attack_range <= 1) {
-          add_message("Your " + player.weapon.name + " isn't a ranged weapon.");
+        if (gs.player.weapon.attack_range <= 1) {
+          add_message(gs, "Your " + gs.player.weapon.name + " isn't a ranged weapon.");
         } else {
           // Same auto-aim as SpellMenu -> Targeting above, see auto_target_hostile().
-          int auto_id = auto_target_hostile(level.monsters, player, level.map, last_target_id,
-                                             player.weapon.attack_range);
+          int auto_id = auto_target_hostile(level.monsters, gs.player, level.map, gs.last_target_id,
+                                             gs.player.weapon.attack_range);
           int auto_idx = actor_index_by_id(level.monsters, auto_id);
           if (auto_idx >= 0) {
-            target_x = level.monsters[static_cast<size_t>(auto_idx)].x;
-            target_y = level.monsters[static_cast<size_t>(auto_idx)].y;
+            gs.target_x = level.monsters[static_cast<size_t>(auto_idx)].x;
+            gs.target_y = level.monsters[static_cast<size_t>(auto_idx)].y;
           } else {
-            target_x = player.x;
-            target_y = player.y;
+            gs.target_x = gs.player.x;
+            gs.target_y = gs.player.y;
           }
-          mode = Mode::RangedAttack;
+          gs.mode = Mode::RangedAttack;
         }
         continue;
       }
       if (event.key.key == SDLK_M) {
         if (count_minions(level.monsters) == 0) {
-          add_message("You have no minions to command.");
+          add_message(gs, "You have no minions to command.");
         } else {
-          mode = Mode::MinionRoster;
+          gs.mode = Mode::MinionRoster;
         }
         continue;
       }
@@ -3282,34 +2678,34 @@ int main(int argc, char* argv[]) {
       if (event.key.key == SDLK_O || event.key.key == SDLK_P) {
         bool shift_held = (event.key.mod & SDL_KMOD_SHIFT) != 0;
         if (event.key.key == SDLK_P && shift_held) {
-          focused_minion_id = -1;
+          gs.focused_minion_id = -1;
           continue;
         }
         if (!cycle_minion_focus(event.key.key == SDLK_O ? 1 : -1)) {
-          add_message("You have no minions to command.");
+          add_message(gs, "You have no minions to command.");
         } else {
-          mode = Mode::MinionFocus;
+          gs.mode = Mode::MinionFocus;
         }
         continue;
       }
       if (event.key.key == SDLK_RIGHTBRACKET) {
-        mode = Mode::MessageLog;
-        log_scroll = 0;  // always open showing the most recent messages
+        gs.mode = Mode::MessageLog;
+        gs.log_scroll = 0;  // always open showing the most recent messages
         continue;
       }
       if (event.key.key == SDLK_X) {
         // Starts the look cursor on the player's own tile, same as Targeting/
         // MinionFocus do — free to open/close, no turn spent either way.
-        mode = Mode::Look;
-        target_x = player.x;
-        target_y = player.y;
+        gs.mode = Mode::Look;
+        gs.target_x = gs.player.x;
+        gs.target_y = gs.player.y;
         continue;
       }
       // '?' is Shift+/ on a US layout, so check both the dedicated keycode and the
       // unshifted one with the modifier set — same pattern the stairs keys use below.
       if (event.key.key == SDLK_QUESTION ||
           (event.key.key == SDLK_SLASH && (event.key.mod & SDL_KMOD_SHIFT))) {
-        mode = Mode::Help;
+        gs.mode = Mode::Help;
         continue;
       }
       // SDL reports keycodes for the *unshifted* key on a US layout, so Shift+Period
@@ -3331,27 +2727,27 @@ int main(int argc, char* argv[]) {
       // monster AI on every intermediate floor before the game even opens would be
       // wrong.
       if (pressed_stairs_down) {
-        if (player.x == level.stairs_down_x && player.y == level.stairs_down_y) {
+        if (gs.player.x == level.stairs_down_x && gs.player.y == level.stairs_down_y) {
           end_turn();
-          if (mode != Mode::Dead) descend();
+          if (gs.mode != Mode::Dead) descend(gs);
         } else {
-          add_message("There are no stairs down here.");
+          add_message(gs, "There are no stairs down here.");
         }
         continue;
       }
       if (pressed_stairs_up) {
-        if (level.has_stairs_up && player.x == level.entry_x && player.y == level.entry_y) {
+        if (level.has_stairs_up && gs.player.x == level.entry_x && gs.player.y == level.entry_y) {
           end_turn();
-          if (mode != Mode::Dead) ascend();
+          if (gs.mode != Mode::Dead) ascend(gs);
         } else {
-          add_message("There are no stairs up here.");
+          add_message(gs, "There are no stairs up here.");
         }
         continue;
       }
       // Plain '.' (no shift, which is claimed above for '>') passes the turn without
       // moving or attacking — handy for watching what monsters do on their own.
       if (event.key.key == SDLK_PERIOD && !(event.key.mod & SDL_KMOD_SHIFT)) {
-        add_message("You wait.");
+        add_message(gs, "You wait.");
         end_turn();
         continue;
       }
@@ -3397,8 +2793,8 @@ int main(int argc, char* argv[]) {
       }
       if (dx == 0 && dy == 0) continue;
 
-      int new_x = player.x + dx;
-      int new_y = player.y + dy;
+      int new_x = gs.player.x + dx;
+      int new_y = gs.player.y + dy;
 
       int target_index = -1;
       for (size_t i = 0; i < level.monsters.size(); ++i) {
@@ -3412,20 +2808,20 @@ int main(int argc, char* argv[]) {
         // Bump into your own minion: swap places instead of attacking it — you're
         // squeezing past an ally, not fighting one.
         Actor& minion = level.monsters[static_cast<size_t>(target_index)];
-        std::swap(player.x, minion.x);
-        std::swap(player.y, minion.y);
-        level.map.update_fov(player.x, player.y, FOV_RADIUS);
+        std::swap(gs.player.x, minion.x);
+        std::swap(gs.player.y, minion.y);
+        level.map.update_fov(gs.player.x, gs.player.y, FOV_RADIUS);
         end_turn();
       } else if (target_index >= 0) {
         // Bump attack: walking into a monster attacks it instead of moving. Exactly the
         // same call a monster makes when it swings at you — the dodge roll, the armor
         // reduction, the XP and the loot drop all live in resolve_attack(), not here.
-        resolve_attack(player, level.monsters[static_cast<size_t>(target_index)], player.weapon);
+        resolve_attack(gs, gs.player, level.monsters[static_cast<size_t>(target_index)], gs.player.weapon);
         end_turn();  // any monster(s) still adjacent (including the one just hit) get to act
       } else if (level.map.is_walkable(new_x, new_y)) {
-        player.x = new_x;
-        player.y = new_y;
-        level.map.update_fov(player.x, player.y, FOV_RADIUS);
+        gs.player.x = new_x;
+        gs.player.y = new_y;
+        level.map.update_fov(gs.player.x, gs.player.y, FOV_RADIUS);
         end_turn();
       }
     }

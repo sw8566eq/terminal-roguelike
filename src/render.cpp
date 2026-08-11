@@ -230,7 +230,8 @@ void render_message_log(GameState& gs, tcod::Console& console) {
   }
 }
 
-void render_help(GameState& gs, tcod::Console& console) {
+// Static text; reads no game state, hence no GameState parameter.
+void render_help(tcod::Console& console) {
   tcod::print(console, {0, 0}, "Controls - '?' or Esc to close", tcod::ColorRGB{255, 255, 255}, std::nullopt);
   static const std::vector<std::string> kHelpLines = {
       "",
@@ -291,7 +292,8 @@ void render_minion_roster(GameState& gs, tcod::Console& console) {
   }
 }
 
-void render_school_choice(GameState& gs, tcod::Console& console) {
+// Static text; reads no game state, hence no GameState parameter.
+void render_school_choice(tcod::Console& console) {
   // Full-screen forced prompt, same shape as MinionRoster above rather than
   // LevelUp's one-line CONTEXT_ROW style — this needs room to explain all three
   // paths, since it's a permanent, run-defining choice rather than a quick stat bump.
@@ -881,9 +883,9 @@ void render_frame(GameState& gs, tcod::Console& console) {
     case Mode::Drop:         render_drop_screen(gs, console);   return;
     case Mode::Dead:         render_death_screen(gs, console);  return;
     case Mode::MessageLog:   render_message_log(gs, console);   return;
-    case Mode::Help:         render_help(gs, console);          return;
+    case Mode::Help:         render_help(console);          return;
     case Mode::MinionRoster: render_minion_roster(gs, console); return;
-    case Mode::SchoolChoice: render_school_choice(gs, console); return;
+    case Mode::SchoolChoice: render_school_choice(console); return;
     default: break;
   }
 

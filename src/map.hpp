@@ -72,7 +72,7 @@ class Map {
   // corridor, never a room's edge/doorway), each validated by tentatively carving it
   // and confirming (entry_x,entry_y) can still reach (stairs_x,stairs_y) via
   // find_path() — reverted and retried if not. Must be called after stairs are chosen
-  // (from generate_level() in main.cpp), not from inside generate() itself, since
+  // (from generate_level() in level.hpp), not from inside generate() itself, since
   // stairs_down_x/y don't exist yet when generate() runs.
   void carve_hole_clusters(int entry_x, int entry_y, int stairs_x, int stairs_y);
 

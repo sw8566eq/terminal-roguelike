@@ -157,12 +157,35 @@ roguelike/
 ├── CMakeLists.txt      # build configuration
 ├── vcpkg.json          # dependency manifest (libtcod, sdl3)
 ├── src/
-│   ├── main.cpp         # entry point, game loop, rendering, input, content tables
-│   ├── map.hpp/.cpp     # dungeon generation, FOV, fog of war
-│   ├── entity.hpp/.cpp  # Weapon/Armor/Potion/Actor types, damage rolls
-│   └── rng.hpp/.cpp     # shared random-number and dice-rolling utility
+│   ├── main.cpp             # entry point: argv, window, main loop
+│   │
+│   │                        # primitives
+│   ├── entity.hpp/.cpp      # Weapon/Armor/Potion/Actor types, damage rolls
+│   ├── map.hpp/.cpp         # dungeon generation, FOV, fog of war, pathfinding
+│   ├── rng.hpp/.cpp         # shared random-number and dice-rolling utility
+│   │
+│   │                        # content and numbers
+│   ├── content.hpp/.cpp     # the weapon/armor/potion/monster/minion tables
+│   ├── spells.hpp/.cpp      # the spell table and what the player knows
+│   ├── rules.hpp/.cpp       # tuning constants, derived stats, the combat formula
+│   │
+│   │                        # the world
+│   ├── actors.hpp/.cpp      # queries and phrasing over a floor's Actor list
+│   ├── projectile.hpp/.cpp  # spells and shots in flight, and their geometry
+│   ├── level.hpp/.cpp       # one floor: its map, monsters, items, generation
+│   │
+│   │                        # the game
+│   ├── game.hpp/.cpp        # GameState and the operations on it
+│   ├── turn.hpp/.cpp        # what the world does between two player actions
+│   ├── render.hpp/.cpp      # screen layout and every function that draws
+│   └── input.hpp/.cpp       # one keyboard handler per mode
 └── vcpkg/               # (created by you) vendored package manager
 ```
+
+Each layer only depends on the ones above it. A new weapon or monster is a row
+in `content.cpp`; a new spell is a row in `spells.cpp` plus however it resolves;
+a new full-screen menu is a `Mode` in `game.hpp`, a render function, an input
+handler, and a key to open it.
 
 ## Status
 

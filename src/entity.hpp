@@ -20,7 +20,7 @@ struct Weapon {
   int min_depth = 1;
   int max_depth = -1;
   // This weapon's accuracy contribution: rolled and subtracted from the defender's
-  // evasion rating every time it swings (see dodge_chance() in main.cpp), so a bigger
+  // evasion rating every time it swings (see dodge_chance() in rules.hpp), so a bigger
   // hit-dice roll makes the attack harder to dodge. This applies to *whoever* is
   // holding the weapon — the player, a monster, or a minion all roll the same way, so
   // a monster's Bite/Rock is exactly as much of an accuracy stat as the player's
@@ -32,7 +32,7 @@ struct Weapon {
   // default) is melee/adjacency-only. This is the *only* source of an Actor's attack
   // range — a monster with a range-5 Rock and the player with a range-8 Bow are the
   // same case, and swapping weapons changes reach for either of them. The player fires
-  // a range>1 weapon via Mode::RangedAttack in main.cpp (aim with a cursor like a
+  // a range>1 weapon via Mode::RangedAttack in input.cpp (aim with a cursor like a
   // spell, Enter to loose a Projectile); monsters just attack from range directly. The
   // bump-to-attack path stays melee-only regardless of what's equipped.
   int attack_range = 1;
@@ -60,8 +60,8 @@ struct Armor {
 enum class StatKind { None, Strength, Dexterity, Intelligence };
 
 // Which permanent spell path the player has picked (see Actor::chosen_school below and
-// Mode::SchoolChoice in main.cpp, forced the first time Intelligence reaches 4). None on
-// a Spell (main.cpp's Spell::school) means shared — available regardless of which path
+// Mode::SchoolChoice in game.hpp, forced the first time Intelligence reaches 4). None on
+// a Spell (spells.hpp's Spell::school) means shared — available regardless of which path
 // is chosen (Magic Dart); None on the player means the choice hasn't happened yet.
 enum class SpellSchool { None, Caster, Summoner, CombatMage };
 
@@ -81,7 +81,7 @@ struct Potion {
   int min_depth = 1;
   int max_depth = -1;
   // Drinking it moves the player to a random walkable tile on the current floor
-  // instead of healing/buffing — see the Mode::PotionMenu drink handler in main.cpp.
+  // instead of healing/buffing — see the Mode::PotionMenu drink handler in input.cpp.
   bool teleports = false;
 };
 
@@ -93,7 +93,7 @@ struct Potion {
 enum class Allegiance { Hostile, Player };
 
 // What a player-owned minion is currently doing — see the minion-AI block in
-// end_turn() (main.cpp). Set per-unit (not one pack-wide variable) so a pack-wide
+// end_turn() (turn.hpp). Set per-unit (not one pack-wide variable) so a pack-wide
 // command and per-minion overrides (cycle-focus, see main()'s focused_minion_id) are
 // both just "write this to one or every minion" — no rearchitecting between the two.
 // Follow paths toward the player, fighting anything adjacent along the way.
@@ -111,7 +111,7 @@ enum class MinionOrder { Follow, AttackTarget, Hold, Aggressive };
 // A living thing on the map: the player, a hostile monster, or a player-owned minion.
 // There is exactly one of these types, deliberately: every one of them equips a weapon
 // and armor, carries an inventory, rolls the same accuracy/damage/dodge math
-// (resolve_attack() in main.cpp), regenerates, and can be under a temporary stat buff.
+// (resolve_attack() in game.hpp), regenerates, and can be under a temporary stat buff.
 // A monster is not a reduced Actor — it's a full one whose numbers happen to come from
 // a content table instead of from level-ups.
 //
@@ -141,7 +141,7 @@ struct Actor {
 
   // Carried but not equipped — the same inventory the player's w/a/q/d menus operate
   // on, and the same one a monster swaps weapons out of, drinks potions from, and
-  // drops on death (see drop_actor_gear() in main.cpp). A monster with an empty
+  // drops on death (see drop_actor_gear() in level.hpp). A monster with an empty
   // inventory behaves exactly like a monster did before inventories existed, so this
   // costs nothing for the plain ones.
   std::vector<Weapon> weapons;
@@ -187,7 +187,7 @@ struct Actor {
   // Attributes, and they mean the same thing on everyone. Strength is the flat melee
   // damage bonus (and, for the player, also drives max HP — see the struct comment on
   // derived-vs-authored). Dexterity is the accuracy an attacker brings to every swing
-  // (kAccuracyPerDexPoint in main.cpp) and, for the player, what evasion is derived
+  // (kAccuracyPerDexPoint in rules.hpp) and, for the player, what evasion is derived
   // from. Intelligence drives spell unlocks/damage and max mana. Monsters read all
   // three from their table row, so a Troll hits hard because it has Strength, not
   // because monster damage is computed differently.
@@ -200,7 +200,7 @@ struct Actor {
   int xp_reward = 0;  // XP this Actor grants its killer; only monsters set it today
 
   // This Actor's dodge rating: how much of an incoming attack's accuracy roll it soaks
-  // before the attack lands (see dodge_chance() in main.cpp). Everyone has one. The
+  // before the attack lands (see dodge_chance() in rules.hpp). Everyone has one. The
   // player's is derived from Dexterity (evasion_for_dexterity(), recomputed whenever
   // DEX changes, exactly like max_hp is recomputed when STR does); a monster's is
   // written straight into its table row, so "how hard is this thing to hit" stays a
@@ -232,7 +232,7 @@ struct Actor {
   // a whole number, so this carries the remainder between turns).
   float hp_regen_accumulator = 0.0f;
 
-  // Mana, spent to cast spells (see Spell::mana_cost in main.cpp) and regenerated
+  // Mana, spent to cast spells (see Spell::mana_cost in spells.hpp) and regenerated
   // passively the same way HP is. max_mana comes from max_mana_for_intelligence();
   // mana_regen_accumulator is the same fractional-banking trick as
   // hp_regen_accumulator above. Only the player casts today, so on a monster these
@@ -242,7 +242,7 @@ struct Actor {
   float mana_regen_accumulator = 0.0f;
 
   // Which spell school the player has permanently chosen (see SpellSchool above), or
-  // None until Intelligence first reaches 4 (see Mode::SchoolChoice in main.cpp). Only
+  // None until Intelligence first reaches 4 (see Mode::SchoolChoice in game.hpp). Only
   // the player ever sets this away from None, since nothing else casts — same shared-
   // but-player-only shape as mana above.
   SpellSchool chosen_school = SpellSchool::None;
@@ -292,7 +292,7 @@ struct Actor {
   // your turns, and a hasted player acts twice for each of its turns.
   int extra_actions = 0;
   // Same tick/refresh shape as the buff pairs above; read together with extra_actions
-  // via total_actions_for() in main.cpp, never on its own.
+  // via total_actions_for() in rules.hpp, never on its own.
   int temp_extra_actions_bonus = 0;
   int temp_extra_actions_turns = 0;
 

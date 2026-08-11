@@ -1,8 +1,13 @@
 #include "actors.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 
 #include "rules.hpp"
+
+int distance_between(const Actor& a, const Actor& b) {
+  return std::max(std::abs(a.x - b.x), std::abs(a.y - b.y));
+}
 
 int monster_at(const std::vector<Actor>& monsters, int x, int y) {
   for (size_t i = 0; i < monsters.size(); ++i) {

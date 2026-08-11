@@ -19,6 +19,13 @@
 #include "entity.hpp"
 #include "map.hpp"
 
+// Chebyshev distance between two Actors — the "how far apart are these" measure used
+// everywhere reach is decided (attack range, aura radius, weapon selection). Diagonal
+// movement costs the same as orthogonal, so this is the metric that matches how things
+// actually move. Note the aim-cursor range clamps use squared-Euclidean instead, which
+// is a deliberate difference: a circular targeting radius, a square reach.
+int distance_between(const Actor& a, const Actor& b);
+
 // Index into `monsters` of the living Actor standing at (x,y), regardless of side, or
 // -1 if none.
 int monster_at(const std::vector<Actor>& monsters, int x, int y);

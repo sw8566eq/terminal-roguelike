@@ -981,7 +981,7 @@ void handle_playing_input(GameState& gs, const SDL_Event& event) {
     bool picked_up_anything = false;
     for (int i = static_cast<int>(level.items.size()) - 1; i >= 0; --i) {
       const GroundItem& ground = level.items[static_cast<size_t>(i)];
-      if (ground.x != gs.player.x || ground.y != gs.player.y) return;
+      if (ground.x != gs.player.x || ground.y != gs.player.y) continue;
       add_message(gs, "You pick up a " + ground.weapon.name + ". Press 'w' to equip.");
       gs.player.weapons.push_back(ground.weapon);
       level.items.erase(level.items.begin() + i);
@@ -989,7 +989,7 @@ void handle_playing_input(GameState& gs, const SDL_Event& event) {
     }
     for (int i = static_cast<int>(level.armor_items.size()) - 1; i >= 0; --i) {
       const GroundArmor& ground = level.armor_items[static_cast<size_t>(i)];
-      if (ground.x != gs.player.x || ground.y != gs.player.y) return;
+      if (ground.x != gs.player.x || ground.y != gs.player.y) continue;
       add_message(gs, "You pick up a " + ground.armor.name + ". Press 'a' to equip.");
       gs.player.armors.push_back(ground.armor);
       level.armor_items.erase(level.armor_items.begin() + i);
@@ -997,7 +997,7 @@ void handle_playing_input(GameState& gs, const SDL_Event& event) {
     }
     for (int i = static_cast<int>(level.potions.size()) - 1; i >= 0; --i) {
       const GroundPotion& ground = level.potions[static_cast<size_t>(i)];
-      if (ground.x != gs.player.x || ground.y != gs.player.y) return;
+      if (ground.x != gs.player.x || ground.y != gs.player.y) continue;
       add_message(gs, "You pick up a " + ground.potion.name + ". Press 'q' to drink.");
       gs.player.potions.push_back(ground.potion);
       level.potions.erase(level.potions.begin() + i);

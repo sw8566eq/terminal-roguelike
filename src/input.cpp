@@ -1188,6 +1188,24 @@ void handle_drop_input(GameState& gs, const SDL_Event& event) {
   return;
 }
 
+// True if standing at (x, y) while traveling (dx, dy) puts a new corridor branch (a
+// T-junction or a cross) right underfoot — the run_in_direction() stop condition below.
+// Only meaningful in a corridor: a room tile has walkable neighbors on every side by
+// construction, so applying this inside a room would stop a run on its very first step.
+// Corridors in this game are always straight horizontal/vertical segments (see
+// Map::dig_corridor_h/v), never diagonal, so only orthogonal travel is checked — a
+// diagonal run only ever crosses open room floors, which the in_room check already
+// excludes.
+bool is_branch_point(const Map& map, int x, int y, int dx, int dy) {
+  if (map.is_in_room(x, y)) return false;
+  if (dx != 0 && dy != 0) return false;  // diagonal travel: no corridor case to detect
+  // The two tiles perpendicular to the travel direction — either being walkable means a
+  // side passage forks off exactly where the player's standing (one open = a T-junction,
+  // both open = a cross).
+  if (dx != 0) return map.is_walkable(x, y - 1) || map.is_walkable(x, y + 1);
+  return map.is_walkable(x - 1, y) || map.is_walkable(x + 1, y);
+}
+
 // Shift+direction: quicker navigation than tapping the same key over and over. Repeats
 // the plain movement step in one direction, a full real turn at a time — monster AI runs
 // on every step, exactly as it would if the key were pressed that many times by hand —
@@ -1200,6 +1218,9 @@ void handle_drop_input(GameState& gs, const SDL_Event& event) {
 //   - the next tile is blocked (a wall) or occupied by anyone, monster or the player's
 //     own minion — a run is a "get me somewhere else" gesture, not a way to bump-attack
 //     or minion-swap on autopilot, so it stops short rather than resolving either
+//   - the tile just stepped onto is a corridor branch (is_branch_point()) — e.g. coming
+//     to a cross in the corridors — so the player gets to pick the new direction rather
+//     than being carried straight through the fork
 //   - the player dies mid-run (a hostile can still land a hit on the same step that
 //     brings it into view — the end_turn() that reveals it is the same one that let it
 //     act)
@@ -1223,6 +1244,7 @@ void run_in_direction(GameState& gs, int dx, int dy) {
     level.map.update_fov(gs.player.x, gs.player.y, FOV_RADIUS);
     end_turn(gs);
     if (gs.mode != Mode::Playing) return;  // e.g. died mid-run
+    if (is_branch_point(level.map, gs.player.x, gs.player.y, dx, dy)) return;
   }
 }
 

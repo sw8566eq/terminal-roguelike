@@ -158,9 +158,13 @@ void render_spell_menu(GameState& gs, tcod::Console& console) {
       const MinionTemplate& tmpl = kMinionTable[static_cast<size_t>(s.summon_template_index)];
       std::string duration_str =
           tmpl.duration_turns > 0 ? std::to_string(tmpl.duration_turns) + " turns" : "permanent";
-      at_minion_cap = count_minions(level.monsters) >= kMaxMinions;
+      at_minion_cap = s.minion_cap >= 0 && count_minions_named(level.monsters, tmpl.name) >= s.minion_cap;
       line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (summons a " + tmpl.name + ", " +
              duration_str + ") - " + std::to_string(s.mana_cost) + " MP" + (at_minion_cap ? " [AT CAP]" : "");
+    } else if (s.is_raise) {
+      at_minion_cap = s.minion_cap >= 0 && count_raised_minions(level.monsters) >= s.minion_cap;
+      line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (raise a corpse as a minion) - " +
+             std::to_string(s.mana_cost) + " MP" + (at_minion_cap ? " [AT CAP]" : "");
     } else if (s.is_melee_buff) {
       line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (+" + std::to_string(s.buff_amount) +
              " melee damage, " + std::to_string(s.buff_turns) + " turns) - " + std::to_string(s.mana_cost) +

@@ -294,8 +294,12 @@ void handle_spell_menu_input(GameState& gs, const SDL_Event& event) {
         }
       } else if (spell.is_summon) {
         int spawn_x, spawn_y;
-        if (count_minions(level.monsters) >= kMaxMinions) {
-          add_message(gs, "You can't command any more minions right now.");
+        const MinionTemplate& tmpl = kMinionTable[static_cast<size_t>(spell.summon_template_index)];
+        // Each summon spell guards its own pool (Spell::minion_cap), independent of any
+        // other minion source — summoning Imps doesn't crowd out room for a Demon or a
+        // raised corpse.
+        if (spell.minion_cap >= 0 && count_minions_named(level.monsters, tmpl.name) >= spell.minion_cap) {
+          add_message(gs, "You can't summon any more " + tmpl.name + "s right now.");
           gs.mode = Mode::Playing;  // free cancel, no turn spent
         } else if (gs.player.mana < spell.mana_cost) {
           add_message(gs, "Not enough mana to cast " + spell.name + ".");
@@ -305,7 +309,6 @@ void handle_spell_menu_input(GameState& gs, const SDL_Event& event) {
           gs.mode = Mode::Playing;  // free cancel, no turn spent
         } else {
           gs.player.mana -= spell.mana_cost;
-          const MinionTemplate& tmpl = kMinionTable[static_cast<size_t>(spell.summon_template_index)];
           Actor minion = spawn_minion(tmpl, spawn_x, spawn_y);
           // Defaults to Aggressive — a fresh recruit engages anything hostile it
           // can see rather than passively waiting for something to wander into
@@ -748,8 +751,10 @@ void handle_targeting_input(GameState& gs, const SDL_Event& event) {
         gs.mode = Mode::Playing;  // free cancel, same as Esc
         return;
       }
-      if (count_minions(level.monsters) >= kMaxMinions) {
-        add_message(gs, "You can't control any more minions.");
+      // Raise Dead has its own pool (Spell::minion_cap), counted across every species it
+      // can produce — independent of how many Imps or Demons are already out.
+      if (spell.minion_cap >= 0 && count_raised_minions(level.monsters) >= spell.minion_cap) {
+        add_message(gs, "You can't raise any more corpses right now.");
         gs.casting_actor_id = -1;
         gs.mode = Mode::Playing;  // free cancel — the corpse is left where it is
         return;

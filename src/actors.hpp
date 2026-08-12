@@ -78,9 +78,19 @@ int auto_target_hostile(const std::vector<Actor>& monsters, const Actor& player,
 int closest_own_minion(const std::vector<Actor>& monsters, const Actor& player, const Map& map, int range);
 
 // How many of the player's minions are currently alive on this floor (minions always
-// live on whichever floor the player is on — see move_minions_to_new_floor()). Checked
-// against kMaxMinions when casting a summon spell.
+// live on whichever floor the player is on — see move_minions_to_new_floor()).
 int count_minions(const std::vector<Actor>& monsters);
+
+// How many living player-allegiance minions are named `name` — used to enforce a
+// summon spell's own Spell::minion_cap independent of any other minion source (Summon
+// Imp's pool doesn't compete with Summon Demon's or Raise Dead's for room).
+int count_minions_named(const std::vector<Actor>& monsters, const std::string& name);
+
+// How many living player-allegiance minions came from raising a corpse rather than
+// being conjured — Actor::monster_template_index != -1 is what "raised" means (see
+// spawn_reanimated()). Used to enforce Raise Dead's own Spell::minion_cap in aggregate
+// across every species it can produce, since it has no single fixed template.
+int count_raised_minions(const std::vector<Actor>& monsters);
 
 // One-line status for a minion, for the roster menu (Mode::MinionRoster) — "attacking"
 // names the target if it can still be resolved, with the same fallback wording the

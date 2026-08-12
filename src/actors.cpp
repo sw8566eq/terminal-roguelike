@@ -103,6 +103,22 @@ int count_minions(const std::vector<Actor>& monsters) {
   return count;
 }
 
+int count_minions_named(const std::vector<Actor>& monsters, const std::string& name) {
+  int count = 0;
+  for (const auto& m : monsters) {
+    if (m.allegiance == Allegiance::Player && m.is_alive() && m.name == name) ++count;
+  }
+  return count;
+}
+
+int count_raised_minions(const std::vector<Actor>& monsters) {
+  int count = 0;
+  for (const auto& m : monsters) {
+    if (m.allegiance == Allegiance::Player && m.is_alive() && m.monster_template_index != -1) ++count;
+  }
+  return count;
+}
+
 std::string describe_minion_order(const Actor& minion, const std::vector<Actor>& monsters) {
   if (minion.order == MinionOrder::Hold) return "holding position";
   if (minion.order == MinionOrder::AttackTarget) {

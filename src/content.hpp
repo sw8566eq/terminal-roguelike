@@ -22,12 +22,6 @@ constexpr int NUM_ITEMS = 4;
 constexpr int NUM_ARMOR = 3;
 constexpr int NUM_POTIONS = 2;
 
-// How many minions the player can have active at once, checked when casting a summon
-// spell. Deliberately conservative to start (roadmap targets a 1-7 range once the
-// pack-order UI has actually been played) — raising this later is a one-constant
-// change, not a redesign, since nothing else here assumes a specific pack size.
-constexpr int kMaxMinions = 3;
-
 // The default, always-available unarmed attack. Not a real pickup, so it's never added
 // to the ground or to an inventory — an Actor whose weapon is_intrinsic simply has
 // nothing to drop from that slot (see drop_actor_gear()). Monsters' natural weapons

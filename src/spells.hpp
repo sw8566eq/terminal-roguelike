@@ -134,6 +134,16 @@ struct Spell {
   // something which isn't alive. The raised creature comes back at reanimated_hp() of
   // its living maximum and the corpse is consumed either way.
   bool is_raise = false;
+  // Per-spell cap on how many of *this spell's own* minions can be alive at once — -1
+  // (every non-summon/non-raise spell) means uncapped. Replaces a single pool-wide cap
+  // shared across every minion source: summoning more Imps no longer crowds out room for
+  // a Demon or a raised corpse, since each spell now guards its own count.
+  //   is_summon: counted by name against kMinionTable[summon_template_index] (see
+  //              count_minions_named()) — Summon Imp and Summon Demon are both
+  //              is_summon but each gets its own independent pool.
+  //   is_raise:  counted in aggregate across every species Raise Dead can produce (see
+  //              count_raised_minions()), since its product isn't one fixed template.
+  int minion_cap = -1;
 };
 
 extern const std::vector<Spell> kSpellTable;

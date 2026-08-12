@@ -112,24 +112,35 @@ const std::vector<MonsterTemplate> kMonsterTable = {
     // Projectile you can see coming and dodge — not an instant hit resolved inside the AI
     // loop the way a Goblin Slinger's Rock is.
     //
-    // Its whole design is the mana budget. INT 3 gives max_mana 10 (authored here to
-    // match what max_mana_for_intelligence(3) would give the player) and Magic Dart costs
-    // 1, so it opens with ten darts. Each is 1d2 + INT/3 = 2-3 damage, so a full pool is
-    // ~25 damage if every one lands: genuinely threatening to a floor-1 character. Out of
-    // mana it falls through to ordinary chase-and-melee with 5 HP and Claws, i.e. the
-    // weakest thing on the floor. Outlasting it is the intended counterplay, alongside
-    // breaking line of sight or closing to melee.
+    // Its whole design is the mana budget, and the size of that budget is set against
+    // what a *floor-1* character can absorb. Magic Dart costs 1 and deals 1d2 + INT/3 =
+    // 2-3 damage, while a fresh character (level 1, STR 2) has 24 max HP. Four darts is
+    // ~10 damage, roughly 40% of that: enough to make ignoring a Shaman a mistake and to
+    // force you to close or break line of sight, without one monster being able to kill
+    // you outright.
     //
-    // It regenerates at the player's own rate now (kManaRegenTurns, 150 turns for a full
-    // pool = 1 dart per 15). That's slow enough that the pool is still effectively finite
-    // inside a single fight, which is where "outlast it" is actually played — what
-    // changed is that a Shaman you walked away from isn't permanently defanged when you
-    // come back. If it ever needs to be a strict one-time budget again, this cell is the
-    // knob: 0 restores exactly the old behavior.
+    // It carried 10 for a while — authored to match max_mana_for_intelligence(3), i.e.
+    // what the player would have at the same Intelligence. That parity read well on
+    // paper and played terribly: ~25 damage is more than a starting character's entire
+    // HP bar, so a single unlucky opening could end a run before it began. The lesson
+    // worth keeping is that a monster's pool should be sized against the damage it buys
+    // versus what the player can take on that floor, not against the player's own
+    // formula.
+    //
+    // Out of mana it falls through to ordinary chase-and-melee with 5 HP and Claws, i.e.
+    // the weakest thing on the floor. Outlasting it is the intended counterplay,
+    // alongside breaking line of sight or closing to melee.
+    //
+    // It regenerates at the player's own rate (kManaRegenTurns = 150 turns for a full
+    // pool). Note that rate is time-to-refill-the-whole-pool, so a smaller pool refills
+    // each individual point *more* slowly: at 4 mana that's one dart per ~38 turns. Well
+    // inside a fight it may as well be zero, which is the point — "outlast it" still
+    // works — but a Shaman you walked away from isn't permanently defanged when you come
+    // back. Set this cell to 0 for a strict one-time budget.
     {"Goblin Shaman", 'S', tcod::ColorRGB{160, 100, 220}, 5, kClaws, /*xp_reward=*/14,
      /*evasion=*/8, /*dexterity=*/3, /*strength=*/0, /*min_depth=*/1, /*max_depth=*/4,
      /*armor=*/kNoArmor, /*extra_weapons=*/{}, /*potions=*/{}, /*hp_regen_turns=*/0,
-     /*extra_actions=*/0, /*is_boss=*/false, /*intelligence=*/3, /*max_mana=*/10,
+     /*extra_actions=*/0, /*is_boss=*/false, /*intelligence=*/3, /*max_mana=*/4,
      /*mana_regen_turns=*/kManaRegenTurns, /*spell_index=*/0},
     {"Skeleton", 's', tcod::ColorRGB{220, 220, 200}, 10,
      Weapon{"Rusty Sword", 1, 4, 0, false, 1, -1, /*hit_dice=*/2, 4}, /*xp_reward=*/15,

@@ -260,8 +260,8 @@ what's next.
       Archer, snipe without approaching but permanently commit to melee the
       moment you reach them
 - [x] Casters: the Goblin Shaman throws the same Magic Dart you can learn, from a
-      10-mana pool that comes back only slowly — ten darts up front, then a 5 HP
-      nuisance with claws until it has recovered. Projectiles carry an owner, so one code path resolves yours and
+      small mana pool that comes back only slowly — a handful of darts up front,
+      then a 5 HP nuisance with claws until it has recovered. Projectiles carry an owner, so one code path resolves yours and
       theirs alike, and neither ever hits its own side
 - [x] Bosses: one guaranteed spawn on each floor its row covers, on top of that
       floor's normal monsters. The Orc Warlord (floor 3) is the only thing

@@ -216,7 +216,9 @@ what's next.
 **Character**
 
 - [x] Attributes and leveling — Strength, Dexterity, Intelligence, earned with XP
-- [x] Items: weapons, armor and potions, with pickup, equip and drop
+- [x] Items: weapons, armor and potions, with pickup, equip and drop. Nothing
+      is picked up automatically, and a tile holding several things opens a menu
+      so you take only what you want, still in a single turn
 - [x] Passive HP and mana regeneration, both opt-in per creature rather than
       universal — see Monsters
 
@@ -264,6 +266,10 @@ what's next.
 
 - [x] Summon temporary or permanent allies that draw enemy attention off you,
       follow you through stairs, and are immune to your own spells
+- [x] You always know where your own minions are — yours stay on the map even
+      out of sight, dimmed. Seeing one is not the same as reaching it, though:
+      Place Swap still needs a clear line, so a minion parked behind a wall is
+      no escape hatch
 - [x] Per-minion command: cycle focus with `o`/`p` or pick one from a roster
       (`m`), then send that minion or the whole pack to attack a target, hold a
       tile, follow you, or hunt on its own

@@ -296,6 +296,14 @@ struct Actor {
   int temp_extra_actions_bonus = 0;
   int temp_extra_actions_turns = 0;
 
+  // Index into kMonsterTable of the row this Actor was built from, or -1 for anything not
+  // spawned from that table (the player, and minions, which come from kMinionTable).
+  // Exists so a corpse can record *what died* and later raise the same species — see
+  // Corpse in level.hpp. Kept as an index rather than a copied template so a reanimated
+  // creature always reflects the table as it reads today, not as it read when the thing
+  // was killed.
+  int monster_template_index = -1;
+
   // Index into kSpellTable of the one spell this Actor casts, or -1 for "doesn't cast".
   // The player doesn't use this — they pick from known_spell_indices() in the z menu —
   // it's how a caster *monster* (the Goblin Shaman) knows what to throw. One spell

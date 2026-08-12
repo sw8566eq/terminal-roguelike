@@ -613,6 +613,12 @@ void render_sidebar(GameState& gs, tcod::Console& console) {
           sb_print("  " + gp.potion.name + " (" + describe_potion(gp.potion) + ")", gp.potion.color);
           found_anything = true;
         }
+        for (const auto& corpse : level.corpses) {
+          if (corpse.x != gs.target_x || corpse.y != gs.target_y) continue;
+          sb_print("  " + kMonsterTable[static_cast<size_t>(corpse.monster_template_index)].name + " corpse",
+                   tcod::ColorRGB{170, 110, 110});
+          found_anything = true;
+        }
         if (!found_anything) sb_print("  (nothing else here)", tcod::ColorRGB{120, 120, 120});
       }
     }
@@ -726,6 +732,20 @@ void render_map_panel(GameState& gs, tcod::Console& console, const Camera& camer
     auto& cell = console.at(camera.screen_x(remembered.x), camera.screen_y(remembered.y));
     cell.ch = remembered.glyph;
     cell.fg = dim_color(remembered.color);
+  }
+
+  // Corpses first, so anything the same monster dropped draws on top of its body rather
+  // than being hidden underneath it. '%' is the traditional roguelike corpse glyph, and
+  // the color is the species' own darkened — a Troll's body reads as a Troll's at a
+  // glance, without competing with the living creature's full-brightness color.
+  for (const auto& corpse : level.corpses) {
+    bool visible = level.map.is_in_fov(corpse.x, corpse.y);
+    if (!visible && !gs.reveal_all) continue;
+    if (!camera.in_view(corpse.x, corpse.y)) continue;
+    auto& cell = console.at(camera.screen_x(corpse.x), camera.screen_y(corpse.y));
+    cell.ch = '%';
+    tcod::ColorRGB color = dim_color(kMonsterTable[static_cast<size_t>(corpse.monster_template_index)].color);
+    cell.fg = visible ? color : dim_color(color);
   }
 
   // Items/monsters only show up while actually in view, unlike remembered terrain

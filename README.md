@@ -283,9 +283,11 @@ what's next.
       mana and aimed from where it stands, via `z` while it's focused. The Demon's
       Wither Curse is the first — it has a fixed pool and no regeneration, so an
       ability is something you spend a minion on, not a per-turn tool
-- [ ] True necromancy: reanimate the specific monster you just killed, via a
-      corpse left on the ground and a spell that targets it — plus a higher
-      minion cap now that per-minion control exists
+- [x] Corpses: a slain monster has a chance to leave its body behind, shown as
+      `%` on the map and named by `x`. Bodies persist with the floor like any
+      other loot
+- [ ] True necromancy: a spell that raises one of those corpses as a minion of
+      that species — plus a higher minion cap now that per-minion control exists
 
 **Interface**
 

@@ -36,6 +36,20 @@ struct GroundPotion {
   Potion potion;
 };
 
+// What a slain monster leaves behind: a body that can later be raised as a minion (the
+// Summoner's necromancy path). Deliberately the same shape as the GroundItem family above
+// — a position plus what's there — so it persists with the floor and is rendered by the
+// same kind of loop.
+//
+// Stores the kMonsterTable row rather than a snapshot of the dead Actor: raising a corpse
+// should produce a fresh, whole creature of that species, not resurrect one at whatever
+// HP and gear it happened to die with. It also means a corpse can't hold a dangling copy
+// of anything.
+struct Corpse {
+  int x, y;
+  int monster_template_index;  // row in kMonsterTable; never -1, see on_actor_killed()
+};
+
 // A monster glyph remembered at a tile after it's no longer in view — fog-of-war memory,
 // but for monsters instead of terrain. Since monster AI moves things around, this may go
 // stale (the monster shown there may no longer be there), same as remembering "there was
@@ -53,6 +67,7 @@ struct Level {
   std::vector<GroundItem> items;
   std::vector<GroundArmor> armor_items;
   std::vector<GroundPotion> potions;
+  std::vector<Corpse> corpses;  // bodies left by slain monsters, raiseable by a Summoner
   std::vector<RememberedMonster> remembered_monsters;  // last-seen monster sightings, may go stale
   std::vector<Projectile> projectiles;                 // spells currently in flight on this floor
   int entry_x = 0;                                     // where the player arrives on this floor
@@ -77,11 +92,15 @@ extern bool g_debug_fast_monsters;
 // old ids anyway.
 int allocate_actor_id();
 
-// Builds a hostile monster from a table row. Every assignment is a straight copy into the
-// identically-named Actor field — there's no monster-specific derivation left, which is
-// the point: the result is an ordinary Actor that the combat, gear, potion and regen code
-// can't tell apart from the player's.
-Actor spawn_monster(const MonsterTemplate& tmpl, int x, int y);
+// Builds a hostile monster from a kMonsterTable row. Every assignment is a straight copy
+// into the identically-named Actor field — there's no monster-specific derivation left,
+// which is the point: the result is an ordinary Actor that the combat, gear, potion and
+// regen code can't tell apart from the player's.
+//
+// Takes the row's *index* rather than the row itself so the spawned Actor can record
+// where it came from (Actor::monster_template_index, which a Corpse later reads); passing
+// the row would leave the caller free to hand over an index that doesn't match it.
+Actor spawn_monster(int table_index, int x, int y);
 
 // The minion counterpart of spawn_monster() — same shape; the only differences are the
 // allegiance, the expiry timer, and having no XP bounty.

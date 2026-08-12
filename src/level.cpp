@@ -12,9 +12,11 @@ int allocate_actor_id() {
   return next_id++;
 }
 
-Actor spawn_monster(const MonsterTemplate& tmpl, int x, int y) {
+Actor spawn_monster(int table_index, int x, int y) {
+  const MonsterTemplate& tmpl = kMonsterTable[static_cast<size_t>(table_index)];
   Actor monster;
   monster.id = allocate_actor_id();
+  monster.monster_template_index = table_index;
   monster.x = x;
   monster.y = y;
   monster.hp = monster.max_hp = tmpl.max_hp;
@@ -146,7 +148,7 @@ bool free_adjacent_tile(const Map& map, const std::vector<Actor>& monsters, int 
 }
 
 Level generate_level(int width, int height, bool has_stairs_up, int depth) {
-  Level level{Map(width, height), {}, {}, {}, {}, {}, {}};
+  Level level{Map(width, height), {}, {}, {}, {}, {}, {}, {}};
   auto [entry_x, entry_y] = level.map.generate(/*max_rooms=*/12, /*room_min_size=*/4, /*room_max_size=*/8);
   level.entry_x = entry_x;
   level.entry_y = entry_y;
@@ -174,7 +176,7 @@ Level generate_level(int width, int height, bool has_stairs_up, int depth) {
 
     int table_index =
         available_monsters[static_cast<size_t>(random_int(0, static_cast<int>(available_monsters.size()) - 1))];
-    level.monsters.push_back(spawn_monster(kMonsterTable[static_cast<size_t>(table_index)], mx, my));
+    level.monsters.push_back(spawn_monster(table_index, mx, my));
   }
 
   // Bosses are placed on top of that count rather than drawn from it: one guaranteed
@@ -185,7 +187,7 @@ Level generate_level(int width, int height, bool has_stairs_up, int depth) {
   for (int table_index : bosses_at_depth(depth)) {
     auto [bx, by] = random_free_tile(level.map, occupied);
     occupied.push_back({bx, by});
-    level.monsters.push_back(spawn_monster(kMonsterTable[static_cast<size_t>(table_index)], bx, by));
+    level.monsters.push_back(spawn_monster(table_index, bx, by));
   }
 
   auto available_weapons = weapons_available_at_depth(depth);

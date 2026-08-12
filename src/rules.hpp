@@ -73,6 +73,11 @@ constexpr int kAiDrinkHealBelowPercent = 45;
 // melee reach so it drinks as you close rather than after you're already hitting it.
 constexpr int kAiBuffPotionRange = 4;
 
+// Percent chance a slain monster leaves a corpse behind (see Corpse in level.hpp and
+// on_actor_killed()). A stated default: often enough that a necromancer can plan around
+// finding one, rare enough that a cleared floor isn't carpeted in them.
+constexpr int kCorpseChancePercent = 50;
+
 // --- One combat formula, used by every attack in the game ----------------------------
 //
 // This replaced three separate ones (a Dexterity contest for monster-vs-player, an

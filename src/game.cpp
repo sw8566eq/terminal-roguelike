@@ -185,6 +185,14 @@ void on_actor_killed(GameState& gs, Actor& victim, bool killed_by_player_side,
     return;
   }
   drop_actor_gear(gs.level(), victim);
+
+  // A slain monster may leave a body behind, for a Summoner to raise later. Only real
+  // monsters do: the check on monster_template_index also excludes minions, which come
+  // from kMinionTable and whose "death" is often just a summon timing out.
+  if (victim.monster_template_index >= 0 && random_int(1, 100) <= kCorpseChancePercent) {
+    gs.level().corpses.push_back(Corpse{victim.x, victim.y, victim.monster_template_index});
+  }
+
   if (killed_by_player_side) grant_xp(gs, victim.xp_reward);
 }
 

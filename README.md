@@ -285,7 +285,8 @@ what's next.
       ability is something you spend a minion on, not a per-turn tool
 - [x] Corpses: a slain monster has a chance to leave its body behind, shown as
       `%` on the map and named by `x`. Bodies persist with the floor like any
-      other loot
+      other loot. Bosses never leave one — their gear is the reward, and their
+      stat line isn't meant to end up on your side
 - [ ] True necromancy: a spell that raises one of those corpses as a minion of
       that species — plus a higher minion cap now that per-minion control exists
 

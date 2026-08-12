@@ -189,8 +189,21 @@ void on_actor_killed(GameState& gs, Actor& victim, bool killed_by_player_side,
   // A slain monster may leave a body behind, for a Summoner to raise later. Only real
   // monsters do: the check on monster_template_index also excludes minions, which come
   // from kMinionTable and whose "death" is often just a summon timing out.
-  if (victim.monster_template_index >= 0 && random_int(1, 100) <= kCorpseChancePercent) {
-    gs.level().corpses.push_back(Corpse{victim.x, victim.y, victim.monster_template_index});
+  if (victim.monster_template_index >= 0) {
+    const MonsterTemplate& tmpl = kMonsterTable[static_cast<size_t>(victim.monster_template_index)];
+    // Bosses never leave one. A boss is built to be the hardest thing on its floor, so
+    // handing its stat line back to the player as a permanent minion would make killing
+    // it strictly better than it should be — and the reward for the fight is already its
+    // gear (see the Orc Warlord's Chainmail and Cleaver). Reusing is_boss rather than
+    // adding a leaves_corpse flag because "boss" is exactly the distinction being drawn;
+    // a per-row flag is the extension point if a *non*-boss ever needs excluding, or a
+    // boss allowing.
+    //
+    // No corpse at all, rather than a corpse that refuses to be raised: a body you can
+    // see and inspect but never use would read as a bug.
+    if (!tmpl.is_boss && random_int(1, 100) <= kCorpseChancePercent) {
+      gs.level().corpses.push_back(Corpse{victim.x, victim.y, victim.monster_template_index});
+    }
   }
 
   if (killed_by_player_side) grant_xp(gs, victim.xp_reward);

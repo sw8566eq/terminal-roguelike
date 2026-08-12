@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "spells.hpp"
+
 const Weapon kFists = Weapon{"Fists",       1,  2,  0, /*is_intrinsic=*/true, /*min_depth=*/1, /*max_depth=*/-1,
                               /*hit_dice_count=*/2, /*hit_dice_sides=*/4};
 
@@ -186,9 +188,16 @@ const std::vector<MinionTemplate> kMinionTable = {
     // Skeletal Minion's early, low-commitment, temporary framing above. Glyph 'D' and
     // this magenta are unused by any hostile monster or the Skeletal Minion, so it
     // reads unmistakably as its own thing.
+    // Also the first minion with an ability: Wither Curse (kSpellTable's last row), fired
+    // by focusing it and pressing 'z'. 10 mana and no regen buys exactly two curses per
+    // Demon, after which it's the same permanent bruiser it always was — the ability is a
+    // reason to summon early and use it, not a per-turn tool.
     {"Demon", 'D', tcod::ColorRGB{200, 40, 180}, /*max_hp=*/20,
      Weapon{"Demon Claws", 1, 6, 0, /*is_intrinsic=*/true, 1, -1, /*hit_dice=*/2, 6},
-     /*evasion=*/10, /*dexterity=*/8, /*strength=*/5, /*duration_turns=*/-1},
+     /*evasion=*/10, /*dexterity=*/8, /*strength=*/5, /*duration_turns=*/-1,
+     /*armor=*/kNoArmor, /*extra_weapons=*/{}, /*potions=*/{}, /*hp_regen_turns=*/0,
+     /*extra_actions=*/0, /*abilities=*/{kWitherCurseIndex},
+     /*max_mana=*/10, /*mana_regen_turns=*/0},
 };
 
 std::vector<int> monsters_available_at_depth(int depth) {

@@ -302,6 +302,16 @@ struct Actor {
   // rather than a list, deliberately minimal: a second one needs a small vector plus a
   // rule for choosing between them, and nothing wants that yet.
   int spell_index = -1;
+  // Indices into kSpellTable of the abilities this Actor can be *ordered* to use, as
+  // opposed to spell_index above which is what its own AI throws unprompted. Populated
+  // from MinionTemplate::abilities; empty on everything else today.
+  //
+  // The distinction is who chooses: a Goblin Shaman decides for itself, while a Demon's
+  // Wither Curse is fired by the player through the 'z' menu of Mode::MinionFocus. It's
+  // a list rather than a single index because a minion is a unit you're managing, so
+  // "which of its abilities" is a decision worth having — the reason spell_index stayed
+  // singular is that nothing picks *for* a monster.
+  std::vector<int> abilities;
   // Turns to regenerate 0 -> full mana, or 0 for "doesn't regenerate", exactly mirroring
   // hp_regen_turns above. This gate didn't exist while the player was the only Actor
   // with a mana pool at all (the regen loop no-opped on its own at max_mana 0); the

@@ -141,6 +141,16 @@ void apply_potion(GameState& gs, Actor& actor, const Potion& potion) {
   }
 }
 
+void apply_debuff(GameState& gs, Actor& target, const Spell& spell) {
+  // Lands on temp_melee_damage_bonus rather than temp_str_bonus — see Spell::is_debuff
+  // for why a negative Strength bonus would be actively wrong. Refresh-don't-stack, the
+  // same shape apply_potion() uses: re-cursing mid-duration resets the clock without
+  // compounding the penalty.
+  if (target.temp_melee_damage_turns <= 0) target.temp_melee_damage_bonus = spell.buff_amount;
+  target.temp_melee_damage_turns = spell.buff_turns;
+  add_message(gs, actor_subject(target) + actor_verb(target, " wither") + " under the curse.");
+}
+
 bool try_actor_use_potion(GameState& gs, Actor& actor, bool enemy_near) {
   if (actor.potions.empty()) return false;
   bool badly_hurt = actor.hp * 100 < actor.max_hp * kAiDrinkHealBelowPercent;

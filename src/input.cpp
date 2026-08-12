@@ -15,6 +15,10 @@
 
 namespace {
 
+// Defined further down, next to the ability menu it serves; forward-declared because
+// handle_minion_focus_input() needs it to decide whether 'z' has anything to open.
+std::vector<int> focused_minion_abilities(GameState& gs);
+
 
 // Moves command focus to the next (direction=+1) or previous (direction=-1)
 // living minion, in level.monsters order, wrapping around; if focused_minion_id
@@ -370,6 +374,7 @@ void handle_spell_menu_input(GameState& gs, const SDL_Event& event) {
         }
       } else if (spell.is_swap) {
         gs.casting_spell_index = spell_idx;
+        gs.casting_actor_id = -1;  // the player is casting this one
         // Auto-aim at the closest minion you could actually swap with — in range and
         // with a clear line (see closest_own_minion()) — else fall back to the player's
         // own tile; Enter rejects the cast with a message if the cursor isn't on a
@@ -386,6 +391,7 @@ void handle_spell_menu_input(GameState& gs, const SDL_Event& event) {
         gs.mode = Mode::Targeting;
       } else {
         gs.casting_spell_index = spell_idx;
+        gs.casting_actor_id = -1;  // the player is casting this one
         // Auto-aim at the most recently targeted hostile if it still qualifies,
         // else the closest qualifying one, else fall back to the player's own
         // tile (the old default) — see auto_target_hostile().
@@ -487,6 +493,21 @@ void handle_minion_focus_input(GameState& gs, const SDL_Event& event) {
     }
     return;
   }
+  // 'z' opens this minion's own abilities, mirroring 'z' for the player's spells in
+  // normal play. Scoped to a single minion: "All" commands a stance, but an ability is
+  // aimed and paid for by one specific creature, so it uses focused_minion_id even in an
+  // All session rather than trying to fire the whole pack's.
+  if (event.key.key == SDLK_Z) {
+    auto abilities = focused_minion_abilities(gs);
+    if (abilities.empty()) {
+      add_message(gs, gs.focused_minion_id < 0 ? "Focus a single minion first."
+                                               : "That minion has no abilities.");
+      return;
+    }
+    gs.mode = Mode::MinionAbilityMenu;
+    return;
+  }
+
   if (event.key.key == SDLK_F) {
     int ordered = for_each_commanded_minion([](Actor& m) { m.order = MinionOrder::Follow; });
     add_message(gs, ordered == 1 ? "Your minion returns to your side." : "Your minions return to your side.");
@@ -603,18 +624,110 @@ void handle_minion_focus_input(GameState& gs, const SDL_Event& event) {
   return;
 }
 
+// Abilities of the minion currently focused in Mode::MinionFocus. Empty (and the menu
+// unreachable) for a minion whose kMinionTable row lists none.
+std::vector<int> focused_minion_abilities(GameState& gs) {
+  int idx = actor_index_by_id(gs.level().monsters, gs.focused_minion_id);
+  if (idx < 0) return {};
+  return gs.level().monsters[static_cast<size_t>(idx)].abilities;
+}
+
+void handle_minion_ability_menu_input(GameState& gs, const SDL_Event& event) {
+  Level& level = gs.level();
+  if (event.key.key == SDLK_ESCAPE) {
+    gs.mode = Mode::MinionFocus;  // back to the cursor, free
+    return;
+  }
+  if (event.key.key < SDLK_A || event.key.key > SDLK_Z) return;
+
+  auto abilities = focused_minion_abilities(gs);
+  size_t pick = static_cast<size_t>(event.key.key - SDLK_A);
+  if (pick >= abilities.size()) return;
+
+  int minion_idx = actor_index_by_id(level.monsters, gs.focused_minion_id);
+  if (minion_idx < 0) {  // died while the menu was open
+    gs.mode = Mode::Playing;
+    return;
+  }
+  const Actor& minion = level.monsters[static_cast<size_t>(minion_idx)];
+  int spell_idx = abilities[pick];
+  const Spell& spell = kSpellTable[static_cast<size_t>(spell_idx)];
+
+  // Checked here as well as at Enter so an unaffordable ability is rejected before the
+  // player aims it, rather than after.
+  if (minion.mana < spell.mana_cost) {
+    add_message(gs, "Your " + minion.name + " hasn't the mana for " + spell.name + ".");
+    gs.mode = Mode::MinionFocus;
+    return;
+  }
+
+  gs.casting_spell_index = spell_idx;
+  gs.casting_actor_id = minion.id;
+  // Aim from the *minion*: auto_target_hostile() measures range and picks the closest
+  // qualifying hostile relative to whichever Actor it's handed, so passing the minion
+  // gives exactly the right candidate set. Falls back to the minion's own tile, which is
+  // always trivially in range.
+  int auto_id = auto_target_hostile(level.monsters, minion, level.map, gs.last_target_id, spell.range);
+  int auto_idx = actor_index_by_id(level.monsters, auto_id);
+  if (auto_idx >= 0) {
+    gs.target_x = level.monsters[static_cast<size_t>(auto_idx)].x;
+    gs.target_y = level.monsters[static_cast<size_t>(auto_idx)].y;
+  } else {
+    gs.target_x = minion.x;
+    gs.target_y = minion.y;
+  }
+  gs.mode = Mode::Targeting;
+}
+
 void handle_targeting_input(GameState& gs, const SDL_Event& event) {
   Level& level = gs.level();
   const Spell& spell = kSpellTable[static_cast<size_t>(gs.casting_spell_index)];
 
+  // Who is actually casting. -1 is the player; anything else is a minion using one of
+  // its own abilities, in which case the shot originates at *its* tile, its mana pays,
+  // and its Dexterity aims. A minion that died between opening the menu and pressing
+  // Enter resolves to -1 here, so the cast is cancelled rather than fired from the
+  // player by accident.
+  int caster_index = gs.casting_actor_id < 0 ? -1 : actor_index_by_id(level.monsters, gs.casting_actor_id);
+  if (gs.casting_actor_id >= 0 && caster_index < 0) {
+    add_message(gs, "Your minion is gone.");
+    gs.casting_actor_id = -1;
+    gs.mode = Mode::Playing;
+    return;
+  }
+  Actor& caster = caster_index < 0 ? gs.player : level.monsters[static_cast<size_t>(caster_index)];
+
   if (event.key.key == SDLK_ESCAPE) {
+    gs.casting_actor_id = -1;
     gs.mode = Mode::Playing;
     return;
   }
   if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER) {
-    if (gs.player.mana < spell.mana_cost) {
-      add_message(gs, "Not enough mana to cast " + spell.name + ".");
+    if (caster.mana < spell.mana_cost) {
+      add_message(gs, actor_subject(caster) + (caster.is_player ? " haven't" : " hasn't") +
+                          " the mana to cast " + spell.name + ".");
+      gs.casting_actor_id = -1;
       gs.mode = Mode::Playing;  // free cancel, same as Esc — no turn spent
+      return;
+    }
+
+    // A targeted debuff resolves right here: no projectile, no dodge roll. Needs a live
+    // hostile under the cursor, in range and with a clear line — the same three
+    // conditions the preview colors the cursor by.
+    if (spell.is_debuff) {
+      int victim = hostile_monster_at(level.monsters, gs.target_x, gs.target_y);
+      if (victim < 0 || !line_clear(caster.x, caster.y, gs.target_x, gs.target_y, level.map)) {
+        add_message(gs, "There's nothing there to curse.");
+        gs.casting_actor_id = -1;
+        gs.mode = Mode::Playing;  // free cancel, same as Esc
+        return;
+      }
+      caster.mana -= spell.mana_cost;
+      add_message(gs, actor_subject(caster) + actor_verb(caster, " cast") + " " + spell.name + ".");
+      apply_debuff(gs, level.monsters[static_cast<size_t>(victim)], spell);
+      gs.casting_actor_id = -1;
+      gs.mode = Mode::Playing;
+      end_turn(gs);
       return;
     }
 
@@ -658,7 +771,7 @@ void handle_targeting_input(GameState& gs, const SDL_Event& event) {
     // Any tile is a legal target now: the spell travels and resolves against
     // whatever (if anything) it actually reaches, not necessarily the cursor tile.
     Projectile proj;
-    proj.path = trace_path(gs.player.x, gs.player.y, gs.target_x, gs.target_y);
+    proj.path = trace_path(caster.x, caster.y, gs.target_x, gs.target_y);
     proj.speed = spell.speed;
     proj.dice_count = spell.dice_count;
     proj.dice_sides = spell.dice_sides;
@@ -666,30 +779,32 @@ void handle_targeting_input(GameState& gs, const SDL_Event& event) {
     proj.hit_dice_sides = spell.hit_dice_sides;
     proj.aoe_radius = spell.aoe_radius;
     proj.pierces = spell.pierces;
-    proj.prev_x = gs.player.x;  // seeds the "last open tile" for an immediate wall hit
-    proj.prev_y = gs.player.y;
+    proj.prev_x = caster.x;  // seeds the "last open tile" for an immediate wall hit
+    proj.prev_y = caster.y;
     // Locked in now, not re-read when it lands. Temporary INT (from a Potion of
     // Intelligence) boosts this the same as permanent INT would — only spell
     // *unlocking* (known_spell_indices, above) ignores the temporary bonus.
-    proj.bonus = (gs.player.intelligence + gs.player.temp_int_bonus) / 3;
+    proj.bonus = (caster.intelligence + caster.temp_int_bonus) / 3;
     // A spell's accuracy is built the same way a weapon swing's is: the caster's
     // Dexterity term plus the spell's own hit-dice, rolled on impact. Locking the
     // Dexterity half in here (rather than reading it when the projectile lands
     // several turns later) is what makes a slow Fireball as accurate as the moment
     // it was thrown.
-    proj.accuracy_bonus = (gs.player.dexterity + gs.player.temp_dex_bonus) * kAccuracyPerDexPoint;
+    proj.accuracy_bonus = (caster.dexterity + caster.temp_dex_bonus) * kAccuracyPerDexPoint;
     proj.name = spell.name;
     proj.glyph = spell.glyph;
     proj.color = spell.color;
     // Matches Projectile's defaults, but set explicitly: now that a monster can
     // fire one too, "who owns this" shouldn't be something a reader has to infer
     // from a default.
-    proj.owner_allegiance = Allegiance::Player;
-    proj.owner_is_player = true;
+    proj.owner_allegiance = Allegiance::Player;  // the player's side either way
+    proj.owner_is_player = caster.is_player;
+    proj.owner_name = caster.name;
     level.projectiles.push_back(proj);
-    gs.player.mana -= spell.mana_cost;
+    caster.mana -= spell.mana_cost;
 
-    add_message(gs, "You cast " + spell.name + ".");
+    add_message(gs, actor_subject(caster) + actor_verb(caster, " cast") + " " + spell.name + ".");
+    gs.casting_actor_id = -1;
     gs.mode = Mode::Playing;
     end_turn(gs);  // advance_projectiles() may resolve this immediately for fast spells
     return;
@@ -737,8 +852,8 @@ void handle_targeting_input(GameState& gs, const SDL_Event& event) {
   if (tdx != 0 || tdy != 0) {
     int nx = gs.target_x + tdx;
     int ny = gs.target_y + tdy;
-    int rdx = nx - gs.player.x;
-    int rdy = ny - gs.player.y;
+    int rdx = nx - caster.x;
+    int rdy = ny - caster.y;
     bool in_range = rdx * rdx + rdy * rdy <= spell.range * spell.range;
     if (level.map.in_bounds(nx, ny) && in_range) {
       gs.target_x = nx;
@@ -1255,6 +1370,7 @@ void handle_event(GameState& gs, const SDL_Event& event) {
     case Mode::MinionRoster: handle_minion_roster_input(gs, event); return;
     case Mode::Pickup:       handle_pickup_input(gs, event);       return;
     case Mode::MinionFocus:  handle_minion_focus_input(gs, event);  return;
+    case Mode::MinionAbilityMenu: handle_minion_ability_menu_input(gs, event); return;
     case Mode::Targeting:    handle_targeting_input(gs, event);     return;
     case Mode::RangedAttack: handle_ranged_input(gs, event);        return;
     case Mode::Look:         handle_look_input(gs, event);          return;

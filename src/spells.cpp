@@ -131,12 +131,33 @@ const std::vector<Spell> kSpellTable = {
      /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::CombatMage,
      /*is_melee_buff=*/false, /*is_armor_buff=*/false, /*is_haste_buff=*/true,
      /*buff_amount=*/1, /*buff_turns=*/8},
+    // Not a player spell: a Demon's ability, reachable only by focusing the minion and
+    // pressing 'z' (see MinionTemplate::abilities and Mode::MinionAbilityMenu).
+    // minion_only keeps it out of known_spell_indices() entirely, so unlock_int and
+    // school below are inert — set to values that would be nonsense if it ever did leak
+    // into the player's menu, which is itself a small tripwire.
+    //
+    // The Demon carries max_mana 10 and no regen, so 4 mana buys two curses per Demon
+    // and then it's a pure melee bruiser — deliberately the same "spend it and you're
+    // done" budget shape as the Goblin Shaman's ten darts. buff_amount=-2 lands on the
+    // victim's temp_melee_damage_bonus (see Spell::is_debuff for why not temp_str_bonus);
+    // range 5 is shorter than the player's own spells, so a cursing Demon has to be
+    // committed to the fight rather than lobbing it from safety. All stated defaults.
+    {"Wither Curse", /*unlock_int=*/99, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/5,
+     /*mana_cost=*/4, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
+     /*hit_dice_count=*/0, /*hit_dice_sides=*/0, 'x', tcod::ColorRGB{160, 60, 200}, /*is_summon=*/false,
+     /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::None,
+     /*is_melee_buff=*/false, /*is_armor_buff=*/false, /*is_haste_buff=*/false,
+     /*buff_amount=*/-2, /*buff_turns=*/10, /*pierces=*/false,
+     /*minion_only=*/true, /*is_debuff=*/true},
 };
 
 std::vector<int> known_spell_indices(int intelligence, SpellSchool chosen_school) {
   std::vector<int> indices;
   for (size_t i = 0; i < kSpellTable.size(); ++i) {
     const Spell& s = kSpellTable[i];
+    // A creature ability is never something the player knows, at any Intelligence.
+    if (s.minion_only) continue;
     if (intelligence < s.unlock_int) continue;
     if (s.school != SpellSchool::None && s.school != chosen_school) continue;
     indices.push_back(static_cast<int>(i));

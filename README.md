@@ -103,7 +103,11 @@ step 1.
   its own to chase down and fight anything hostile that comes into view,
   rather than waiting for it to wander into reach. `Esc`
   cancels. `Shift+P` snaps
-  command focus back to yourself. The minion(s) you're currently
+  command focus back to yourself. With a single minion focused, `z` opens that
+  minion's own abilities (if it has any) and works like your own spell menu —
+  pick one, aim from *the minion's* position, `Enter` to use it. A Demon knows
+  Wither Curse: 4 of its 10 mana, range 5, and the target hits 2 weaker in
+  melee for 10 turns. That pool never refills, so it's two curses per Demon. The minion(s) you're currently
   commanding are highlighted so you don't lose track while aiming.
   Walking into your own minion swaps places with it instead of attacking
 - On leveling up, `Shift+S` / `Shift+D` / `Shift+I` to put your point into
@@ -273,6 +277,10 @@ what's next.
 - [x] Per-minion command: cycle focus with `o`/`p` or pick one from a roster
       (`m`), then send that minion or the whole pack to attack a target, hold a
       tile, follow you, or hunt on its own
+- [x] Minion abilities: a summon can carry spells of its own, spent from its own
+      mana and aimed from where it stands, via `z` while it's focused. The Demon's
+      Wither Curse is the first — it has a fixed pool and no regeneration, so an
+      ability is something you spend a minion on, not a per-turn tool
 - [ ] True necromancy: reanimate the specific monster you just killed, via a
       corpse left on the ground and a spell that targets it — plus a higher
       minion cap now that per-minion control exists

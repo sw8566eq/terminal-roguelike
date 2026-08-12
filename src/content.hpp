@@ -142,6 +142,17 @@ struct MinionTemplate {
   // Same extra-actions knob as MonsterTemplate, 0 on every row today. A summon fast
   // enough to act twice a turn would just set this. See Actor::extra_actions.
   int extra_actions = 0;
+  // Abilities the *player* can order this minion to use, as indices into kSpellTable
+  // (see Actor::abilities). Distinct from MonsterTemplate::spell_index, which is what a
+  // monster's own AI throws unprompted — these are fired deliberately, by focusing the
+  // minion and pressing 'z'. A row that leaves this empty simply has no 'z' menu.
+  std::vector<int> abilities = {};
+  // The pool those abilities spend, authored exactly like MonsterTemplate's — same
+  // derived-vs-authored split as max_hp. mana_regen_turns 0 means the pool is a one-time
+  // budget for the minion's whole life (the Goblin Shaman's shape), so a summon's
+  // abilities are a resource you spend rather than something to lean on every turn.
+  int max_mana = 0;
+  int mana_regen_turns = 0;
 };
 
 extern const std::vector<MinionTemplate> kMinionTable;

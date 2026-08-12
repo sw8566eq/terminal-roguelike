@@ -109,9 +109,35 @@ struct Spell {
   // through a hostile hit instead of stopping there. Deliberately not combined with
   // aoe_radius today — see advance_projectiles().
   bool pierces = false;
+  // A creature ability rather than something the player learns: granted by carrying it
+  // in MinionTemplate::abilities, and skipped entirely by known_spell_indices(), so it
+  // can never appear in the player's own 'z' menu however high their Intelligence goes.
+  // unlock_int and school are meaningless on such a row.
+  bool minion_only = false;
+  // A targeted debuff on a single enemy (Wither Curse) — a sixth spell kind. Uses
+  // Mode::Targeting to pick the victim, needs range and line_clear() like any other
+  // shot, but resolves instantly with no projectile and no dodge roll: a curse lands.
+  //
+  // buff_amount is negative here and is applied to the target's
+  // Actor::temp_melee_damage_bonus, *not* to temp_str_bonus, even though the flavour is
+  // "-2 Strength". A negative temp_str_bonus would be actively wrong: tick_upkeep()
+  // reverses a Strength buff with `max_hp -= temp_str_bonus * kHpPerStrength`, so a
+  // negative value would hand the victim free max HP when the curse expired — and
+  // applying the matching delta up front would drive a 4 HP Rat's max HP negative
+  // instead. temp_melee_damage_bonus has no derived ceiling hanging off it and expires
+  // by a plain zero-out, and since damage_bonus_for() is the only thing Strength does
+  // offensively for a monster, -2 there is exactly the felt effect anyway.
+  bool is_debuff = false;
 };
 
 extern const std::vector<Spell> kSpellTable;
+
+// Index of the Demon's Wither Curse, so MinionTemplate::abilities can name it rather
+// than carry a bare number. constexpr, not a lookup: kMinionTable is a global in another
+// translation unit, and a runtime lookup would depend on static initialization order
+// between the two tables. Keep it in step with kSpellTable's last row — the row's own
+// comment points back here.
+constexpr int kWitherCurseIndex = 11;
 
 // Indices into kSpellTable of every spell the player currently knows, in display order.
 // A spell needs both a high enough Intelligence *and* the right school —

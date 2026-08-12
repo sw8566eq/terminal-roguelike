@@ -72,6 +72,17 @@ void draw_panel(tcod::Console& console, int x, int y, int w, int h, const std::s
 
 namespace {
 
+// Where the shot being aimed originates: the player, or the minion casting one of its
+// own abilities (GameState::casting_actor_id). The preview has to agree with
+// handle_targeting_input() about this, or the aim line is drawn from the wrong place.
+// Falls back to the player if the id no longer resolves, matching that handler's own
+// bail-out.
+const Actor& targeting_caster(const GameState& gs) {
+  if (gs.casting_actor_id < 0) return gs.player;
+  int idx = actor_index_by_id(gs.level().monsters, gs.casting_actor_id);
+  return idx < 0 ? gs.player : gs.level().monsters[static_cast<size_t>(idx)];
+}
+
 void render_weapon_menu(GameState& gs, tcod::Console& console) {
   tcod::print(console, {0, 0}, "Weapons - press a letter to equip, Esc to close", tcod::ColorRGB{255, 255, 255},
               std::nullopt);
@@ -216,6 +227,44 @@ void render_pickup_screen(GameState& gs, tcod::Console& console) {
               tcod::ColorRGB{150, 150, 150}, std::nullopt);
 }
 
+// One focused minion's abilities. Deliberately the same lettered shape as the player's
+// spell menu, since it's the same gesture ('z') aimed at a different caster — the only
+// extra column is whose mana pays.
+void render_minion_ability_menu(GameState& gs, tcod::Console& console) {
+  const Level& level = gs.level();
+  int idx = actor_index_by_id(level.monsters, gs.focused_minion_id);
+  if (idx < 0) {
+    tcod::print(console, {0, 0}, "That minion is gone. Esc to close.", tcod::ColorRGB{255, 255, 255}, std::nullopt);
+    return;
+  }
+  const Actor& minion = level.monsters[static_cast<size_t>(idx)];
+
+  tcod::print(console, {0, 0}, minion.name + " abilities - press a letter to use, Esc to go back",
+              tcod::ColorRGB{255, 255, 255}, std::nullopt);
+  tcod::print(console, {0, 1},
+              "Mana: " + std::to_string(minion.mana) + "/" + std::to_string(minion.max_mana) +
+                  (minion.mana_regen_turns == 0 ? "  (does not regenerate)" : ""),
+              tcod::ColorRGB{150, 200, 255}, std::nullopt);
+
+  if (minion.abilities.empty()) {
+    tcod::print(console, {0, 3}, "(none)", tcod::ColorRGB{120, 120, 120}, std::nullopt);
+    return;
+  }
+  for (size_t i = 0; i < minion.abilities.size(); ++i) {
+    const Spell& s = kSpellTable[static_cast<size_t>(minion.abilities[i])];
+    bool affordable = minion.mana >= s.mana_cost;
+    std::string line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (" +
+                       std::to_string(s.mana_cost) + " MP, range " + std::to_string(s.range) + ")";
+    if (s.is_debuff) {
+      line += "  " + std::to_string(s.buff_amount) + " melee damage to the target for " +
+              std::to_string(s.buff_turns) + " turns";
+    }
+    if (!affordable) line += "  [not enough mana]";
+    tcod::print(console, {0, 3 + static_cast<int>(i)}, line,
+                affordable ? tcod::ColorRGB{200, 200, 200} : tcod::ColorRGB{120, 120, 120}, std::nullopt);
+  }
+}
+
 void render_drop_screen(GameState& gs, tcod::Console& console) {
   tcod::print(console, {0, 0}, "Drop - press a letter to drop, Esc to cancel", tcod::ColorRGB{255, 255, 255},
               std::nullopt);
@@ -284,7 +333,8 @@ void render_help(tcod::Console& console) {
       "d                                 Drop a weapon, armor, or potion",
       "f                                 Fire the equipped ranged weapon (move to target,",
       "                                  Enter to loose it, Esc to cancel)",
-      "z                                 Cast a known spell",
+      "z                                 Cast a known spell — or, while focused on a single",
+      "                                  minion, open that minion's own abilities instead",
       "m                                 Command a minion or all of them (roster menu; Shift+A",
       "                                  there jumps straight to All)",
       "o  p                              Cycle command focus to the next/previous minion",
@@ -363,7 +413,9 @@ void render_context_row(GameState& gs, tcod::Console& console) {
     tcod::print(console, {0, CONTEXT_ROW}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
   } else if (gs.mode == Mode::Targeting) {
     const Spell& casting_spell = kSpellTable[static_cast<size_t>(gs.casting_spell_index)];
-    std::string prompt = "Casting " + casting_spell.name + " (" + std::to_string(casting_spell.mana_cost) +
+    const Actor& caster = targeting_caster(gs);
+    std::string who = caster.is_player ? "Casting " : ("Your " + caster.name + " casts ");
+    std::string prompt = who + casting_spell.name + " (" + std::to_string(casting_spell.mana_cost) +
                           " MP) - move to target, Enter to fire, Esc to cancel.";
     tcod::print(console, {0, CONTEXT_ROW}, prompt, tcod::ColorRGB{255, 255, 100}, std::nullopt);
   } else if (gs.mode == Mode::MinionFocus) {
@@ -747,6 +799,7 @@ void render_map_panel(GameState& gs, tcod::Console& console, const Camera& camer
 
 void render_targeting_overlay(GameState& gs, tcod::Console& console, const Camera& camera) {
   Level& level = gs.level();
+  const Actor& caster = targeting_caster(gs);
   if (gs.mode == Mode::Targeting) {
     const Spell& previewed_spell = kSpellTable[static_cast<size_t>(gs.casting_spell_index)];
 
@@ -758,7 +811,7 @@ void render_targeting_overlay(GameState& gs, tcod::Console& console, const Camer
       // (line_clear(), so a wall blocks it but a hole doesn't).
       if (camera.in_view(gs.target_x, gs.target_y)) {
         bool has_minion = own_minion_at(level.monsters, gs.target_x, gs.target_y) >= 0;
-        bool reachable = line_clear(gs.player.x, gs.player.y, gs.target_x, gs.target_y, level.map);
+        bool reachable = line_clear(caster.x, caster.y, gs.target_x, gs.target_y, level.map);
         auto& cell = console.at(camera.screen_x(gs.target_x), camera.screen_y(gs.target_y));
         cell.ch = 'X';
         cell.fg = (has_minion && reachable) ? tcod::ColorRGB{100, 220, 255} : tcod::ColorRGB{120, 60, 60};
@@ -766,7 +819,7 @@ void render_targeting_overlay(GameState& gs, tcod::Console& console, const Camer
     } else {
       // Preview the shot: trace the same path a cast would take, and stop drawing at
       // the first tile that would actually stop it, so what you see is what you'd hit.
-      auto preview = trace_path(gs.player.x, gs.player.y, gs.target_x, gs.target_y);
+      auto preview = trace_path(caster.x, caster.y, gs.target_x, gs.target_y);
       for (size_t i = 0; i < preview.size(); ++i) {
         auto [x, y] = preview[i];
         bool blocked = level.map.blocks_projectile(x, y);
@@ -791,7 +844,7 @@ void render_targeting_overlay(GameState& gs, tcod::Console& console, const Camer
       // would do. Recolors tiles rather than overwriting their glyph, so monsters/
       // terrain caught in the blast stay visible underneath the highlight.
       if (previewed_spell.aoe_radius > 0) {
-        auto [impact_x, impact_y] = find_impact(preview, gs.player.x, gs.player.y, level.map, level.monsters);
+        auto [impact_x, impact_y] = find_impact(preview, caster.x, caster.y, level.map, level.monsters);
         int radius = previewed_spell.aoe_radius;
         for (int by = impact_y - radius; by <= impact_y + radius; ++by) {
           for (int bx = impact_x - radius; bx <= impact_x + radius; ++bx) {
@@ -938,6 +991,7 @@ void render_frame(GameState& gs, tcod::Console& console) {
     case Mode::Help:         render_help(console);          return;
     case Mode::MinionRoster: render_minion_roster(gs, console); return;
     case Mode::Pickup:       render_pickup_screen(gs, console); return;
+    case Mode::MinionAbilityMenu: render_minion_ability_menu(gs, console); return;
     case Mode::SchoolChoice: render_school_choice(console); return;
     default: break;
   }

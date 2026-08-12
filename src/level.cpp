@@ -57,6 +57,9 @@ Actor spawn_minion(const MinionTemplate& tmpl, int x, int y) {
   minion.hp_regen_turns = tmpl.hp_regen_turns;
   minion.extra_actions = tmpl.extra_actions;
   minion.duration_turns = tmpl.duration_turns;
+  minion.abilities = tmpl.abilities;
+  minion.mana = minion.max_mana = tmpl.max_mana;  // spawns with a full pool, like max_hp
+  minion.mana_regen_turns = tmpl.mana_regen_turns;
   minion.allegiance = Allegiance::Player;
   return minion;
 }

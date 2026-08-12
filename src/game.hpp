@@ -45,6 +45,7 @@ enum class Mode {
   Help,
   MinionRoster,
   MinionFocus,
+  MinionAbilityMenu,
   Pickup,
   Look,
   RangedAttack
@@ -74,6 +75,12 @@ struct GameState {
   int pending_attribute_points = 0;      // unspent level-up points forcing a Mode::LevelUp prompt
 
   int casting_spell_index = -1;  // which kSpellTable entry is being aimed, while Mode::Targeting
+  // Who is casting it: -1 for the player, otherwise an Actor::id — a minion using one of
+  // its own abilities (see Actor::abilities). Mode::Targeting reads this to decide whose
+  // position the shot originates from, whose mana pays, whose Dexterity aims it, and how
+  // the log line is phrased. Reset to -1 whenever the player casts, so a stale minion id
+  // can never redirect an ordinary spell.
+  int casting_actor_id = -1;
   int target_x = 0;              // cursor, while Mode::Targeting, MinionFocus, Look or RangedAttack
   int target_y = 0;
   // The id of the last hostile Targeting/RangedAttack's cursor was aimed at when the
@@ -142,6 +149,11 @@ void grant_xp(GameState& gs, int amount);
 // attributes and a monster's are authored in its table row, but "+5 STR is worth +35 max
 // HP" is true either way. Ceiling only — unlike a level-up, current HP/mana don't jump.
 void apply_potion(GameState& gs, Actor& actor, const Potion& potion);
+
+// Applies a targeted debuff (Spell::is_debuff — Wither Curse today) to `target`. No dodge
+// roll and no projectile: a curse lands, the same way Place Swap resolves without a roll.
+// Refreshes rather than stacks, the identical idiom apply_potion() uses for a buff.
+void apply_debuff(GameState& gs, Actor& target, const Spell& spell);
 
 // Whether this Actor decides to spend its turn drinking something: gulp a heal when badly
 // hurt, pop a buff when a fight is actually on. The player never routes through this —

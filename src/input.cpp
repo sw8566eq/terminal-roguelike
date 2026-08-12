@@ -1188,35 +1188,37 @@ void handle_drop_input(GameState& gs, const SDL_Event& event) {
   return;
 }
 
-// True if standing at (x, y) while traveling (dx, dy) puts a new corridor branch (a
-// T-junction or a cross) right underfoot — a run_in_direction() stop condition, checked
-// against the *prospective* tile before the player actually steps onto it (see below).
-// Only meaningful in a corridor: a room tile has walkable neighbors on every side by
-// construction, so applying this inside a room would stop a run on its very first step
-// (rooms get their own, separate stop condition below). Corridors in this game are
-// always straight horizontal/vertical segments (see Map::dig_corridor_h/v), never
-// diagonal, so only orthogonal travel is checked — a diagonal run only ever crosses
-// open room floors, which the in_room check already excludes.
+// The side-passage stop condition, evaluated from the tile the player is standing on and
+// looking one step ahead: true when a wall running alongside the direction of travel is
+// about to open up.
 //
-// Checking whether a perpendicular tile is walkable *here* is not enough on its own —
-// two corridors carved independently can run adjacent to each other for a whole
-// stretch, which is walkable on both sides of every tile along it without being a fork
-// anywhere. What actually marks a fork is a side opening that wasn't there one tile
-// back: comparing against the same perpendicular offset at the previous tile
-// ((x - dx, y - dy), always derivable since travel direction never changes mid-run) is
-// what tells "this corridor happens to be wide" apart from "a passage just opened up
-// beside me". A steady-width corridor reads as open on both counts every step and never
-// trips; a genuine fork flips from closed to open on exactly the step it appears.
-bool is_branch_point(const Map& map, int x, int y, int dx, int dy) {
-  if (map.is_in_room(x, y)) return false;
-  if (dx != 0 && dy != 0) return false;  // diagonal travel: no corridor case to detect
-  int px = -dy, py = dx;                 // one perpendicular unit vector; the other is its negation
-  auto opened_here_not_before = [&](int ox, int oy) {
-    bool open_here = map.is_walkable(x + ox, y + oy);
-    bool open_before = map.is_walkable(x - dx + ox, y - dy + oy);
-    return open_here && !open_before;
+// Each side (the two tiles perpendicular to travel) is tested on its own, and fires when
+// that side is a wall *here* but open at the corresponding front diagonal — the wall
+// you've been following ends one step ahead. Reporting it from the tile before the
+// junction rather than on it is the point: the run stops with the opening in front of the
+// player instead of carrying them into the middle of it.
+//
+// Testing the two sides independently, rather than "a wall on either side AND an opening
+// on either side", is what keeps a corridor that merely happens to be more than one tile
+// wide from reading as a fork on every tile along it: its open side has no wall to end,
+// and its walled side stays walled, so neither clause ever completes. Only a real opening
+// flips one side from wall to floor.
+//
+// Deliberately *not* gated on is_in_room() — the rule is self-limiting, and gating it was
+// a bug: open room floor has no wall to either side so nothing fires there anyway, while
+// running along a room's edge past an exit cut through that wall does fire, which is
+// exactly the branch a player crossing a room cares about.
+//
+// Diagonal travel is skipped: corridors here are always straight horizontal/vertical
+// segments (Map::dig_corridor_h/v), so the front-diagonal geometry has no corridor case
+// left to describe.
+bool side_opening_ahead(const Map& map, int x, int y, int dx, int dy) {
+  if (dx != 0 && dy != 0) return false;
+  const int px = -dy, py = dx;  // one perpendicular unit vector; the other is its negation
+  auto wall_here_open_ahead = [&](int ox, int oy) {
+    return !map.is_walkable(x + ox, y + oy) && map.is_walkable(x + dx + ox, y + dy + oy);
   };
-  return opened_here_not_before(px, py) || opened_here_not_before(-px, -py);
+  return wall_here_open_ahead(px, py) || wall_here_open_ahead(-px, -py);
 }
 
 // Side-effect-free approximation of "would a hostile be visible from (x, y)" — used to
@@ -1239,27 +1241,32 @@ bool would_see_hostile_from(const std::vector<Actor>& monsters, const Map& map, 
 
 // Shift+direction: quicker navigation than tapping the same key over and over. Repeats
 // the plain movement step in one direction, a full real turn at a time — monster AI runs
-// on every step, exactly as it would if the key were pressed that many times by hand —
-// stopping the moment there's something to react to rather than after a fixed distance.
-// Every stop condition is checked against the tile the player is *about* to step onto,
-// not the one they're already standing on, so the player halts one tile short of
-// whatever triggered it — able to see/react to it, not standing on top of it. Stops
-// before moving onto a tile that:
-//   - would put a hostile monster in view (would_see_hostile_from()) — including the
-//     very first tile: if a hostile is already visible from where the run starts,
-//     there's nothing to travel toward, so it doesn't move at all
-//   - is blocked (a wall) or occupied by anyone, monster or the player's own minion — a
-//     run is a "get me somewhere else" gesture, not a way to bump-attack or minion-swap
-//     on autopilot, so it stops short rather than resolving either
-//   - would cross from a corridor (or the starting tile) into a room — checked by
-//     comparing is_in_room() of the current tile against the prospective one, so it
-//     fires exactly once, right at the threshold; running again from just outside the
-//     room crosses no such threshold and so isn't stopped by this a second time
-//   - is a corridor branch (is_branch_point()) — e.g. a cross in the corridors — so the
-//     player gets to pick the new direction rather than being carried into the fork
-// It can still stop *on* a tile, not before it, in one case: the player dies mid-run,
-// since a hostile that was still out of view can land a hit on the very step that
-// brings it into view (the end_turn() that reveals it is the same one that let it act).
+// on every step, exactly as it would if the key were pressed that many times by hand.
+//
+// There are two kinds of stop, and keeping them apart is what stops travel deadlocking:
+//
+//   *Hard* — the next tile is a wall, or something is standing on it (a monster or the
+//   player's own minion). Checked on every step, the first included. Travel is a "get me
+//   somewhere else" gesture, not a way to bump-attack or minion-swap on autopilot, so it
+//   stops short rather than resolving either; plain unshifted movement still does both,
+//   so nothing is unreachable.
+//
+//   *Soft* — a room threshold, a side opening (side_opening_ahead()), or a hostile
+//   coming into view. These end a run already in progress, but are skipped on its first
+//   step, so a run started from a tile satisfying one still moves. That exemption is
+//   load-bearing rather than a courtesy: each of these is a property of the tile the
+//   player is *standing on*, so without it the very tile a run stopped on would refuse
+//   to start the next run from that spot — leaving the player unable to travel out of
+//   it at all, permanently. (That was a real bug, not a hypothetical: every soft stop
+//   became a wall, and a single visible monster froze travel outright.) Pressing the key
+//   again from a tile travel deliberately stopped on is the player saying they've seen
+//   what it stopped for.
+//
+// Soft stops all land the player one tile early by construction, able to see whatever
+// stopped them instead of standing in it. The one exception is dying mid-run: a hostile
+// still out of view can land a hit on the very step that reveals it, since the end_turn()
+// that reveals it is the same one that let it act.
+//
 // kRunMaxSteps is a defensive cap, not a real limit — a straight line in one direction
 // always meets a wall well before it, on any map this size.
 constexpr int kRunMaxSteps = 200;
@@ -1270,14 +1277,18 @@ void run_in_direction(GameState& gs, int dx, int dy) {
                                  // levels itself, but staying consistent with every
                                  // other call site that re-fetches after a turn passes
                                  // costs nothing and can't go stale.
-    int new_x = gs.player.x + dx;
-    int new_y = gs.player.y + dy;
+    const int new_x = gs.player.x + dx;
+    const int new_y = gs.player.y + dy;
+
     if (monster_at(level.monsters, new_x, new_y) >= 0) return;
     if (!level.map.is_walkable(new_x, new_y)) return;
-    bool would_enter_room = !level.map.is_in_room(gs.player.x, gs.player.y) && level.map.is_in_room(new_x, new_y);
-    if (would_enter_room) return;
-    if (is_branch_point(level.map, new_x, new_y, dx, dy)) return;
-    if (would_see_hostile_from(level.monsters, level.map, new_x, new_y)) return;
+
+    if (step > 0) {
+      bool entering_room = !level.map.is_in_room(gs.player.x, gs.player.y) && level.map.is_in_room(new_x, new_y);
+      if (entering_room) return;
+      if (side_opening_ahead(level.map, gs.player.x, gs.player.y, dx, dy)) return;
+      if (would_see_hostile_from(level.monsters, level.map, new_x, new_y)) return;
+    }
 
     gs.player.x = new_x;
     gs.player.y = new_y;

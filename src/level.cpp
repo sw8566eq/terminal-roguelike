@@ -76,7 +76,7 @@ Actor spawn_reanimated(int monster_template_index, int x, int y) {
   raised.max_hp = reanimated_hp(raised.max_hp);
   raised.hp = raised.max_hp;
   raised.xp_reward = 0;  // your own minion dying must never pay you XP
-  raised.duration_turns = -1;  // permanent, like Summon Demon
+  raised.duration_turns = kRaisedMinionTurns;  // it rots; see tick_minion_durations()
   return raised;
 }
 

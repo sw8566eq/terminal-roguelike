@@ -158,9 +158,12 @@ const std::vector<Spell> kSpellTable = {
     //
     // It needs no power gate because reanimated_hp() is the gate: the strongest raiseable
     // row (Troll, 22 HP) comes back at 14, under the Demon's 20. unlock_int=7 sits between
-    // Place Swap (5) and Summon Demon (9), and mana_cost=6 likewise between their 8 and 9
-    // — it produces a permanent minion like Summon Demon, but a weakened one whose quality
-    // depends on what you managed to kill. Stated defaults.
+    // Place Swap (5) and Summon Demon (9), and mana_cost=6 likewise between their 8 and 9.
+    //
+    // What it buys is a *timed* minion (kRaisedMinionTurns) whose quality depends on what
+    // you managed to kill, which is what keeps Summon Demon worth its extra mana: the
+    // Demon is the permanent, dependable option, while raising is opportunistic and rots.
+    // Stated defaults.
     {"Raise Dead", /*unlock_int=*/7, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/6,
      /*mana_cost=*/6, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
      /*hit_dice_count=*/0, /*hit_dice_sides=*/0, '%', tcod::ColorRGB{140, 200, 140}, /*is_summon=*/false,

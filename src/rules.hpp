@@ -88,6 +88,13 @@ constexpr int kCorpseChancePercent = 50;
 // throws at you without ever overtaking what the school already grants.
 constexpr int kReanimatedHpPercent = 60;
 
+// How long a raised corpse holds together before it rots away, in turns. Raising is
+// borrowed time, not a permanent gain — which is also what separates Raise Dead from
+// Summon Demon, the school's expensive permanent option. Authored here rather than on a
+// table row because a raised creature has no kMinionTable row of its own; it's built from
+// whatever kMonsterTable species died.
+constexpr int kRaisedMinionTurns = 50;
+
 // A raised corpse's starting (and maximum) HP, rounded up so even a Rat comes back with
 // something. Rounding up rather than down matters at the small end: 60% of 4 truncates to
 // 2, and a 2 HP minion is barely worth the mana.

@@ -107,9 +107,9 @@ Actor spawn_monster(int table_index, int x, int y);
 Actor spawn_minion(const MinionTemplate& tmpl, int x, int y);
 
 // Raises a corpse: the same kMonsterTable row spawn_monster() would build, turned to the
-// player's side and brought back at reanimated_hp() of its living maximum. Permanent,
-// like Summon Demon — a raised creature doesn't decay on a timer, it just comes back
-// weaker than it was.
+// player's side and brought back at reanimated_hp() of its living maximum. Lasts
+// kRaisedMinionTurns before rotting away — raising is borrowed time, and the expiry runs
+// through the same tick_minion_durations() countdown a Skeletal Minion uses.
 //
 // Everything else about it is that species, gear included: raise an Orc and you get an
 // Orc in Leather Armor swinging an Orc Axe, which is the whole appeal over a generic

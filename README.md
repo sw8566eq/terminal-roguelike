@@ -289,11 +289,12 @@ what's next.
       other loot. Bosses never leave one — their gear is the reward, and their
       stat line isn't meant to end up on your side — and neither do Skeletons,
       which are animated bones with nothing left to raise
-- [x] True necromancy: Raise Dead turns a corpse into a permanent minion of
-      that exact species — gear and all, so a raised Orc arrives in Leather
-      Armor swinging an Orc Axe. It comes back at 60% of the living creature's
-      HP, which is what keeps raising the toughest thing on the floor from
-      outclassing what the school already summons
+- [x] True necromancy: Raise Dead turns a corpse into a minion of that exact
+      species — gear and all, so a raised Orc arrives in Leather Armor swinging
+      an Orc Axe. It comes back at 60% of the living creature's HP and rots
+      away after 50 turns, so raising is opportunistic borrowed time rather
+      than a permanent gain — Summon Demon stays the school's dependable
+      standing minion
 - [ ] A higher minion cap, now that per-minion control exists
 
 **Interface**

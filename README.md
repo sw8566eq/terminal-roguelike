@@ -154,9 +154,10 @@ These are for development/testing, not normal play:
   carrying (which is real loot, since it drops), then exit immediately
   without opening a window
 - `--fast-monsters` — give every hostile monster one extra action per turn,
-  so they move and attack twice for each turn you take. No monster in the
-  game does this normally; the flag exists to exercise the boss/elite
-  behavior before an actual boss row is written
+  so they move and attack twice for each turn you take. Two bosses exist now
+  (Orc Warlord, Troll Chieftain) and neither claims this — it's saved for a
+  future boss whose theme is actually about speed — so the flag is still the
+  only way to see the double-action behavior in play
 - `--give=<name>[,<name>...]` — add items straight to your carried
   inventory at startup (not equipped), by exact name across weapons,
   armor, and potions, e.g. `--give="Dagger,Potion of Teleportation"`;
@@ -205,8 +206,7 @@ handler, and a key to open it.
 
 ## Status
 
-Everything here is built and playable except the single unchecked item, which is
-what's next.
+Everything here is built and playable.
 
 **World**
 
@@ -272,13 +272,18 @@ what's next.
       far enough (a teleport, the stairs) and they re-arm for next time
 - [x] Casters: the Goblin Shaman throws the same Magic Dart you can learn, from a
       small mana pool that comes back only slowly — a handful of darts up front,
-      then a 5 HP nuisance with claws until it has recovered. Projectiles carry
+      then a 5 HP nuisance with claws until it has recovered. Its floor-5+
+      counterpart, the Orc Wizard, knows two spells (Magic Dart and Fireball)
+      and casts whichever it can afford that scores higher, so it opens with the
+      AoE and falls back to poking once the mana runs low. Projectiles carry
       an owner, so one code path resolves yours and theirs alike, and neither
       ever hits its own side
 - [x] Bosses: one guaranteed spawn on each floor its row covers, on top of that
-      floor's normal monsters. The Orc Warlord (floor 3) is the only thing
-      besides you that regenerates, so wounds you don't finish it with heal back
-      off — and the only monster carrying a potion
+      floor's normal monsters. The Orc Warlord (floor 3) regenerates and opens
+      by drinking its own Potion of Strength — the only monster carrying one.
+      The Troll Chieftain (floor 6) regenerates a bit faster and hits harder,
+      but deliberately doesn't act twice per turn — that's saved for a future
+      boss whose theme is actually about speed
 
 **Minions**
 
@@ -307,7 +312,9 @@ what's next.
       away after 50 turns, so raising is opportunistic borrowed time rather
       than a permanent gain — Summon Demon stays the school's dependable
       standing minion
-- [ ] A higher minion cap, now that per-minion control exists
+- [x] A higher effective minion cap: Summon Imp, Summon Demon and Raise Dead
+      each draw from their own independent pool (3/1/3) rather than one
+      shared limit, so a full pack now tops out at 7 instead of 3
 
 **Interface**
 

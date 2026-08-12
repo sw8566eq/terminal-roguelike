@@ -240,7 +240,8 @@ what's next.
     see), Raise Dead (turn a corpse into a minion of that species), Summon
     Demon (permanent and much stronger)
   - Combat Mage — Battle Fury (melee damage), Iron Skin (armor), Haste
-- [x] Mana, spent per cast and regenerated slowly
+- [x] Mana, spent per cast and regenerated slowly — by everything with a pool,
+      not just you
 - [x] Extra actions per turn: Haste lets you act twice for every turn the dungeon
       takes, while monsters, buff timers and regen all stay on the normal clock.
       It's a plain creature property, not a player perk, so a boss can be given
@@ -258,12 +259,14 @@ what's next.
       break line of sight, and otherwise wanders — with real A* pathfinding, so
       it routes around walls instead of grinding into corners
 - [x] Ranged specialists: Goblin Slinger, and its floor-5+ counterpart Orc
-      Archer, snipe without approaching but permanently commit to melee the
-      moment you reach them
+      Archer, snipe without approaching, then draw a blade and commit once you
+      reach them — backing off a step won't get them sniping again, but escape
+      far enough (a teleport, the stairs) and they re-arm for next time
 - [x] Casters: the Goblin Shaman throws the same Magic Dart you can learn, from a
       small mana pool that comes back only slowly — a handful of darts up front,
-      then a 5 HP nuisance with claws until it has recovered. Projectiles carry an owner, so one code path resolves yours and
-      theirs alike, and neither ever hits its own side
+      then a 5 HP nuisance with claws until it has recovered. Projectiles carry
+      an owner, so one code path resolves yours and theirs alike, and neither
+      ever hits its own side
 - [x] Bosses: one guaranteed spawn on each floor its row covers, on top of that
       floor's normal monsters. The Orc Warlord (floor 3) is the only thing
       besides you that regenerates, so wounds you don't finish it with heal back
@@ -281,14 +284,15 @@ what's next.
       (`m`), then send that minion or the whole pack to attack a target, hold a
       tile, follow you, or hunt on its own
 - [x] Minion abilities: a summon can carry spells of its own, spent from its own
-      mana and aimed from where it stands, via `z` while it's focused. The Demon's
-      Wither Curse is the first — it has a fixed pool and no regeneration, so an
-      ability is something you spend a minion on, not a per-turn tool
+      mana and aimed from where it stands, via `z` while it's focused. The
+      Demon's Wither Curse is the first — its mana comes back slowly enough that
+      an ability is something you spend a minion on rather than a per-turn tool
 - [x] Corpses: a slain monster has a chance to leave its body behind, shown as
       `%` on the map and named by `x`. Bodies persist with the floor like any
       other loot. Bosses never leave one — their gear is the reward, and their
       stat line isn't meant to end up on your side — and neither do Skeletons,
-      which are animated bones with nothing left to raise
+      which are animated bones with nothing left to raise. Any species can be
+      excluded the same way
 - [x] True necromancy: Raise Dead turns a corpse into a minion of that exact
       species — gear and all, so a raised Orc arrives in Leather Armor swinging
       an Orc Axe. It comes back at 60% of the living creature's HP and rots

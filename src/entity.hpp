@@ -207,13 +207,21 @@ struct Actor {
   // single authored knob per monster instead of falling out of its other stats.
   int evasion = 0;
 
-  // One-way flip, set the first time this Actor attacks from an adjacent tile with a
-  // melee (attack_range 1) weapon while also carrying a longer-ranged one. A ranged
-  // monster (e.g. Goblin Slinger) snipes with its Rock and never has to approach —
-  // right up until its target actually reaches it, at which point it draws its Dagger
-  // and commits for good: from then on choose_weapon_for_range() refuses to hand it
-  // back the ranged weapon, so it behaves exactly like an ordinary melee-only monster
-  // (chasing when not adjacent) for the rest of its life.
+  // Set the first time this Actor attacks from an adjacent tile with a melee
+  // (attack_range 1) weapon while also carrying a longer-ranged one. A ranged monster
+  // (e.g. Goblin Slinger) snipes with its Rock and never has to approach — right up
+  // until its target actually reaches it, at which point it draws its Dagger and commits:
+  // while this is set, equip_best_weapon_for_range() refuses to hand back the ranged
+  // weapon, so it behaves like an ordinary melee-only monster, chasing rather than
+  // backing off to snipe again.
+  //
+  // Cleared once the target is beyond the reach of *anything* this Actor carries — see
+  // equip_best_weapon_for_range(). That's what separates "you stepped back one tile"
+  // (still the same brawl, stay committed) from "this fight is over" (teleport away, take
+  // the stairs, or simply outrun it), after which re-arming is correct: meeting the same
+  // Slinger again across a room should be a rock fight, not a permanently defanged
+  // monster. It used to be a one-way flip for life, which made a single adjacency a
+  // permanent downgrade.
   bool melee_engaged = false;
 
   // How many turns this Actor takes to regenerate from 0 HP to full, or **0 for an

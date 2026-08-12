@@ -99,9 +99,12 @@ const std::vector<MonsterTemplate> kMonsterTable = {
     // has attack_range 5, so it snipes from well across a room without needing to
     // approach at all — but only until the player actually reaches it: it carries a
     // real Dagger (the same one out of kWeaponTable the player can find and use) in
-    // extra_weapons, switches to it the moment it's adjacent, and permanently commits
-    // to melee from then on (Actor::melee_engaged), behaving exactly like an ordinary
-    // chasing Goblin for the rest of the fight rather than backing off to snipe again.
+    // extra_weapons, switches to it the moment it's adjacent, and commits to melee from
+    // then on (Actor::melee_engaged), behaving exactly like an ordinary chasing Goblin
+    // rather than backing off to snipe at whoever is standing next to it. That commitment
+    // lasts as long as the fight does: get beyond its Rock's reach — teleport out, take
+    // the stairs, outrun it — and it re-arms, so meeting the same Slinger again across a
+    // room is a rock fight rather than a defanged monster.
     // The Dagger is much more accurate than the Rock purely because of its hit-dice,
     // and it drops as loot when the Slinger dies.
     {"Goblin Slinger", 'G', tcod::ColorRGB{150, 150, 70}, 5, kThrownRock, /*xp_reward=*/8,
@@ -158,7 +161,7 @@ const std::vector<MonsterTemplate> kMonsterTable = {
     {"Orc", 'o', tcod::ColorRGB{60, 120, 60}, 14, Weapon{"Orc Axe", 1, 6, 0, false, 1, -1, /*hit_dice=*/1, 4},
      /*xp_reward=*/22, /*evasion=*/5, /*dexterity=*/8, /*strength=*/2, /*min_depth=*/5, /*max_depth=*/-1,
      /*armor=*/kArmorTable[0]},
-    // Orc Archer: the same snipe-then-permanently-melee behavior as Goblin Slinger,
+    // Orc Archer: the same snipe-then-engage behavior as Goblin Slinger,
     // just with every stat scaled up to match this floor-5+ tier — the same
     // relationship Orc already has to Goblin.
     {"Orc Archer", 'O', tcod::ColorRGB{110, 130, 60}, 10,

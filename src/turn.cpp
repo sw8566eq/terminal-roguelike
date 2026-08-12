@@ -298,8 +298,10 @@ void run_hostile_ai(GameState& gs) {
       // whether the player can fire what they're holding. A wall between the two still
       // blocks it (line_clear()), which at range 1 is always trivially true, so melee is
       // unaffected by that check. Once melee_engaged (see Actor), a ranged monster's
-      // reach permanently collapses to 1: it snipes right up until its target reaches
-      // it, then fights like any other melee monster for good.
+      // reach collapses to 1: it snipes right up until its target reaches it, then
+      // fights like any other melee monster — until the target gets beyond everything it
+      // carries, at which point the commitment lifts and it re-arms (see
+      // equip_best_weapon_for_range()).
       int effective_range = monster.melee_engaged ? 1 : monster.weapon.attack_range;
       bool in_range = best_dist <= effective_range && best_dist > 0;
       if (in_range && line_clear(monster.x, monster.y, target->x, target->y, level.map)) {

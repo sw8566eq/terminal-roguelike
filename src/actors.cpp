@@ -148,6 +148,14 @@ std::string actor_verb(const Actor& a, const std::string& base) { return a.is_pl
 
 void equip_best_weapon_for_range(Actor& actor, int distance) {
   if (actor.weapons.empty()) return;
+
+  // Re-arm when the target is beyond everything this Actor owns. Checked before the
+  // selection below, so the freed-up ranged weapon is eligible again in this same call
+  // the moment the target comes back into its reach.
+  int longest_reach = actor.weapon.attack_range;
+  for (const Weapon& w : actor.weapons) longest_reach = std::max(longest_reach, w.attack_range);
+  if (distance > longest_reach) actor.melee_engaged = false;
+
   auto usable = [&](const Weapon& w) {
     if (actor.melee_engaged && w.attack_range > 1) return false;
     return w.attack_range >= distance;

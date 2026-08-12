@@ -111,11 +111,18 @@ std::string actor_verb(const Actor& a, const std::string& base);
 // across the room and draws its Dagger the instant you close, purely because the Dagger
 // scores higher at distance 1 — no special-cased "melee weapon" slot involved.
 //
-// Drawing a melee weapon while adjacent sets melee_engaged for good (see Actor), after
-// which only range-1 weapons are ever considered again — so a ranged monster that has
-// been reached commits to the brawl instead of backing off to snipe. An Actor carrying
-// no spare weapons (most monsters, and the player, whose swaps are manual through the
-// 'w' menu) returns immediately and is completely unaffected.
+// Drawing a melee weapon while adjacent sets melee_engaged (see Actor), after which only
+// range-1 weapons are considered — so a ranged monster that has been reached commits to
+// the brawl instead of backing off to snipe at whoever is standing next to it.
+//
+// That commitment lasts only as long as the fight does: if `distance` exceeds the reach
+// of every weapon this Actor carries, the flag is cleared first, so a creature whose
+// target genuinely got away re-arms. Using its own longest reach rather than a tuning
+// constant makes the rule state itself — "nothing I have can touch you, so this is over"
+// — and it scales automatically to whatever a future row carries.
+//
+// An Actor carrying no spare weapons (most monsters, and the player, whose swaps are
+// manual through the 'w' menu) returns immediately and is completely unaffected.
 //
 // Free — it's a draw, not a turn.
 void equip_best_weapon_for_range(Actor& actor, int distance);

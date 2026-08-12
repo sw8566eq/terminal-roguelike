@@ -88,20 +88,22 @@ struct MonsterTemplate {
   // five. Nothing else about a boss is special: it's an Actor with bigger numbers and
   // whatever combination of hp_regen_turns/extra_actions/gear its row asks for.
   bool is_boss = false;
-  // Spellcasting, for a monster whose row wants it (the Goblin Shaman). All four are
-  // trailing rather than sitting next to strength/dexterity where `intelligence` really
-  // belongs, because every row in this table is positional aggregate init and these are
-  // all ints — inserting mid-struct would silently misalign nine existing rows rather
-  // than fail to compile.
+  // Spellcasting, for a monster whose row wants it (the Goblin Shaman, the Orc Wizard).
+  // All four are trailing rather than sitting next to strength/dexterity where
+  // `intelligence` really belongs, because every row in this table is positional
+  // aggregate init and the three above are all ints — inserting mid-struct would
+  // silently misalign nine existing rows rather than fail to compile.
   //   intelligence     -> spell damage bonus (INT/3), exactly as the player's does
   //   max_mana         -> authored, not derived via max_mana_for_intelligence() — same
   //                       authored-vs-derived split as max_hp and evasion
   //   mana_regen_turns -> turns to refill 0 -> max; 0 for a one-time budget (see Actor)
-  //   spell_index      -> row into kSpellTable, -1 for a non-caster
+  //   spell_indices    -> rows into kSpellTable, empty for a non-caster. More than one
+  //                       is a real caster's kit, not just a bigger dart — see
+  //                       Actor::spell_indices for how the AI picks between them.
   int intelligence = 0;
   int max_mana = 0;
   int mana_regen_turns = 0;
-  int spell_index = -1;
+  std::vector<int> spell_indices = {};
   // Whether this species can leave a body for a Summoner to raise (see Corpse in
   // level.hpp). Default true — most things that die leave something. Set false for a
   // creature that shouldn't be raiseable at all, whether because there's nothing left of
@@ -150,8 +152,8 @@ struct MinionTemplate {
   // enough to act twice a turn would just set this. See Actor::extra_actions.
   int extra_actions = 0;
   // Abilities the *player* can order this minion to use, as indices into kSpellTable
-  // (see Actor::abilities). Distinct from MonsterTemplate::spell_index, which is what a
-  // monster's own AI throws unprompted — these are fired deliberately, by focusing the
+  // (see Actor::abilities). Distinct from MonsterTemplate::spell_indices, which is what
+  // a monster's own AI throws unprompted — these are fired deliberately, by focusing the
   // minion and pressing 'z'. A row that leaves this empty simply has no 'z' menu.
   std::vector<int> abilities = {};
   // The pool those abilities spend, authored exactly like MonsterTemplate's — same

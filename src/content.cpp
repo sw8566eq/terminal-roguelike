@@ -144,7 +144,7 @@ const std::vector<MonsterTemplate> kMonsterTable = {
      /*evasion=*/8, /*dexterity=*/3, /*strength=*/0, /*min_depth=*/1, /*max_depth=*/4,
      /*armor=*/kNoArmor, /*extra_weapons=*/{}, /*potions=*/{}, /*hp_regen_turns=*/0,
      /*extra_actions=*/0, /*is_boss=*/false, /*intelligence=*/3, /*max_mana=*/4,
-     /*mana_regen_turns=*/kManaRegenTurns, /*spell_index=*/0},
+     /*mana_regen_turns=*/kManaRegenTurns, /*spell_indices=*/{0}},
     // leaves_corpse=false: it's already animated bones, so putting it down destroys the
     // very thing a necromancer would have raised. The one row using the flag today, and a
     // single cell to change if that reads as too precious.
@@ -153,7 +153,7 @@ const std::vector<MonsterTemplate> kMonsterTable = {
      /*evasion=*/8, /*dexterity=*/6, /*strength=*/2, /*min_depth=*/5, /*max_depth=*/-1,
      /*armor=*/kNoArmor, /*extra_weapons=*/{}, /*potions=*/{}, /*hp_regen_turns=*/0,
      /*extra_actions=*/0, /*is_boss=*/false, /*intelligence=*/0, /*max_mana=*/0,
-     /*mana_regen_turns=*/0, /*spell_index=*/-1, /*leaves_corpse=*/false},
+     /*mana_regen_turns=*/0, /*spell_indices=*/{}, /*leaves_corpse=*/false},
     // Wears real armor — the same Leather Armor the player can find, soaking 1 off
     // every hit that lands on it, and dropped when it dies. Nothing about the damage
     // math is orc-specific: defender.armor.defense is subtracted for whoever is being
@@ -168,6 +168,27 @@ const std::vector<MonsterTemplate> kMonsterTable = {
      Weapon{"Short Bow", 1, 6, 0, false, 1, -1, /*hit_dice=*/2, 4, /*attack_range=*/5}, /*xp_reward=*/18,
      /*evasion=*/6, /*dexterity=*/4, /*strength=*/2, /*min_depth=*/5, /*max_depth=*/-1, /*armor=*/kNoArmor,
      /*extra_weapons=*/{kWeaponTable[1]}},
+    // The floor-5+ tier-up of the Goblin Shaman, and the first monster (and first real
+    // exercise of Actor::spell_indices — see its comment) with a genuine two-spell kit
+    // rather than one spell repeated: Magic Dart (kSpellTable[0], cheap poke) and
+    // Fireball (kSpellTable[2], a slow-moving AoE blast). The AI always prefers whichever
+    // it can afford and reach with the higher expected_spell_damage(), so in practice it
+    // opens with Fireball whenever it has 3+ mana and falls back to spamming Magic Dart
+    // once it doesn't — the same "outlast it" counterplay the Goblin Shaman already
+    // teaches, just against a caster that can actually hurt a group, not just one target.
+    // This is also the first monster to fire an AoE spell at all, so it's what makes
+    // explode()'s allegiance-aware splash (CLAUDE.md's Monster spellcasting section
+    // called it "dormant — no monster has an AoE spell yet") a live path: a Fireball
+    // aimed at the player will just as happily catch a minion standing next to them.
+    //
+    // max_mana=10 at intelligence=6 (INT/3=2 damage bonus) buys roughly three Fireballs,
+    // sized the same way the Shaman's budget was — enough to matter in one fight,
+    // not enough to be permanently lethal from across the level.
+    {"Orc Wizard", 'w', tcod::ColorRGB{130, 60, 220}, 12, kClaws, /*xp_reward=*/24,
+     /*evasion=*/8, /*dexterity=*/5, /*strength=*/0, /*min_depth=*/5, /*max_depth=*/-1,
+     /*armor=*/kNoArmor, /*extra_weapons=*/{}, /*potions=*/{}, /*hp_regen_turns=*/0,
+     /*extra_actions=*/0, /*is_boss=*/false, /*intelligence=*/6, /*max_mana=*/10,
+     /*mana_regen_turns=*/kManaRegenTurns, /*spell_indices=*/{0, 2}},
     {"Troll", 'T', tcod::ColorRGB{100, 110, 80}, 22,
      Weapon{"Massive Club", 1, 8, 0, false, 1, -1, /*hit_dice=*/1, 3}, /*xp_reward=*/40,
      /*evasion=*/2, /*dexterity=*/10, /*strength=*/3, /*min_depth=*/8, /*max_depth=*/-1},

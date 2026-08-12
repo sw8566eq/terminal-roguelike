@@ -37,7 +37,7 @@ Actor spawn_monster(int table_index, int x, int y) {
   monster.intelligence = tmpl.intelligence;
   monster.mana = monster.max_mana = tmpl.max_mana;  // spawns with a full pool, like max_hp
   monster.mana_regen_turns = tmpl.mana_regen_turns;
-  monster.spell_index = tmpl.spell_index;
+  monster.spell_indices = tmpl.spell_indices;
   return monster;
 }
 

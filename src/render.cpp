@@ -579,13 +579,16 @@ void render_sidebar(GameState& gs, tcod::Console& console) {
           // has max_mana 0 and would just print "0/0".
           //
           // The parenthetical names whatever it can actually cast, and the two sources
-          // are distinct: spell_index is what a monster's AI throws on its own, while
-          // abilities is what a minion can be ordered to use. A Demon has the latter and
-          // leaves spell_index at -1, so this must never index kSpellTable with it
-          // unguarded.
+          // are distinct: spell_indices is what a monster's AI throws on its own
+          // (possibly more than one — see the Orc Wizard), while abilities is what a
+          // minion can be ordered to use. A Demon has the latter and leaves
+          // spell_indices empty.
           if (m.max_mana > 0) {
             std::string casts;
-            if (m.spell_index >= 0) casts = kSpellTable[static_cast<size_t>(m.spell_index)].name;
+            for (int spell_idx : m.spell_indices) {
+              if (!casts.empty()) casts += "/";
+              casts += kSpellTable[static_cast<size_t>(spell_idx)].name;
+            }
             for (int ability : m.abilities) {
               if (!casts.empty()) casts += ", ";
               casts += kSpellTable[static_cast<size_t>(ability)].name;

@@ -312,21 +312,21 @@ struct Actor {
   // was killed.
   int monster_template_index = -1;
 
-  // Index into kSpellTable of the one spell this Actor casts, or -1 for "doesn't cast".
-  // The player doesn't use this — they pick from known_spell_indices() in the z menu —
-  // it's how a caster *monster* (the Goblin Shaman) knows what to throw. One spell
-  // rather than a list, deliberately minimal: a second one needs a small vector plus a
-  // rule for choosing between them, and nothing wants that yet.
-  int spell_index = -1;
+  // Indices into kSpellTable of the spells this Actor casts on its own, or empty for
+  // "doesn't cast". The player doesn't use this — they pick from known_spell_indices()
+  // in the z menu — it's how a caster *monster* (the Goblin Shaman, the Orc Wizard)
+  // knows what to throw. When more than one is available, the AI picks whichever it can
+  // currently afford and reach that has the highest expected_spell_damage() (rules.hpp)
+  // — the same "score every option, take the best" idiom equip_best_weapon_for_range()
+  // already uses for weapons — so a multi-spell caster naturally leads with its strongest
+  // affordable spell and falls back to a cheaper one as its pool runs dry.
+  std::vector<int> spell_indices;
   // Indices into kSpellTable of the abilities this Actor can be *ordered* to use, as
-  // opposed to spell_index above which is what its own AI throws unprompted. Populated
+  // opposed to spell_indices above which is what its own AI throws unprompted. Populated
   // from MinionTemplate::abilities; empty on everything else today.
   //
-  // The distinction is who chooses: a Goblin Shaman decides for itself, while a Demon's
-  // Wither Curse is fired by the player through the 'z' menu of Mode::MinionFocus. It's
-  // a list rather than a single index because a minion is a unit you're managing, so
-  // "which of its abilities" is a decision worth having — the reason spell_index stayed
-  // singular is that nothing picks *for* a monster.
+  // The distinction is who chooses: an Orc Wizard decides for itself, while a Demon's
+  // Wither Curse is fired by the player through the 'z' menu of Mode::MinionFocus.
   std::vector<int> abilities;
   // Turns to regenerate 0 -> full mana, or 0 for "doesn't regenerate", exactly mirroring
   // hp_regen_turns above. This gate didn't exist while the player was the only Actor

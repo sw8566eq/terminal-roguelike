@@ -47,3 +47,7 @@ int damage_bonus_for(const Actor& attacker, const Weapon& weapon) {
 double expected_damage(const Actor& actor, const Weapon& weapon) {
   return weapon.dice_count * (weapon.dice_sides + 1) / 2.0 + damage_bonus_for(actor, weapon);
 }
+
+double expected_spell_damage(const Actor& actor, const Spell& spell) {
+  return spell.dice_count * (spell.dice_sides + 1) / 2.0 + (actor.intelligence + actor.temp_int_bonus) / 3.0;
+}

@@ -7,6 +7,7 @@
 // Balance changes should be possible by editing this file and content.cpp alone.
 
 #include "entity.hpp"
+#include "spells.hpp"
 
 // --- Derived stats -------------------------------------------------------------------
 //
@@ -153,3 +154,9 @@ int damage_bonus_for(const Actor& attacker, const Weapon& weapon);
 // it's carrying (see equip_best_weapon_for_range) — never for actual damage, which is
 // always rolled.
 double expected_damage(const Actor& actor, const Weapon& weapon);
+
+// Same idea, for a spell this Actor casts on its own (Actor::spell_indices) — used only
+// to rank multiple known spells against each other (a multi-spell caster picks whichever
+// affordable, in-range one scores highest here), never for actual damage, which is
+// always rolled.
+double expected_spell_damage(const Actor& actor, const Spell& spell);

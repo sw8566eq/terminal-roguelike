@@ -237,61 +237,77 @@ void run_hostile_ai(GameState& gs) {
       equip_best_weapon_for_range(monster, best_dist);
       if (try_actor_use_potion(gs, monster, /*enemy_near=*/best_dist <= kAiBuffPotionRange)) continue;
 
-      // Spellcasting, for a monster whose row gave it a spell (Actor::spell_index — the
-      // Goblin Shaman today). Deliberately built from the same pieces the player's own
-      // cast is: it pays kSpellTable's mana_cost out of a real pool, and it pushes a
-      // real Projectile onto level.projectiles that travels, is drawn on the map, and
-      // rolls dodge/damage in advance_projectiles() like any other shot. Nothing here
-      // resolves damage — that's the whole difference from a Goblin Slinger's Rock,
-      // which lands instantly inside this loop with nothing to see or react to.
+      // Spellcasting, for a monster whose row gave it one or more spells
+      // (Actor::spell_indices — the Goblin Shaman's one dart, the Orc Wizard's two).
+      // Deliberately built from the same pieces the player's own cast is: it pays
+      // kSpellTable's mana_cost out of a real pool, and it pushes a real Projectile onto
+      // level.projectiles that travels, is drawn on the map, and rolls dodge/damage in
+      // advance_projectiles() like any other shot. Nothing here resolves damage — that's
+      // the whole difference from a Goblin Slinger's Rock, which lands instantly inside
+      // this loop with nothing to see or react to.
       //
-      // Preferred over melee whenever it's affordable and the shot is available, so a
-      // Shaman opens at range and only reverts to swinging Claws once the pool is dry.
-      // A hit-scan spell resolves in this same turn, via the advance_projectiles() call
-      // just after this loop — see the comment there. It never appears on the map, for
-      // the same reason the player's own Magic Dart doesn't: instant means instant.
-      if (monster.spell_index >= 0) {
-        const Spell& spell = kSpellTable[static_cast<size_t>(monster.spell_index)];
+      // With more than one known spell, the AI scores every affordable, in-range one by
+      // expected_spell_damage() (rules.hpp) and casts whichever scores highest — the
+      // same "score every option, take the best" idiom equip_best_weapon_for_range()
+      // already uses for weapons. A single-spell caster (the Shaman) just always has one
+      // candidate, so this collapses to the old behavior for it.
+      //
+      // Preferred over melee whenever anything is affordable and in range, so a caster
+      // opens at range and only reverts to swinging its melee weapon once its pool is
+      // dry. A hit-scan spell resolves in this same turn, via the advance_projectiles()
+      // call just after this loop — see the comment there. It never appears on the map,
+      // for the same reason the player's own Magic Dart doesn't: instant means instant.
+      int best_spell_index = -1;
+      double best_spell_score = -1.0;
+      for (int candidate : monster.spell_indices) {
+        const Spell& candidate_spell = kSpellTable[static_cast<size_t>(candidate)];
         // The is_in_fov() term keeps a caster from sniping out of the dark. Range is
         // Chebyshev here (like every other AI reach check) while FOV_RADIUS is radial,
-        // so a diagonal Shaman at range 8 would otherwise sit outside the player's
+        // so a diagonal caster at range 8 would otherwise sit outside the player's
         // sight while shooting into it — which would undercut the whole point of
         // making monster fire visible. The existing Goblin Slinger has this property
         // for free at range 5 (its furthest diagonal is still inside FOV_RADIUS); this
-        // just makes the longer-ranged caster match it rather than get an exception.
+        // just makes a longer-ranged caster match it rather than get an exception.
         // Reuses the player's own FOV as the mutual-visibility proxy, the same stand-in
         // for per-monster sight used everywhere else in this loop.
-        bool can_cast = monster.mana >= spell.mana_cost && best_dist > 0 && best_dist <= spell.range &&
-                        level.map.is_in_fov(monster.x, monster.y) &&
-                        line_clear(monster.x, monster.y, target->x, target->y, level.map);
-        if (can_cast) {
-          monster.mana -= spell.mana_cost;
-          Projectile proj;
-          proj.path = trace_path(monster.x, monster.y, target->x, target->y);
-          proj.speed = spell.speed;
-          proj.dice_count = spell.dice_count;
-          proj.dice_sides = spell.dice_sides;
-          proj.hit_dice_count = spell.hit_dice_count;
-          proj.hit_dice_sides = spell.hit_dice_sides;
-          proj.aoe_radius = spell.aoe_radius;
-          proj.pierces = spell.pierces;
-          proj.prev_x = monster.x;
-          proj.prev_y = monster.y;
-          // Same two snapshots the player's cast takes, off the caster's own stats —
-          // spell damage from INT/3, accuracy from Dexterity — so a monster's dart is
-          // built by the identical formula the player's is.
-          proj.bonus = (monster.intelligence + monster.temp_int_bonus) / 3;
-          proj.accuracy_bonus = (monster.dexterity + monster.temp_dex_bonus) * kAccuracyPerDexPoint;
-          proj.name = spell.name;
-          proj.glyph = spell.glyph;
-          proj.color = spell.color;
-          proj.owner_allegiance = monster.allegiance;
-          proj.owner_is_player = false;
-          proj.owner_name = monster.name;
-          level.projectiles.push_back(proj);
-          add_message(gs, actor_subject(monster) + actor_verb(monster, " cast") + " " + spell.name + ".");
-          continue;  // casting is this monster's whole action
+        bool candidate_castable = monster.mana >= candidate_spell.mana_cost && best_dist > 0 &&
+                                   best_dist <= candidate_spell.range && level.map.is_in_fov(monster.x, monster.y) &&
+                                   line_clear(monster.x, monster.y, target->x, target->y, level.map);
+        if (!candidate_castable) continue;
+        double score = expected_spell_damage(monster, candidate_spell);
+        if (score > best_spell_score) {
+          best_spell_score = score;
+          best_spell_index = candidate;
         }
+      }
+      if (best_spell_index >= 0) {
+        const Spell& spell = kSpellTable[static_cast<size_t>(best_spell_index)];
+        monster.mana -= spell.mana_cost;
+        Projectile proj;
+        proj.path = trace_path(monster.x, monster.y, target->x, target->y);
+        proj.speed = spell.speed;
+        proj.dice_count = spell.dice_count;
+        proj.dice_sides = spell.dice_sides;
+        proj.hit_dice_count = spell.hit_dice_count;
+        proj.hit_dice_sides = spell.hit_dice_sides;
+        proj.aoe_radius = spell.aoe_radius;
+        proj.pierces = spell.pierces;
+        proj.prev_x = monster.x;
+        proj.prev_y = monster.y;
+        // Same two snapshots the player's cast takes, off the caster's own stats —
+        // spell damage from INT/3, accuracy from Dexterity — so a monster's dart is
+        // built by the identical formula the player's is.
+        proj.bonus = (monster.intelligence + monster.temp_int_bonus) / 3;
+        proj.accuracy_bonus = (monster.dexterity + monster.temp_dex_bonus) * kAccuracyPerDexPoint;
+        proj.name = spell.name;
+        proj.glyph = spell.glyph;
+        proj.color = spell.color;
+        proj.owner_allegiance = monster.allegiance;
+        proj.owner_is_player = false;
+        proj.owner_name = monster.name;
+        level.projectiles.push_back(proj);
+        add_message(gs, actor_subject(monster) + actor_verb(monster, " cast") + " " + spell.name + ".");
+        continue;  // casting is this monster's whole action
       }
 
       // "In range" is just the equipped weapon's reach — the same field that decides

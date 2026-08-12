@@ -184,11 +184,16 @@ int main(int argc, char* argv[]) {
                 << describe_weapon(monster.weapon) << ", STR " << monster.strength << ", DEX " << monster.dexterity
                 << ", evasion " << monster.evasion;
       if (!monster.armor.is_intrinsic) std::cout << ", " << monster.armor.name;
-      // A caster's spell and mana pool are as much a part of "what will this fight cost
-      // you" as its weapon is — see the same line in the 'x' look panel.
-      if (monster.spell_index >= 0) {
-        std::cout << ", " << kSpellTable[static_cast<size_t>(monster.spell_index)].name << " " << monster.mana << "/"
-                  << monster.max_mana << " MP";
+      // A caster's spells and mana pool are as much a part of "what will this fight cost
+      // you" as its weapon is — see the same line in the 'x' look panel. Joined with
+      // "/" when there's more than one (the Orc Wizard's Magic Dart/Fireball).
+      if (!monster.spell_indices.empty()) {
+        std::string casts;
+        for (int spell_idx : monster.spell_indices) {
+          if (!casts.empty()) casts += "/";
+          casts += kSpellTable[static_cast<size_t>(spell_idx)].name;
+        }
+        std::cout << ", " << casts << " " << monster.mana << "/" << monster.max_mana << " MP";
       }
       std::cout << ")\n";
       for (const auto& w : monster.weapons) std::cout << "      carries weapon: " << w.name << "\n";

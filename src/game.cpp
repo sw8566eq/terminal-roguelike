@@ -200,7 +200,11 @@ void on_actor_killed(GameState& gs, Actor& victim, bool killed_by_player_side,
     //
     // Either way it's no corpse at all, rather than one that refuses to be raised: a body
     // you can see and inspect but never use would read as a bug.
-    if (!tmpl.is_boss && tmpl.leaves_corpse && random_int(1, 100) <= kCorpseChancePercent) {
+    // One body per tile: two corpses stacked on the same square would be indistinguishable
+    // to both the map glyph and the raise cursor, so a second death on an occupied tile
+    // simply leaves nothing rather than creating a body the player can't single out.
+    if (!tmpl.is_boss && tmpl.leaves_corpse && corpse_at(gs.level(), victim.x, victim.y) < 0 &&
+        random_int(1, 100) <= kCorpseChancePercent) {
       gs.level().corpses.push_back(Corpse{victim.x, victim.y, victim.monster_template_index});
     }
   }

@@ -78,6 +78,21 @@ constexpr int kAiBuffPotionRange = 4;
 // finding one, rare enough that a cleared floor isn't carpeted in them.
 constexpr int kCorpseChancePercent = 50;
 
+// What fraction of its living max HP a raised corpse comes back with. Death takes
+// something out of a creature that raising doesn't put back: a reanimated monster is a
+// weaker copy of what you killed, not a free second one.
+//
+// This is also what keeps "raise whatever you killed" from needing a power gate. The
+// strongest raiseable row is the Troll at 22 HP, which comes back at 14 — under the
+// Demon's 20, the Summoner's own top-end summon. Raising scales with what the floor
+// throws at you without ever overtaking what the school already grants.
+constexpr int kReanimatedHpPercent = 60;
+
+// A raised corpse's starting (and maximum) HP, rounded up so even a Rat comes back with
+// something. Rounding up rather than down matters at the small end: 60% of 4 truncates to
+// 2, and a 2 HP minion is barely worth the mana.
+int reanimated_hp(int living_max_hp);
+
 // --- One combat formula, used by every attack in the game ----------------------------
 //
 // This replaced three separate ones (a Dexterity contest for monster-vs-player, an

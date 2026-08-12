@@ -19,6 +19,13 @@ int total_actions_for(const Actor& actor) {
 
 int xp_needed_for_level(int level) { return level * 20; }
 
+int reanimated_hp(int living_max_hp) {
+  // Integer ceiling of living_max_hp * pct / 100, and clamped to at least 1 so a
+  // hypothetical 0 HP row can't produce a minion that's dead on arrival.
+  int hp = (living_max_hp * kReanimatedHpPercent + 99) / 100;
+  return std::max(1, hp);
+}
+
 int accuracy_roll(const Actor& attacker, int hit_dice_count, int hit_dice_sides) {
   return (attacker.dexterity + attacker.temp_dex_bonus) * kAccuracyPerDexPoint +
          roll_dice(hit_dice_count, hit_dice_sides);

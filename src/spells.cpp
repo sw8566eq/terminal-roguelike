@@ -150,6 +150,24 @@ const std::vector<Spell> kSpellTable = {
      /*is_melee_buff=*/false, /*is_armor_buff=*/false, /*is_haste_buff=*/false,
      /*buff_amount=*/-2, /*buff_turns=*/10, /*pierces=*/false,
      /*minion_only=*/true, /*is_debuff=*/true},
+    // Summoner's fourth spell and the school's thematic centre: raise the specific thing
+    // you just killed, rather than conjuring a generic servant. Whatever the floor throws
+    // at you becomes what you can field, so the spell scales with where you are without
+    // any depth gating of its own — a floor-8 necromancer raises Trolls because Trolls
+    // are what's dying nearby.
+    //
+    // It needs no power gate because reanimated_hp() is the gate: the strongest raiseable
+    // row (Troll, 22 HP) comes back at 14, under the Demon's 20. unlock_int=7 sits between
+    // Place Swap (5) and Summon Demon (9), and mana_cost=6 likewise between their 8 and 9
+    // — it produces a permanent minion like Summon Demon, but a weakened one whose quality
+    // depends on what you managed to kill. Stated defaults.
+    {"Raise Dead", /*unlock_int=*/7, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/6,
+     /*mana_cost=*/6, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
+     /*hit_dice_count=*/0, /*hit_dice_sides=*/0, '%', tcod::ColorRGB{140, 200, 140}, /*is_summon=*/false,
+     /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::Summoner,
+     /*is_melee_buff=*/false, /*is_armor_buff=*/false, /*is_haste_buff=*/false,
+     /*buff_amount=*/0, /*buff_turns=*/0, /*pierces=*/false,
+     /*minion_only=*/false, /*is_debuff=*/false, /*is_raise=*/true},
 };
 
 std::vector<int> known_spell_indices(int intelligence, SpellSchool chosen_school) {

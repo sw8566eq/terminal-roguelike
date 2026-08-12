@@ -4,6 +4,7 @@
 
 #include "actors.hpp"
 #include "rng.hpp"
+#include "rules.hpp"
 
 bool g_debug_fast_monsters = false;
 
@@ -64,6 +65,26 @@ Actor spawn_minion(const MinionTemplate& tmpl, int x, int y) {
   minion.mana_regen_turns = tmpl.mana_regen_turns;
   minion.allegiance = Allegiance::Player;
   return minion;
+}
+
+Actor spawn_reanimated(int monster_template_index, int x, int y) {
+  // Built by spawn_monster() first so a raised creature can never drift from the living
+  // one: same weapon, armor, pack, evasion, attributes, spell. Only the four things that
+  // make it *yours and weaker* are changed afterwards.
+  Actor raised = spawn_monster(monster_template_index, x, y);
+  raised.allegiance = Allegiance::Player;
+  raised.max_hp = reanimated_hp(raised.max_hp);
+  raised.hp = raised.max_hp;
+  raised.xp_reward = 0;  // your own minion dying must never pay you XP
+  raised.duration_turns = -1;  // permanent, like Summon Demon
+  return raised;
+}
+
+int corpse_at(const Level& level, int x, int y) {
+  for (size_t i = 0; i < level.corpses.size(); ++i) {
+    if (level.corpses[i].x == x && level.corpses[i].y == y) return static_cast<int>(i);
+  }
+  return -1;
 }
 
 void drop_actor_gear(Level& level, const Actor& actor) {

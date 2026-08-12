@@ -372,6 +372,32 @@ void handle_spell_menu_input(GameState& gs, const SDL_Event& event) {
           if (gs.player.temp_extra_actions_turns <= 0) gs.player.temp_extra_actions_bonus = spell.buff_amount;
           gs.player.temp_extra_actions_turns = spell.buff_turns;  // refresh-not-stack, as above
         }
+      } else if (spell.is_raise) {
+        gs.casting_spell_index = spell_idx;
+        gs.casting_actor_id = -1;
+        // Auto-aim at the closest corpse in range with a clear line — the same three
+        // conditions Enter checks, so the cursor never starts somewhere the cast would
+        // be refused. Falls back to the player's own tile when there's nothing to raise.
+        int best = -1, best_dist = -1;
+        for (size_t i = 0; i < level.corpses.size(); ++i) {
+          const Corpse& corpse = level.corpses[i];
+          int dx = corpse.x - gs.player.x, dy = corpse.y - gs.player.y;
+          int dist = dx * dx + dy * dy;
+          if (dist > spell.range * spell.range) continue;
+          if (!line_clear(gs.player.x, gs.player.y, corpse.x, corpse.y, level.map)) continue;
+          if (best < 0 || dist < best_dist) {
+            best = static_cast<int>(i);
+            best_dist = dist;
+          }
+        }
+        if (best >= 0) {
+          gs.target_x = level.corpses[static_cast<size_t>(best)].x;
+          gs.target_y = level.corpses[static_cast<size_t>(best)].y;
+        } else {
+          gs.target_x = gs.player.x;
+          gs.target_y = gs.player.y;
+        }
+        gs.mode = Mode::Targeting;
       } else if (spell.is_swap) {
         gs.casting_spell_index = spell_idx;
         gs.casting_actor_id = -1;  // the player is casting this one
@@ -708,6 +734,47 @@ void handle_targeting_input(GameState& gs, const SDL_Event& event) {
                           " the mana to cast " + spell.name + ".");
       gs.casting_actor_id = -1;
       gs.mode = Mode::Playing;  // free cancel, same as Esc — no turn spent
+      return;
+    }
+
+    // Raising resolves here too: it targets a Corpse rather than an Actor, the only
+    // spell that does. Same three gates the preview colors by — a body under the cursor,
+    // in range, with a clear line.
+    if (spell.is_raise) {
+      int ci = corpse_at(level, gs.target_x, gs.target_y);
+      if (ci < 0 || !line_clear(caster.x, caster.y, gs.target_x, gs.target_y, level.map)) {
+        add_message(gs, "There's no corpse there to raise.");
+        gs.casting_actor_id = -1;
+        gs.mode = Mode::Playing;  // free cancel, same as Esc
+        return;
+      }
+      if (count_minions(level.monsters) >= kMaxMinions) {
+        add_message(gs, "You can't control any more minions.");
+        gs.casting_actor_id = -1;
+        gs.mode = Mode::Playing;  // free cancel — the corpse is left where it is
+        return;
+      }
+      int nx, ny;
+      // Raised on a free tile beside the corpse rather than on it, so it can't land on
+      // top of the player or another minion.
+      if (!free_adjacent_tile(level.map, level.monsters, gs.target_x, gs.target_y, nx, ny)) {
+        add_message(gs, "There's no room beside the corpse.");
+        gs.casting_actor_id = -1;
+        gs.mode = Mode::Playing;
+        return;
+      }
+      int tmpl_index = level.corpses[static_cast<size_t>(ci)].monster_template_index;
+      level.corpses.erase(level.corpses.begin() + ci);  // consumed either way
+      Actor raised = spawn_reanimated(tmpl_index, nx, ny);
+      // A fresh raise joins whatever the pack is already doing, same rule a fresh summon
+      // follows, so a mid-fight raise doesn't stand around.
+      raised.order = MinionOrder::Aggressive;
+      add_message(gs, "The " + raised.name + " rises to serve you.");
+      level.monsters.push_back(raised);
+      caster.mana -= spell.mana_cost;
+      gs.casting_actor_id = -1;
+      gs.mode = Mode::Playing;
+      end_turn(gs);
       return;
     }
 

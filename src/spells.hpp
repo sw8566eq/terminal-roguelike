@@ -128,6 +128,12 @@ struct Spell {
   // by a plain zero-out, and since damage_bonus_for() is the only thing Strength does
   // offensively for a monster, -2 there is exactly the felt effect anyway.
   bool is_debuff = false;
+  // Raises the corpse under the cursor as a minion of that species (Raise Dead). Uses
+  // Mode::Targeting like any aimed spell, needs range and line_clear(), but resolves
+  // instantly against a Corpse rather than an Actor — the only spell that targets
+  // something which isn't alive. The raised creature comes back at reanimated_hp() of
+  // its living maximum and the corpse is consumed either way.
+  bool is_raise = false;
 };
 
 extern const std::vector<Spell> kSpellTable;

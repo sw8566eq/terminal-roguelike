@@ -615,8 +615,12 @@ void render_sidebar(GameState& gs, tcod::Console& console) {
         }
         for (const auto& corpse : level.corpses) {
           if (corpse.x != gs.target_x || corpse.y != gs.target_y) continue;
-          sb_print("  " + kMonsterTable[static_cast<size_t>(corpse.monster_template_index)].name + " corpse",
-                   tcod::ColorRGB{170, 110, 110});
+          const MonsterTemplate& ct = kMonsterTable[static_cast<size_t>(corpse.monster_template_index)];
+          sb_print("  " + ct.name + " corpse", tcod::ColorRGB{170, 110, 110});
+          // What raising it would actually get you, so the decision doesn't need the
+          // player to remember the living creature's HP and do the arithmetic.
+          sb_print("    raises at " + std::to_string(reanimated_hp(ct.max_hp)) + " HP",
+                   tcod::ColorRGB{140, 200, 140});
           found_anything = true;
         }
         if (!found_anything) sb_print("  (nothing else here)", tcod::ColorRGB{120, 120, 120});
@@ -844,7 +848,18 @@ void render_targeting_overlay(GameState& gs, tcod::Console& console, const Camer
   if (gs.mode == Mode::Targeting) {
     const Spell& previewed_spell = kSpellTable[static_cast<size_t>(gs.casting_spell_index)];
 
-    if (previewed_spell.is_swap) {
+    if (previewed_spell.is_raise) {
+      // Same shape as the swap preview below — no line to draw, just the cursor tinted by
+      // whether the cast would succeed. Both conditions must match the Enter handler: a
+      // corpse there, and a clear line to it.
+      if (camera.in_view(gs.target_x, gs.target_y)) {
+        bool has_corpse = corpse_at(level, gs.target_x, gs.target_y) >= 0;
+        bool reachable = line_clear(caster.x, caster.y, gs.target_x, gs.target_y, level.map);
+        auto& cell = console.at(camera.screen_x(gs.target_x), camera.screen_y(gs.target_y));
+        cell.ch = 'X';
+        cell.fg = (has_corpse && reachable) ? tcod::ColorRGB{140, 200, 140} : tcod::ColorRGB{120, 60, 60};
+      }
+    } else if (previewed_spell.is_swap) {
       // No projectile/line to preview for a swap — just mark the target tile, colored
       // by whether the cast would actually succeed. Both conditions must match the
       // Enter-fire handler exactly, or the preview promises a swap that gets rejected:

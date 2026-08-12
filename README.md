@@ -237,7 +237,8 @@ what's next.
     (toggled aura that follows you and drains mana), Lightning Bolt (pierces
     every monster along its line)
   - Summoner — Raise Skeleton, Place Swap (trade places with a minion you can
-    see), Summon Demon (permanent and much stronger)
+    see), Raise Dead (turn a corpse into a minion of that species), Summon
+    Demon (permanent and much stronger)
   - Combat Mage — Battle Fury (melee damage), Iron Skin (armor), Haste
 - [x] Mana, spent per cast and regenerated slowly
 - [x] Extra actions per turn: Haste lets you act twice for every turn the dungeon
@@ -288,8 +289,12 @@ what's next.
       other loot. Bosses never leave one — their gear is the reward, and their
       stat line isn't meant to end up on your side — and neither do Skeletons,
       which are animated bones with nothing left to raise
-- [ ] True necromancy: a spell that raises one of those corpses as a minion of
-      that species — plus a higher minion cap now that per-minion control exists
+- [x] True necromancy: Raise Dead turns a corpse into a permanent minion of
+      that exact species — gear and all, so a raised Orc arrives in Leather
+      Armor swinging an Orc Axe. It comes back at 60% of the living creature's
+      HP, which is what keeps raising the toughest thing on the floor from
+      outclassing what the school already summons
+- [ ] A higher minion cap, now that per-minion control exists
 
 **Interface**
 

@@ -106,6 +106,20 @@ Actor spawn_monster(int table_index, int x, int y);
 // allegiance, the expiry timer, and having no XP bounty.
 Actor spawn_minion(const MinionTemplate& tmpl, int x, int y);
 
+// Raises a corpse: the same kMonsterTable row spawn_monster() would build, turned to the
+// player's side and brought back at reanimated_hp() of its living maximum. Permanent,
+// like Summon Demon — a raised creature doesn't decay on a timer, it just comes back
+// weaker than it was.
+//
+// Everything else about it is that species, gear included: raise an Orc and you get an
+// Orc in Leather Armor swinging an Orc Axe, which is the whole appeal over a generic
+// summon. Its xp_reward is cleared so killing your own minion can never pay out.
+Actor spawn_reanimated(int monster_template_index, int x, int y);
+
+// Index into level.corpses of a body at (x,y), or -1. Corpses don't stack — only one is
+// kept per tile (see on_actor_killed()) — so this is a plain first match.
+int corpse_at(const Level& level, int x, int y);
+
 // Spills everything an Actor was carrying onto its tile when it dies. Intrinsic gear
 // (Fists, a Rat's Bite, bare skin) is part of the creature rather than equipment, so it
 // leaves nothing behind — the same is_intrinsic rule that keeps the player's fists out of

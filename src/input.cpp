@@ -1207,13 +1207,13 @@ void handle_playing_input(GameState& gs, const SDL_Event& event) {
   int new_x = gs.player.x + dx;
   int new_y = gs.player.y + dy;
 
-  int target_index = -1;
-  for (size_t i = 0; i < level.monsters.size(); ++i) {
-    if (level.monsters[i].x == new_x && level.monsters[i].y == new_y) {
-      target_index = static_cast<int>(i);
-      break;
-    }
-  }
+  // monster_at() rather than a hand-rolled scan, because it filters on is_alive(). A
+  // corpse isn't erased until sweep_dead() at the end of end_turn(), and end_turn()
+  // returns *before* that on a free action — so a hasted player who kills something with
+  // their first action still has the body in level.monsters for their second. Walking
+  // into it used to resolve a fresh attack against the dead Actor, which re-ran
+  // on_actor_killed() and granted its XP and dropped its gear a second time.
+  int target_index = monster_at(level.monsters, new_x, new_y);
 
   if (target_index >= 0 && level.monsters[static_cast<size_t>(target_index)].allegiance == Allegiance::Player) {
     // Bump into your own minion: swap places instead of attacking it — you're

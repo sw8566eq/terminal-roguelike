@@ -43,7 +43,12 @@ void tick_upkeep(GameState& gs, Actor& actor) {
       }
     }
     if (actor.mana_regen_turns > 0 && actor.mana < actor.max_mana) {
-      actor.mana_regen_accumulator += static_cast<float>(actor.max_mana) / static_cast<float>(kManaRegenTurns);
+      // actor.mana_regen_turns, not the kManaRegenTurns constant — the field is a rate,
+      // exactly like hp_regen_turns above, not just an on/off gate. Reading the constant
+      // here happened to be invisible because the player is the only Actor that regens
+      // mana and start_new_game() sets theirs *to* kManaRegenTurns; a monster row with a
+      // different rate would silently have regenerated at the player's.
+      actor.mana_regen_accumulator += static_cast<float>(actor.max_mana) / static_cast<float>(actor.mana_regen_turns);
       while (actor.mana_regen_accumulator >= 1.0f && actor.mana < actor.max_mana) {
         actor.mana_regen_accumulator -= 1.0f;
         actor.mana += 1;

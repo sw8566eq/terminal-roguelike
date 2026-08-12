@@ -14,6 +14,7 @@
 #include <SDL3/SDL_main.h>
 #include <libtcod.hpp>
 
+#include <cstdlib>
 #include <iostream>
 #include <string>
 
@@ -34,7 +35,15 @@ int main(int argc, char* argv[]) {
     if (arg == "--fast-monsters") g_debug_fast_monsters = true;
     const std::string seed_prefix = "--seed=";
     if (arg.rfind(seed_prefix, 0) == 0) {
-      seed_rng(static_cast<unsigned int>(std::stoul(arg.substr(seed_prefix.size()))));
+      // Parsed by hand rather than with std::stoul, which *throws* on a non-numeric
+      // value and would abort the process — every other debug flag silently ignores a
+      // malformed value (--floor=/--level= use atoi), and the README promises that.
+      const std::string value = arg.substr(seed_prefix.size());
+      bool numeric = !value.empty();
+      for (char c : value) {
+        if (c < '0' || c > '9') numeric = false;
+      }
+      if (numeric) seed_rng(static_cast<unsigned int>(std::strtoul(value.c_str(), nullptr, 10)));
     }
   }
 
@@ -69,9 +78,6 @@ int main(int argc, char* argv[]) {
   gs.player.name = "Player";
   gs.player.is_player = true;
   gs.player.id = allocate_actor_id();
-
-  // Runs after the player's turn: every living monster still adjacent to the player
-  // gets to attack. (Movement/chasing AI will plug into this same turn boundary later.)
 
   start_new_game(gs);
 

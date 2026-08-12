@@ -175,7 +175,7 @@ void handle_school_choice_input(GameState& gs, const SDL_Event& event) {
     }
     // Same before/after diff idiom as the Shift+I handler above, reused rather
     // than duplicated, so "what's newly known" can't drift between the two call
-    // sites — announces the school's own entry spell (Fireball/Raise Skeleton/
+    // sites — announces the school's own entry spell (Fireball/Summon Imp/
     // Battle Fury), the only thing this diff can ever surface given the choice
     // fires the instant Intelligence crosses 4.
     for (int spell_idx : known_after) {

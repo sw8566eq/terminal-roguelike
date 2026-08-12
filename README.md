@@ -115,9 +115,9 @@ step 1.
 - On leveling up, `Shift+S` / `Shift+D` / `Shift+I` to put your point into
   Strength / Dexterity / Intelligence. The first time Intelligence reaches 4,
   a one-time, permanent choice interrupts: `Shift+C` for Caster (Fireball,
-  Sandstorm, Lightning Bolt), `Shift+U` for Summoner (Raise Skeleton, Place
-  Swap, Summon Demon), or `Shift+M` for Combat Mage (Battle Fury, Iron Skin,
-  Haste) — Magic Dart and its upgraded cousin Energy Lance stay available
+  Sandstorm, Lightning Bolt), `Shift+U` for Summoner (Summon Imp, Place
+  Swap, Raise Dead, Summon Demon), or `Shift+M` for Combat Mage (Battle Fury,
+  Iron Skin, Haste) — Magic Dart and its upgraded cousin Energy Lance stay available
   whichever path you pick
 - `x` to look around: move a cursor over the map without spending a turn or
   moving, and the side panel describes what's under it — remembered terrain
@@ -236,7 +236,7 @@ what's next.
   - Caster — Fireball (slow orb, 3x3 blast that can catch you too), Sandstorm
     (toggled aura that follows you and drains mana), Lightning Bolt (pierces
     every monster along its line)
-  - Summoner — Raise Skeleton, Place Swap (trade places with a minion you can
+  - Summoner — Summon Imp, Place Swap (trade places with a minion you can
     see), Raise Dead (turn a corpse into a minion of that species), Summon
     Demon (permanent and much stronger)
   - Combat Mage — Battle Fury (melee damage), Iron Skin (armor), Haste
@@ -301,7 +301,8 @@ what's next.
 
 - [x] Sectioned HUD: the dungeon, a message log, and a status sidebar showing
       your stats, every active buff with its turns remaining, and the enemies
-      and minions currently in view. The map is bigger than its panel, so the
+      and minions currently in view — each minion with its health, any mana it
+      has for abilities, and how many turns before a timed one expires. The map is bigger than its panel, so the
       view scrolls to follow you
 - [x] Message log with scrollback (`]`) and repeat coalescing
 - [x] Look around (`x`) to inspect any explored tile without spending a turn

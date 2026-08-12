@@ -80,7 +80,7 @@ std::pair<int, int> find_impact(const std::vector<std::pair<int, int>>& path, in
 // The Projectile counterparts of actor_possessive()/actor_subject(). They can't just call
 // those, because a Projectile only carries a snapshot of who fired it — the caster may be
 // dead by the time it lands (see Projectile's owner fields).
-//   projectile_possessive -> "your" / "your Skeletal Minion's" / "the Goblin Shaman's"
+//   projectile_possessive -> "your" / "your Imp's" / "the Goblin Shaman's"
 //   projectile_subject    -> "Your Magic Dart" / "The Goblin Shaman's Magic Dart"
 std::string projectile_possessive(const Projectile& proj);
 std::string projectile_subject(const Projectile& proj);

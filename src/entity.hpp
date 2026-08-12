@@ -162,7 +162,7 @@ struct Actor {
   // True only for the one Actor the human is driving. Nothing mechanical branches on
   // this — combat, gear, potions, regen and buffs all run the identical code either
   // way. It exists so the message log can be written in second person ("You hit the
-  // Rat" vs. "The Rat hits your Skeletal Minion"), and so a death or an XP award can be
+  // Rat" vs. "The Rat hits your Imp"), and so a death or an XP award can be
   // routed into the UI (death screen / level-up prompt) instead of just removing an
   // Actor. If you find yourself adding a rule that reads this, that rule is probably
   // the asymmetry worth questioning.

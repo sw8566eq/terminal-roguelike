@@ -394,7 +394,7 @@ void render_school_choice(tcod::Console& console) {
               "Shift+C) Caster      -- offensive magic: Fireball, Sandstorm, Lightning Bolt",
               tcod::ColorRGB{200, 200, 200}, std::nullopt);
   tcod::print(console, {0, 3},
-              "Shift+U) Summoner    -- conjury and command: Raise Skeleton, Place Swap, Summon Demon",
+              "Shift+U) Summoner    -- minions: Summon Imp, Place Swap, Raise Dead, Summon Demon",
               tcod::ColorRGB{200, 200, 200}, std::nullopt);
   tcod::print(console, {0, 4},
               "Shift+M) Combat Mage -- self-buffs: Battle Fury, Iron Skin, Haste",
@@ -650,15 +650,25 @@ void render_sidebar(GameState& gs, tcod::Console& console) {
     // full sentence, which could run past the sidebar's width once it named an
     // attack target (e.g. "attacking the Goblin Slinger").
     //
-    // HP always, MP only for a minion that actually has a pool — otherwise every
-    // Skeletal Minion would carry a useless "0/0", and the longest names are exactly
-    // the ones with no mana, so the two never compete for the same width. Showing MP
-    // here is the point: a Demon's remaining curses shouldn't require opening its
-    // ability menu to check.
-    std::string line = "  " + std::string(focused ? "*" : " ") + m.name + " [" + minion_order_flag(m) + "] " +
-                       std::to_string(m.hp) + "/" + std::to_string(m.max_hp);
-    if (m.max_mana > 0) line += " " + std::to_string(m.mana) + "MP";
-    sb_print(line, color);
+    // HP always; MP only for a minion with a pool (otherwise every Imp carries a useless
+    // "0/0"); the rot/expiry countdown only for a timed one (a Demon is permanent and has
+    // nothing to count). Showing both here is the point — neither a Demon's remaining
+    // curses nor a raised Troll's remaining turns should need a menu to check.
+    //
+    // The numbers are built first and the *name* is truncated to whatever room is left,
+    // rather than letting sb_print() clip the whole line from the right. A raised minion
+    // takes its name from kMonsterTable, where "Goblin Slinger" is long enough to push
+    // the countdown off the panel — and the countdown is the part you're actually playing
+    // around, so the name is what should degrade.
+    std::string prefix = "  " + std::string(focused ? "*" : " ");
+    std::string suffix = " [" + minion_order_flag(m) + "] " + std::to_string(m.hp) + "/" + std::to_string(m.max_hp);
+    if (m.max_mana > 0) suffix += " " + std::to_string(m.mana) + "MP";
+    if (m.duration_turns > 0) suffix += " " + std::to_string(m.duration_turns) + "t";
+
+    std::string name = m.name;
+    int room = sb_max_width - static_cast<int>(prefix.size()) - static_cast<int>(suffix.size());
+    if (static_cast<int>(name.size()) > room) name = name.substr(0, static_cast<size_t>(std::max(0, room)));
+    sb_print(prefix + name + suffix, color);
     any_minion = true;
   }
   if (!any_minion) sb_print("  (none)", tcod::ColorRGB{120, 120, 120});

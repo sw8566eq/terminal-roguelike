@@ -203,13 +203,17 @@ const std::vector<MonsterTemplate> kMonsterTable = {
 };
 
 const std::vector<MinionTemplate> kMinionTable = {
-    // A basic, temporary conscript — glyph/color deliberately distinct from the
-    // hostile Skeleton ('s', white) so friend and foe never look alike at a glance.
-    // Weaker than a real (hostile) Skeleton and time-limited, reflecting that this is
-    // an early, low-commitment summon rather than true necromancy (see the roadmap's
-    // Phase 3 for permanently reanimating a specific slain monster).
-    {"Skeletal Minion", 'u', tcod::ColorRGB{100, 200, 220}, /*max_hp=*/8,
-     Weapon{"Bone Claws", 1, 4, 0, /*is_intrinsic=*/true, 1, -1, /*hit_dice=*/2, 4},
+    // A basic, temporary conscript, and the small end of the Summoner's conjuring ladder
+    // (Imp -> Demon). It used to be a Skeletal Minion, which stopped making sense once
+    // Raise Dead existed: having a "Raise Skeleton" that conjures a generic servant next
+    // to a spell that raises the specific thing you killed blurred conjuring and
+    // necromancy together. An imp is unambiguously conjured, and it frees the skeleton
+    // theme for the undead side.
+    //
+    // 'i' is unused by any other row, and the warm orange keeps it clear of the Demon's
+    // magenta while still reading as the same family.
+    {"Imp", 'i', tcod::ColorRGB{235, 140, 70}, /*max_hp=*/8,
+     Weapon{"Imp Claws", 1, 4, 0, /*is_intrinsic=*/true, 1, -1, /*hit_dice=*/2, 4},
      /*evasion=*/6, /*dexterity=*/6, /*strength=*/1, /*duration_turns=*/40,
      /*armor=*/kNoArmor, /*extra_weapons=*/{}, /*potions=*/{}, /*hp_regen_turns=*/0,
      /*extra_actions=*/0, /*abilities=*/{}, /*max_mana=*/0,
@@ -218,8 +222,8 @@ const std::vector<MinionTemplate> kMinionTable = {
      // else's.
      /*mana_regen_turns=*/kManaRegenTurns},
     // Summoner's third spell's summon: stronger and permanent, contrasting with the
-    // Skeletal Minion's early, low-commitment, temporary framing above. Glyph 'D' and
-    // this magenta are unused by any hostile monster or the Skeletal Minion, so it
+    // Imp's early, low-commitment, temporary framing above. Glyph 'D' and
+    // this magenta are unused by any hostile monster or the Imp, so it
     // reads unmistakably as its own thing.
     // Also the first minion with an ability: Wither Curse (kSpellTable's last row), fired
     // by focusing it and pressing 'z'. 10 mana at the player's own regen rate is two

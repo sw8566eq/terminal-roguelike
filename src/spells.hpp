@@ -7,7 +7,7 @@
 // that resolves a cast branches on those. Six kinds exist today:
 //   - a fired Projectile (Magic Dart, Energy Lance, Fireball, Lightning Bolt)
 //   - a toggled aura        (is_toggle:      Sandstorm)
-//   - a summon              (is_summon:      Raise Skeleton, Summon Demon)
+//   - a summon              (is_summon:      Summon Imp, Summon Demon)
 //   - a place swap          (is_swap:        Place Swap)
 //   - a self-buff           (is_melee_buff / is_armor_buff / is_haste_buff)
 // Fields not relevant to a given kind are simply left at their defaults.

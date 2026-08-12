@@ -109,7 +109,7 @@ Actor spawn_minion(const MinionTemplate& tmpl, int x, int y);
 // Raises a corpse: the same kMonsterTable row spawn_monster() would build, turned to the
 // player's side and brought back at reanimated_hp() of its living maximum. Lasts
 // kRaisedMinionTurns before rotting away — raising is borrowed time, and the expiry runs
-// through the same tick_minion_durations() countdown a Skeletal Minion uses.
+// through the same tick_minion_durations() countdown a Imp uses.
 //
 // Everything else about it is that species, gear included: raise an Orc and you get an
 // Orc in Leather Armor swinging an Orc Axe, which is the whole appeal over a generic

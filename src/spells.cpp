@@ -22,7 +22,7 @@ const std::vector<Spell> kSpellTable = {
     // explodes into a 3x3 blast wherever it stops, rather than just hitting one target.
     // Its high hit-dice (vs. Magic Dart's low one) is the AoE-is-hard-to-dodge case.
     // Caster's entry spell — unlock_int=4 so it's already castable the moment the
-    // Caster/Summoner choice (Mode::SchoolChoice) is made, same as Raise Skeleton is
+    // Caster/Summoner choice (Mode::SchoolChoice) is made, same as Summon Imp is
     // for Summoner below.
     {"Fireball", /*unlock_int=*/4, /*dice_count=*/1, /*dice_sides=*/6, /*speed=*/2, /*range=*/8,
      /*mana_cost=*/3, /*aoe_radius=*/1, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
@@ -39,18 +39,18 @@ const std::vector<Spell> kSpellTable = {
      /*mana_cost=*/3, /*aoe_radius=*/3, /*is_toggle=*/true, /*tick_damage=*/2, /*tick_mana_cost=*/2,
      /*hit_dice_count=*/2, /*hit_dice_sides=*/6, 's', tcod::ColorRGB{230, 190, 90}, /*is_summon=*/false,
      /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::Caster},
-    // First summon spell: raises kMinionTable[0] (Skeletal Minion) next to the player.
+    // First summon spell: raises kMinionTable[0] (Imp) next to the player.
     // Summoner's entry spell — unlock_int=4 so it's already castable the moment the
     // Caster/Summoner choice is made, same as Fireball is for Caster above. See the
     // SpellMenu handler for how casting a summon spell differs from firing/toggling.
-    {"Raise Skeleton", /*unlock_int=*/4, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/0,
+    {"Summon Imp", /*unlock_int=*/4, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/0,
      /*mana_cost=*/4, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
      /*hit_dice_count=*/0, /*hit_dice_sides=*/0, 'u', tcod::ColorRGB{100, 200, 220}, /*is_summon=*/true,
      /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::Summoner},
     // Trades places with a minion instead of dealing damage — a tactical reposition
     // (pull yourself to a minion holding a doorway, or swap a hurt minion out of melee
     // and take its spot yourself). Summoner's second spell — unlock_int=5 keeps the
-    // same +1 gap after Raise Skeleton (4) that it had after Raise Skeleton's old
+    // same +1 gap after Summon Imp (4) that it had after Summon Imp's old
     // unlock_int (5 -> 6), just shifted down. range=6 is a stated default. mana_cost=8
     // is deliberately steep, not cheap like a damage spell's cost — this is a
     // no-dodge escape (swap to a minion standing somewhere safer) as much as it's an
@@ -64,7 +64,7 @@ const std::vector<Spell> kSpellTable = {
      /*mana_cost=*/8, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
      /*hit_dice_count=*/0, /*hit_dice_sides=*/0, '=', tcod::ColorRGB{100, 220, 255}, /*is_summon=*/false,
      /*summon_template_index=*/0, /*is_swap=*/true, /*school=*/SpellSchool::Summoner},
-    // Combat Mage's entry spell — unlock_int=4, same rule as Fireball/Raise Skeleton:
+    // Combat Mage's entry spell — unlock_int=4, same rule as Fireball/Summon Imp:
     // INT 4 grants a spell no matter which of the three schools is picked. Flat melee
     // damage, not accuracy — melee-only (see resolve_attack()'s raw_damage line):
     // doesn't help a fired spell or the Bow. Stated defaults, adjustable like Place
@@ -76,7 +76,7 @@ const std::vector<Spell> kSpellTable = {
      /*is_melee_buff=*/true, /*is_armor_buff=*/false, /*is_haste_buff=*/false,
      /*buff_amount=*/4, /*buff_turns=*/10},
     // Combat Mage's second spell — unlock_int=5, same +1 gap after the entry spell as
-    // Summoner's Raise Skeleton(4)->Place Swap(5). buff_amount=3 matches Chainmail's own
+    // Summoner's Summon Imp(4)->Place Swap(5). buff_amount=3 matches Chainmail's own
     // +3 defense. Applies to all damage sources (see every armor.defense site), not
     // just melee, unlike Battle Fury.
     {"Iron Skin", /*unlock_int=*/5, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/0,
@@ -105,10 +105,10 @@ const std::vector<Spell> kSpellTable = {
      /*is_melee_buff=*/false, /*is_armor_buff=*/false, /*is_haste_buff=*/false,
      /*buff_amount=*/0, /*buff_turns=*/0, /*pierces=*/true},
     // Summoner's third spell: raises kMinionTable[1] (Demon), the school's stronger,
-    // permanent counterpart to Raise Skeleton's early, temporary Skeletal Minion —
+    // permanent counterpart to Summon Imp's early, temporary Imp —
     // pure content-table addition, zero new mechanism (identical is_summon shape).
     // unlock_int=9 is the parallel tier to Lightning Bolt above. mana_cost=9 is
-    // steeper than Raise Skeleton's 4, reflecting a permanent and much stronger
+    // steeper than Summon Imp's 4, reflecting a permanent and much stronger
     // minion — stated default, adjustable after playtesting.
     {"Summon Demon", /*unlock_int=*/9, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/0,
      /*mana_cost=*/9, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,

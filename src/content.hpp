@@ -102,7 +102,7 @@ struct MonsterTemplate {
   //   intelligence     -> spell damage bonus (INT/3), exactly as the player's does
   //   max_mana         -> authored, not derived via max_mana_for_intelligence() — same
   //                       authored-vs-derived split as max_hp and evasion
-  //   mana_regen_turns -> 0 means the pool is a one-time budget (see Actor)
+  //   mana_regen_turns -> turns to refill 0 -> max; 0 for a one-time budget (see Actor)
   //   spell_index      -> row into kSpellTable, -1 for a non-caster
   int intelligence = 0;
   int max_mana = 0;

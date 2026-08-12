@@ -568,14 +568,26 @@ void render_sidebar(GameState& gs, tcod::Console& console) {
           }
           sb_print("    Eva: " + std::to_string(m.evasion) + "  STR: " + std::to_string(m.strength),
                    tcod::ColorRGB{150, 150, 150});
-          // A caster's remaining mana is the single most useful thing to know about
-          // it — the Goblin Shaman's whole design is a finite dart budget, so being
-          // able to check how much of it is left is what makes waiting it out a real
-          // decision rather than a guess. Only shown for something that actually
-          // casts; every other monster has max_mana 0 and would just print "0/0".
-          if (m.spell_index >= 0) {
-            sb_print("    MP: " + std::to_string(m.mana) + "/" + std::to_string(m.max_mana) + " (" +
-                         kSpellTable[static_cast<size_t>(m.spell_index)].name + ")",
+          // A caster's remaining mana is the single most useful thing to know about it —
+          // the Goblin Shaman's design is a dart budget, so being able to check what's
+          // left is what makes waiting it out a decision rather than a guess. Shown for
+          // anything with a pool at all; a creature with neither a spell nor an ability
+          // has max_mana 0 and would just print "0/0".
+          //
+          // The parenthetical names whatever it can actually cast, and the two sources
+          // are distinct: spell_index is what a monster's AI throws on its own, while
+          // abilities is what a minion can be ordered to use. A Demon has the latter and
+          // leaves spell_index at -1, so this must never index kSpellTable with it
+          // unguarded.
+          if (m.max_mana > 0) {
+            std::string casts;
+            if (m.spell_index >= 0) casts = kSpellTable[static_cast<size_t>(m.spell_index)].name;
+            for (int ability : m.abilities) {
+              if (!casts.empty()) casts += ", ";
+              casts += kSpellTable[static_cast<size_t>(ability)].name;
+            }
+            sb_print("    MP: " + std::to_string(m.mana) + "/" + std::to_string(m.max_mana) +
+                         (casts.empty() ? "" : " (" + casts + ")"),
                      tcod::ColorRGB{150, 150, 220});
           }
           for (const auto& carried : m.weapons) sb_print("    - " + carried.name, tcod::ColorRGB{170, 170, 200});
@@ -627,7 +639,16 @@ void render_sidebar(GameState& gs, tcod::Console& console) {
     // [F]ollow / [H]old / [A]ttack — a flag instead of describe_minion_order()'s
     // full sentence, which could run past the sidebar's width once it named an
     // attack target (e.g. "attacking the Goblin Slinger").
-    sb_print("  " + std::string(focused ? "*" : " ") + m.name + " [" + minion_order_flag(m) + "]", color);
+    //
+    // HP always, MP only for a minion that actually has a pool — otherwise every
+    // Skeletal Minion would carry a useless "0/0", and the longest names are exactly
+    // the ones with no mana, so the two never compete for the same width. Showing MP
+    // here is the point: a Demon's remaining curses shouldn't require opening its
+    // ability menu to check.
+    std::string line = "  " + std::string(focused ? "*" : " ") + m.name + " [" + minion_order_flag(m) + "] " +
+                       std::to_string(m.hp) + "/" + std::to_string(m.max_hp);
+    if (m.max_mana > 0) line += " " + std::to_string(m.mana) + "MP";
+    sb_print(line, color);
     any_minion = true;
   }
   if (!any_minion) sb_print("  (none)", tcod::ColorRGB{120, 120, 120});

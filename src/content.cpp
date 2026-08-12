@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "rules.hpp"
 #include "spells.hpp"
 
 const Weapon kFists = Weapon{"Fists",       1,  2,  0, /*is_intrinsic=*/true, /*min_depth=*/1, /*max_depth=*/-1,
@@ -113,17 +114,23 @@ const std::vector<MonsterTemplate> kMonsterTable = {
     //
     // Its whole design is the mana budget. INT 3 gives max_mana 10 (authored here to
     // match what max_mana_for_intelligence(3) would give the player) and Magic Dart costs
-    // 1, so it gets exactly 10 darts — and mana_regen_turns=0 means that's all it will
-    // ever get. Each dart is 1d2 + INT/3 = 2-3 damage, so a full pool is ~25 damage if
-    // every one lands: genuinely threatening to a floor-1 character, and completely spent
-    // afterward. Out of mana it falls through to ordinary chase-and-melee behavior with
-    // 5 HP and Claws, i.e. it becomes the weakest thing on the floor. Outlasting it is
-    // the intended counterplay, alongside breaking line of sight or just closing to melee.
+    // 1, so it opens with ten darts. Each is 1d2 + INT/3 = 2-3 damage, so a full pool is
+    // ~25 damage if every one lands: genuinely threatening to a floor-1 character. Out of
+    // mana it falls through to ordinary chase-and-melee with 5 HP and Claws, i.e. the
+    // weakest thing on the floor. Outlasting it is the intended counterplay, alongside
+    // breaking line of sight or closing to melee.
+    //
+    // It regenerates at the player's own rate now (kManaRegenTurns, 150 turns for a full
+    // pool = 1 dart per 15). That's slow enough that the pool is still effectively finite
+    // inside a single fight, which is where "outlast it" is actually played — what
+    // changed is that a Shaman you walked away from isn't permanently defanged when you
+    // come back. If it ever needs to be a strict one-time budget again, this cell is the
+    // knob: 0 restores exactly the old behavior.
     {"Goblin Shaman", 'S', tcod::ColorRGB{160, 100, 220}, 5, kClaws, /*xp_reward=*/14,
      /*evasion=*/8, /*dexterity=*/3, /*strength=*/0, /*min_depth=*/1, /*max_depth=*/4,
      /*armor=*/kNoArmor, /*extra_weapons=*/{}, /*potions=*/{}, /*hp_regen_turns=*/0,
      /*extra_actions=*/0, /*is_boss=*/false, /*intelligence=*/3, /*max_mana=*/10,
-     /*mana_regen_turns=*/0, /*spell_index=*/0},
+     /*mana_regen_turns=*/kManaRegenTurns, /*spell_index=*/0},
     {"Skeleton", 's', tcod::ColorRGB{220, 220, 200}, 10,
      Weapon{"Rusty Sword", 1, 4, 0, false, 1, -1, /*hit_dice=*/2, 4}, /*xp_reward=*/15,
      /*evasion=*/8, /*dexterity=*/6, /*strength=*/2, /*min_depth=*/5, /*max_depth=*/-1},
@@ -183,21 +190,27 @@ const std::vector<MinionTemplate> kMinionTable = {
     // Phase 3 for permanently reanimating a specific slain monster).
     {"Skeletal Minion", 'u', tcod::ColorRGB{100, 200, 220}, /*max_hp=*/8,
      Weapon{"Bone Claws", 1, 4, 0, /*is_intrinsic=*/true, 1, -1, /*hit_dice=*/2, 4},
-     /*evasion=*/6, /*dexterity=*/6, /*strength=*/1, /*duration_turns=*/40},
+     /*evasion=*/6, /*dexterity=*/6, /*strength=*/1, /*duration_turns=*/40,
+     /*armor=*/kNoArmor, /*extra_weapons=*/{}, /*potions=*/{}, /*hp_regen_turns=*/0,
+     /*extra_actions=*/0, /*abilities=*/{}, /*max_mana=*/0,
+     // No pool and no abilities today, so this rate is inert — set anyway so that giving
+     // this row a max_mana is the only edit needed to make its mana behave like everyone
+     // else's.
+     /*mana_regen_turns=*/kManaRegenTurns},
     // Summoner's third spell's summon: stronger and permanent, contrasting with the
     // Skeletal Minion's early, low-commitment, temporary framing above. Glyph 'D' and
     // this magenta are unused by any hostile monster or the Skeletal Minion, so it
     // reads unmistakably as its own thing.
     // Also the first minion with an ability: Wither Curse (kSpellTable's last row), fired
-    // by focusing it and pressing 'z'. 10 mana and no regen buys exactly two curses per
-    // Demon, after which it's the same permanent bruiser it always was — the ability is a
-    // reason to summon early and use it, not a per-turn tool.
+    // by focusing it and pressing 'z'. 10 mana at the player's own regen rate is two
+    // curses up front and roughly one more per 60 turns after — enough that a permanent
+    // Demon stays useful without the curse becoming a per-turn tool.
     {"Demon", 'D', tcod::ColorRGB{200, 40, 180}, /*max_hp=*/20,
      Weapon{"Demon Claws", 1, 6, 0, /*is_intrinsic=*/true, 1, -1, /*hit_dice=*/2, 6},
      /*evasion=*/10, /*dexterity=*/8, /*strength=*/5, /*duration_turns=*/-1,
      /*armor=*/kNoArmor, /*extra_weapons=*/{}, /*potions=*/{}, /*hp_regen_turns=*/0,
      /*extra_actions=*/0, /*abilities=*/{kWitherCurseIndex},
-     /*max_mana=*/10, /*mana_regen_turns=*/0},
+     /*max_mana=*/10, /*mana_regen_turns=*/kManaRegenTurns},
 };
 
 std::vector<int> monsters_available_at_depth(int depth) {

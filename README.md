@@ -107,7 +107,9 @@ step 1.
   minion's own abilities (if it has any) and works like your own spell menu —
   pick one, aim from *the minion's* position, `Enter` to use it. A Demon knows
   Wither Curse: 4 of its 10 mana, range 5, and the target hits 2 weaker in
-  melee for 10 turns. That pool never refills, so it's two curses per Demon. The minion(s) you're currently
+  melee for 10 turns — two curses up front, then roughly one more per 60 turns
+  as its mana comes back. Its MP is shown in the sidebar's Minions list, so you
+  don't have to open the menu to check. The minion(s) you're currently
   commanding are highlighted so you don't lose track while aiming.
   Walking into your own minion swaps places with it instead of attacking
 - On leveling up, `Shift+S` / `Shift+D` / `Shift+I` to put your point into
@@ -258,8 +260,8 @@ what's next.
       Archer, snipe without approaching but permanently commit to melee the
       moment you reach them
 - [x] Casters: the Goblin Shaman throws the same Magic Dart you can learn, from a
-      10-mana pool that never refills — ten darts, then it's a 5 HP nuisance with
-      claws. Projectiles carry an owner, so one code path resolves yours and
+      10-mana pool that comes back only slowly — ten darts up front, then a 5 HP
+      nuisance with claws until it has recovered. Projectiles carry an owner, so one code path resolves yours and
       theirs alike, and neither ever hits its own side
 - [x] Bosses: one guaranteed spawn on each floor its row covers, on top of that
       floor's normal monsters. The Orc Warlord (floor 3) is the only thing

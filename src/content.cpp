@@ -200,6 +200,26 @@ const std::vector<MonsterTemplate> kMonsterTable = {
      /*evasion=*/4, /*dexterity=*/8, /*strength=*/3, /*min_depth=*/3, /*max_depth=*/3,
      /*armor=*/kArmorTable[1], /*extra_weapons=*/{}, /*potions=*/{kPotionTable[1]},
      /*hp_regen_turns=*/120, /*extra_actions=*/0, /*is_boss=*/true},
+    // Second boss. Same shape as the Orc Warlord: an outsized version of a tier that
+    // hasn't "started" yet — the Warlord is an Orc boss two floors ahead of the
+    // Skeleton/Orc tier (floor 5); this is a Troll boss two floors ahead of the Troll
+    // tier (floor 8).
+    //   - extra_actions stays 0 on purpose — a lumbering Troll acting twice per turn
+    //     doesn't fit the theme. Actor::extra_actions is still unclaimed by any table
+    //     row; save it for a boss whose flavor is actually about speed (an Orc Assassin
+    //     is the leading idea) rather than bolting it onto whichever boss comes next.
+    //   - hp_regen_turns=100, a bit faster than the Warlord's 120 — "trolls regenerate"
+    //     is the genre trope, and it's a second data point for the same mechanic rather
+    //     than a new one.
+    //   - Plate Armor (kArmorTable[2]) is already min_depth 6, so this is the earliest
+    //     floor it could legitimately show up as loot anyway.
+    //   - No carried potion, unlike the Warlord — kept to one boss so it stays the
+    //     exception noted on MonsterTemplate::potions rather than becoming the norm.
+    {"Troll Chieftain", 'C', tcod::ColorRGB{170, 40, 30}, 44,
+     Weapon{"Chieftain's Warclub", 1, 10, 0, false, 1, -1, /*hit_dice=*/1, 4}, /*xp_reward=*/75,
+     /*evasion=*/4, /*dexterity=*/10, /*strength=*/5, /*min_depth=*/6, /*max_depth=*/6,
+     /*armor=*/kArmorTable[2], /*extra_weapons=*/{}, /*potions=*/{},
+     /*hp_regen_turns=*/100, /*extra_actions=*/0, /*is_boss=*/true},
 };
 
 const std::vector<MinionTemplate> kMinionTable = {

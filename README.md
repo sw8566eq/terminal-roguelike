@@ -286,7 +286,8 @@ what's next.
 - [x] Corpses: a slain monster has a chance to leave its body behind, shown as
       `%` on the map and named by `x`. Bodies persist with the floor like any
       other loot. Bosses never leave one — their gear is the reward, and their
-      stat line isn't meant to end up on your side
+      stat line isn't meant to end up on your side — and neither do Skeletons,
+      which are animated bones with nothing left to raise
 - [ ] True necromancy: a spell that raises one of those corpses as a minion of
       that species — plus a higher minion cap now that per-minion control exists
 

@@ -108,6 +108,19 @@ struct MonsterTemplate {
   int max_mana = 0;
   int mana_regen_turns = 0;
   int spell_index = -1;
+  // Whether this species can leave a body for a Summoner to raise (see Corpse in
+  // level.hpp). Default true — most things that die leave something. Set false for a
+  // creature that shouldn't be raiseable at all, whether because there's nothing left of
+  // it or because its stat line has no business ending up on the player's side.
+  //
+  // `is_boss` is checked separately and always wins, so a boss leaves nothing regardless
+  // of what this says — that rule shouldn't be something a future boss row can forget to
+  // set. This flag is for ordinary monsters.
+  //
+  // Appended rather than slotted next to is_boss where it reads more naturally: every row
+  // here is positional aggregate init and the fields around is_boss are ints, so an
+  // inserted bool would bind to the wrong argument on nine rows and still compile.
+  bool leaves_corpse = true;
 };
 
 extern const std::vector<MonsterTemplate> kMonsterTable;

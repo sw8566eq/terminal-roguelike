@@ -142,9 +142,15 @@ const std::vector<MonsterTemplate> kMonsterTable = {
      /*armor=*/kNoArmor, /*extra_weapons=*/{}, /*potions=*/{}, /*hp_regen_turns=*/0,
      /*extra_actions=*/0, /*is_boss=*/false, /*intelligence=*/3, /*max_mana=*/4,
      /*mana_regen_turns=*/kManaRegenTurns, /*spell_index=*/0},
+    // leaves_corpse=false: it's already animated bones, so putting it down destroys the
+    // very thing a necromancer would have raised. The one row using the flag today, and a
+    // single cell to change if that reads as too precious.
     {"Skeleton", 's', tcod::ColorRGB{220, 220, 200}, 10,
      Weapon{"Rusty Sword", 1, 4, 0, false, 1, -1, /*hit_dice=*/2, 4}, /*xp_reward=*/15,
-     /*evasion=*/8, /*dexterity=*/6, /*strength=*/2, /*min_depth=*/5, /*max_depth=*/-1},
+     /*evasion=*/8, /*dexterity=*/6, /*strength=*/2, /*min_depth=*/5, /*max_depth=*/-1,
+     /*armor=*/kNoArmor, /*extra_weapons=*/{}, /*potions=*/{}, /*hp_regen_turns=*/0,
+     /*extra_actions=*/0, /*is_boss=*/false, /*intelligence=*/0, /*max_mana=*/0,
+     /*mana_regen_turns=*/0, /*spell_index=*/-1, /*leaves_corpse=*/false},
     // Wears real armor — the same Leather Armor the player can find, soaking 1 off
     // every hit that lands on it, and dropped when it dies. Nothing about the damage
     // math is orc-specific: defender.armor.defense is subtracted for whoever is being

@@ -63,9 +63,14 @@ step 1.
 ## Controls
 
 - Arrow keys, `h j k l`, or `y u b n` (vim-style, including diagonals) to move
-- Hold `Shift` with a movement key to travel that direction turn-by-turn until
-  a hostile monster comes into view or you hit something (a wall, a monster,
-  your own minion)
+- Hold `Shift` with a movement key to travel that direction turn-by-turn, a
+  real turn at a time. It stops when a hostile comes into view, at the
+  threshold of a room, or where a side passage opens off the one you're
+  following — one tile early in each case, so you can see what stopped you
+  rather than standing in it — and stops short of anything solid (a wall, a
+  monster, your own minion) rather than attacking or swapping places with it.
+  Pressing the key again from a tile it stopped on always moves, so a stop can
+  never strand you
 - Walk into an enemy to attack it (melee only, whatever you have equipped)
 - `f` to fire an equipped ranged weapon (a Bow) — movement steers a targeting
   cursor clamped to the weapon's range, with a preview line showing what the
@@ -313,3 +318,53 @@ what's next.
       view scrolls to follow you
 - [x] Message log with scrollback (`]`) and repeat coalescing
 - [x] Look around (`x`) to inspect any explored tile without spending a turn
+
+## Where Claude struggled
+
+Since the point of this project is testing an AI agent on a real C++ codebase,
+the places it did badly are worth recording, not just the features that landed.
+Each entry is what went wrong, and why — written after the fact, once the thing
+actually worked.
+
+### Shift+direction travel
+
+Roughly thirty lines of movement code. It took five commits and shipped three
+separate regressions, two of which made the game worse than not having the
+feature at all.
+
+The first version — travel until a monster comes into view or something blocks
+you — was fine. Everything after that was Claude breaking it:
+
+1. **Stopping at corridor branches.** The first attempt asked "is the tile
+   beside me walkable?", which is true of *every* tile in a corridor that
+   happens to be two tiles wide. Travel stopped dead after every single step.
+2. **Stopping a tile earlier.** Asked to halt one tile before whatever triggered
+   the stop, Claude moved every check to run *before* the step instead of after.
+   That silently changed each condition from "something just happened" into "a
+   property of the tile I'm standing on" — so the exact tile a run stopped on
+   would refuse to start the next run from that spot. Every stop became a
+   permanent wall, and a single visible monster froze travel entirely. The
+   player could get stuck in a corner with no way to travel out.
+3. **Ignoring rooms.** Branch detection was gated to corridors only, so travel
+   walked straight past an opening the player was standing next to in a room.
+
+What finally fixed it was the user describing the actual geometric rule — check
+each side independently for a wall that ends one step ahead — rather than Claude
+patching the symptom it had just been shown.
+
+Three things stand out:
+
+- **Symptom-patching instead of testing the geometry.** Each round, Claude
+  eyeballed the logic, decided it looked right, and shipped it. When the fix that
+  finally worked was checked against 21 hand-drawn maps in a throwaway harness,
+  that harness immediately caught several cases Claude had reasoned about
+  incorrectly moments earlier. It should have been written three commits sooner.
+- **Not noticing that a refactor changed meaning.** "Move the checks earlier" was
+  treated as a scheduling change when it was really a semantic one. Nothing in
+  the diff looked wrong; the deadlock was only visible from thinking about what
+  the conditions now *meant*.
+- **Manual playtesting hid it.** The project has no automated tests, so every one
+  of these reached the user before anyone noticed. The build was clean and the
+  one regression check the project does have (`--seed` + `--dump-loot`) covers
+  world generation, which this code doesn't touch — so it passed, every time,
+  while the feature was broken.

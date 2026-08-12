@@ -1189,7 +1189,8 @@ void handle_drop_input(GameState& gs, const SDL_Event& event) {
 }
 
 // True if standing at (x, y) while traveling (dx, dy) puts a new corridor branch (a
-// T-junction or a cross) right underfoot — the run_in_direction() stop condition below.
+// T-junction or a cross) right underfoot — a run_in_direction() stop condition, checked
+// against the *prospective* tile before the player actually steps onto it (see below).
 // Only meaningful in a corridor: a room tile has walkable neighbors on every side by
 // construction, so applying this inside a room would stop a run on its very first step
 // (rooms get their own, separate stop condition below). Corridors in this game are
@@ -1218,28 +1219,47 @@ bool is_branch_point(const Map& map, int x, int y, int dx, int dy) {
   return opened_here_not_before(px, py) || opened_here_not_before(-px, -py);
 }
 
+// Side-effect-free approximation of "would a hostile be visible from (x, y)" — used to
+// peek at the *prospective* tile before the player actually steps onto it (see below).
+// Deliberately not Map::update_fov(): that recomputes the map's one shared FOV state,
+// which also permanently marks every tile it lights as explored (Map::update_fov()) —
+// fine when the player is really moving there, wrong for a tile they might not step
+// onto at all, since it would leak map knowledge for a step never taken. A
+// distance+line_clear() check instead — the same raycast-based line-of-sight primitive
+// already used for ranged attacks/casts — has no such state to leak.
+bool would_see_hostile_from(const std::vector<Actor>& monsters, const Map& map, int x, int y) {
+  for (const auto& m : monsters) {
+    if (m.allegiance != Allegiance::Hostile || !m.is_alive()) continue;
+    int mdx = m.x - x, mdy = m.y - y;
+    if (mdx * mdx + mdy * mdy > FOV_RADIUS * FOV_RADIUS) continue;  // same circular clamp is_in_fov() uses
+    if (line_clear(x, y, m.x, m.y, map)) return true;
+  }
+  return false;
+}
+
 // Shift+direction: quicker navigation than tapping the same key over and over. Repeats
 // the plain movement step in one direction, a full real turn at a time — monster AI runs
 // on every step, exactly as it would if the key were pressed that many times by hand —
 // stopping the moment there's something to react to rather than after a fixed distance.
-// Stops when:
-//   - a hostile monster is in view (any_hostile_visible(), the same is_in_fov()
-//     mutual-visibility proxy used everywhere else), checked *before* every step —
-//     including the very first, so a monster already in sight when the run starts stops
-//     it before moving at all
-//   - the next tile is blocked (a wall) or occupied by anyone, monster or the player's
-//     own minion — a run is a "get me somewhere else" gesture, not a way to bump-attack
-//     or minion-swap on autopilot, so it stops short rather than resolving either
-//   - the step just taken crosses from a corridor (or the starting tile) into a room —
-//     checked by comparing is_in_room() before and after the move, so it fires exactly
-//     once, on the threshold tile, not on every step taken once already inside; running
-//     again from inside the room crosses no such threshold and so isn't stopped by this
-//   - the tile just stepped onto is a corridor branch (is_branch_point()) — e.g. coming
-//     to a cross in the corridors — so the player gets to pick the new direction rather
-//     than being carried straight through the fork
-//   - the player dies mid-run (a hostile can still land a hit on the same step that
-//     brings it into view — the end_turn() that reveals it is the same one that let it
-//     act)
+// Every stop condition is checked against the tile the player is *about* to step onto,
+// not the one they're already standing on, so the player halts one tile short of
+// whatever triggered it — able to see/react to it, not standing on top of it. Stops
+// before moving onto a tile that:
+//   - would put a hostile monster in view (would_see_hostile_from()) — including the
+//     very first tile: if a hostile is already visible from where the run starts,
+//     there's nothing to travel toward, so it doesn't move at all
+//   - is blocked (a wall) or occupied by anyone, monster or the player's own minion — a
+//     run is a "get me somewhere else" gesture, not a way to bump-attack or minion-swap
+//     on autopilot, so it stops short rather than resolving either
+//   - would cross from a corridor (or the starting tile) into a room — checked by
+//     comparing is_in_room() of the current tile against the prospective one, so it
+//     fires exactly once, right at the threshold; running again from just outside the
+//     room crosses no such threshold and so isn't stopped by this a second time
+//   - is a corridor branch (is_branch_point()) — e.g. a cross in the corridors — so the
+//     player gets to pick the new direction rather than being carried into the fork
+// It can still stop *on* a tile, not before it, in one case: the player dies mid-run,
+// since a hostile that was still out of view can land a hit on the very step that
+// brings it into view (the end_turn() that reveals it is the same one that let it act).
 // kRunMaxSteps is a defensive cap, not a real limit — a straight line in one direction
 // always meets a wall well before it, on any map this size.
 constexpr int kRunMaxSteps = 200;
@@ -1250,19 +1270,20 @@ void run_in_direction(GameState& gs, int dx, int dy) {
                                  // levels itself, but staying consistent with every
                                  // other call site that re-fetches after a turn passes
                                  // costs nothing and can't go stale.
-    if (any_hostile_visible(level.monsters, level.map)) return;
     int new_x = gs.player.x + dx;
     int new_y = gs.player.y + dy;
     if (monster_at(level.monsters, new_x, new_y) >= 0) return;
     if (!level.map.is_walkable(new_x, new_y)) return;
-    bool entering_room = !level.map.is_in_room(gs.player.x, gs.player.y) && level.map.is_in_room(new_x, new_y);
+    bool would_enter_room = !level.map.is_in_room(gs.player.x, gs.player.y) && level.map.is_in_room(new_x, new_y);
+    if (would_enter_room) return;
+    if (is_branch_point(level.map, new_x, new_y, dx, dy)) return;
+    if (would_see_hostile_from(level.monsters, level.map, new_x, new_y)) return;
+
     gs.player.x = new_x;
     gs.player.y = new_y;
     level.map.update_fov(gs.player.x, gs.player.y, FOV_RADIUS);
     end_turn(gs);
     if (gs.mode != Mode::Playing) return;  // e.g. died mid-run
-    if (entering_room) return;
-    if (is_branch_point(level.map, gs.player.x, gs.player.y, dx, dy)) return;
   }
 }
 

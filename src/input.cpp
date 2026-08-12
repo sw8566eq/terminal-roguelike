@@ -1191,19 +1191,31 @@ void handle_drop_input(GameState& gs, const SDL_Event& event) {
 // True if standing at (x, y) while traveling (dx, dy) puts a new corridor branch (a
 // T-junction or a cross) right underfoot — the run_in_direction() stop condition below.
 // Only meaningful in a corridor: a room tile has walkable neighbors on every side by
-// construction, so applying this inside a room would stop a run on its very first step.
-// Corridors in this game are always straight horizontal/vertical segments (see
-// Map::dig_corridor_h/v), never diagonal, so only orthogonal travel is checked — a
-// diagonal run only ever crosses open room floors, which the in_room check already
-// excludes.
+// construction, so applying this inside a room would stop a run on its very first step
+// (rooms get their own, separate stop condition below). Corridors in this game are
+// always straight horizontal/vertical segments (see Map::dig_corridor_h/v), never
+// diagonal, so only orthogonal travel is checked — a diagonal run only ever crosses
+// open room floors, which the in_room check already excludes.
+//
+// Checking whether a perpendicular tile is walkable *here* is not enough on its own —
+// two corridors carved independently can run adjacent to each other for a whole
+// stretch, which is walkable on both sides of every tile along it without being a fork
+// anywhere. What actually marks a fork is a side opening that wasn't there one tile
+// back: comparing against the same perpendicular offset at the previous tile
+// ((x - dx, y - dy), always derivable since travel direction never changes mid-run) is
+// what tells "this corridor happens to be wide" apart from "a passage just opened up
+// beside me". A steady-width corridor reads as open on both counts every step and never
+// trips; a genuine fork flips from closed to open on exactly the step it appears.
 bool is_branch_point(const Map& map, int x, int y, int dx, int dy) {
   if (map.is_in_room(x, y)) return false;
   if (dx != 0 && dy != 0) return false;  // diagonal travel: no corridor case to detect
-  // The two tiles perpendicular to the travel direction — either being walkable means a
-  // side passage forks off exactly where the player's standing (one open = a T-junction,
-  // both open = a cross).
-  if (dx != 0) return map.is_walkable(x, y - 1) || map.is_walkable(x, y + 1);
-  return map.is_walkable(x - 1, y) || map.is_walkable(x + 1, y);
+  int px = -dy, py = dx;                 // one perpendicular unit vector; the other is its negation
+  auto opened_here_not_before = [&](int ox, int oy) {
+    bool open_here = map.is_walkable(x + ox, y + oy);
+    bool open_before = map.is_walkable(x - dx + ox, y - dy + oy);
+    return open_here && !open_before;
+  };
+  return opened_here_not_before(px, py) || opened_here_not_before(-px, -py);
 }
 
 // Shift+direction: quicker navigation than tapping the same key over and over. Repeats
@@ -1218,6 +1230,10 @@ bool is_branch_point(const Map& map, int x, int y, int dx, int dy) {
 //   - the next tile is blocked (a wall) or occupied by anyone, monster or the player's
 //     own minion — a run is a "get me somewhere else" gesture, not a way to bump-attack
 //     or minion-swap on autopilot, so it stops short rather than resolving either
+//   - the step just taken crosses from a corridor (or the starting tile) into a room —
+//     checked by comparing is_in_room() before and after the move, so it fires exactly
+//     once, on the threshold tile, not on every step taken once already inside; running
+//     again from inside the room crosses no such threshold and so isn't stopped by this
 //   - the tile just stepped onto is a corridor branch (is_branch_point()) — e.g. coming
 //     to a cross in the corridors — so the player gets to pick the new direction rather
 //     than being carried straight through the fork
@@ -1239,11 +1255,13 @@ void run_in_direction(GameState& gs, int dx, int dy) {
     int new_y = gs.player.y + dy;
     if (monster_at(level.monsters, new_x, new_y) >= 0) return;
     if (!level.map.is_walkable(new_x, new_y)) return;
+    bool entering_room = !level.map.is_in_room(gs.player.x, gs.player.y) && level.map.is_in_room(new_x, new_y);
     gs.player.x = new_x;
     gs.player.y = new_y;
     level.map.update_fov(gs.player.x, gs.player.y, FOV_RADIUS);
     end_turn(gs);
     if (gs.mode != Mode::Playing) return;  // e.g. died mid-run
+    if (entering_room) return;
     if (is_branch_point(level.map, gs.player.x, gs.player.y, dx, dy)) return;
   }
 }

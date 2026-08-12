@@ -342,5 +342,13 @@ struct Actor {
   int last_seen_player_x = -1;
   int last_seen_player_y = -1;
 
+  // Monsters only: whether this Actor takes the idle-wander roll when it has nothing
+  // to chase (see run_hostile_ai() in turn.cpp). True for everyone by default — the
+  // Dungeon Overlord (kMonsterTable) is the only row that sets it false today, so it
+  // stands its ground in its own chamber instead of random-walking out through the
+  // corridor over time. Attacking/chasing are both unaffected — this only ever
+  // suppresses the "nothing to do" shuffle.
+  bool wanders = true;
+
   bool is_alive() const { return hp > 0; }
 };

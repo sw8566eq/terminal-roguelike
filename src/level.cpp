@@ -38,6 +38,7 @@ Actor spawn_monster(int table_index, int x, int y) {
   monster.mana = monster.max_mana = tmpl.max_mana;  // spawns with a full pool, like max_hp
   monster.mana_regen_turns = tmpl.mana_regen_turns;
   monster.spell_indices = tmpl.spell_indices;
+  monster.wanders = tmpl.wanders;
   return monster;
 }
 
@@ -193,6 +194,28 @@ Level generate_level(int width, int height, bool has_stairs_up, int depth) {
   // check, no extra bookkeeping needed.
   level.map.carve_hole_clusters(entry_x, entry_y, down_x, down_y);
 
+  // The final boss gets a guaranteed room of its own rather than being scattered onto
+  // any free tile like an ordinary boss — see Map::carve_special_room(). Run after
+  // carve_hole_clusters() specifically so this room's tiles didn't exist yet when holes
+  // were placed and can never end up with one. Every tile inside it (if it was placed
+  // at all — see the std::nullopt fallback there) is reserved into `occupied` right
+  // away, before any ordinary monster/item/potion gets a chance to land in it, so the
+  // room stays empty until the boss loop below fills it.
+  // 7-9 is a deliberately modest step past generate()'s own room_max_size=8 (not the
+  // much bigger range tried first): a search for a *much* bigger free rectangle amid
+  // the 12 ordinary rooms already on the map started failing often enough (empirically,
+  // ~10% of seeds even at kSpecialRoomRetries=500) that "always appears" stopped being
+  // true. This size cleared 200/200 test seeds.
+  std::optional<Rect> boss_room;
+  if (depth == kFinalFloor) {
+    boss_room = level.map.carve_special_room(/*room_min_size=*/7, /*room_max_size=*/9, entry_x, entry_y);
+    if (boss_room) {
+      for (int y = boss_room->y1; y < boss_room->y2; ++y) {
+        for (int x = boss_room->x1; x < boss_room->x2; ++x) occupied.push_back({x, y});
+      }
+    }
+  }
+
   auto available_monsters = monsters_available_at_depth(depth);
   int monster_count = monster_count_for_depth(depth);
   for (int i = 0; i < monster_count; ++i) {
@@ -206,11 +229,15 @@ Level generate_level(int width, int height, bool has_stairs_up, int depth) {
 
   // Bosses are placed on top of that count rather than drawn from it: one guaranteed
   // spawn per boss row whose depth range covers this floor (see bosses_at_depth()).
-  // Placed like any other monster otherwise — a random free tile, respecting `occupied`
-  // — so it can land anywhere on the floor, not in a designated arena. Since levels
-  // persist, a killed boss stays dead when you come back.
+  // Ordinarily a random free tile so it can land anywhere on the floor, not in a
+  // designated arena — except on a floor that carved a boss_room above, where it's
+  // placed at that room's center instead. (Two boss rows both covering the same
+  // special-room floor would collide at that exact center tile; no row does that
+  // today, so — like active_toggle_spell only ever tracking one running toggle spell —
+  // this is an accepted simplification until something actually needs the second
+  // slot.) Since levels persist, a killed boss stays dead when you come back.
   for (int table_index : bosses_at_depth(depth)) {
-    auto [bx, by] = random_free_tile(level.map, occupied);
+    auto [bx, by] = boss_room ? boss_room->center() : random_free_tile(level.map, occupied);
     occupied.push_back({bx, by});
     level.monsters.push_back(spawn_monster(table_index, bx, by));
   }

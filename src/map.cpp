@@ -216,6 +216,110 @@ void Map::carve_hole_clusters(int entry_x, int entry_y, int stairs_x, int stairs
   }
 }
 
+namespace {
+constexpr int kSpecialRoomRetries = 500;
+}  // namespace
+
+std::optional<Rect> Map::carve_special_room(int room_min_size, int room_max_size, int link_x, int link_y) {
+  for (int attempt = 0; attempt < kSpecialRoomRetries; ++attempt) {
+    int w = random_int(room_min_size, room_max_size);
+    int h = random_int(room_min_size, room_max_size);
+
+    // Same border-from-the-map-edge margin generate()'s own room placement uses.
+    int x_max = width_ - w - 1;
+    int y_max = height_ - h - 1;
+    if (x_max < 1 || y_max < 1) continue;
+    int x = random_int(1, x_max);
+    int y = random_int(1, y_max);
+    Rect candidate(x, y, w, h);
+
+    // Not part of generate()'s own room list, so overlap is checked directly against
+    // the tile grid instead: every tile in the candidate rect, plus a 1-tile border
+    // (so it doesn't end up sharing a wall with something else already carved), must
+    // still be untouched wall.
+    bool clear = true;
+    for (int cy = candidate.y1 - 1; clear && cy <= candidate.y2; ++cy) {
+      for (int cx = candidate.x1 - 1; cx <= candidate.x2; ++cx) {
+        if (is_walkable(cx, cy)) {
+          clear = false;
+          break;
+        }
+      }
+    }
+    if (!clear) continue;
+
+    dig_room(candidate);
+
+    // Tag the whole chamber — interior plus its own surrounding wall ring, the same
+    // border already confirmed clear above — purely for the renderer. Nothing here
+    // reads it back.
+    for (int ty = candidate.y1 - 1; ty <= candidate.y2; ++ty) {
+      for (int tx = candidate.x1 - 1; tx <= candidate.x2; ++tx) {
+        if (in_bounds(tx, ty)) tiles_[static_cast<size_t>(ty * width_ + tx)].in_special_room = true;
+      }
+    }
+
+    auto [center_x, center_y] = candidate.center();
+    // Same randomized-bend L-shaped connector generate()'s own room-to-room corridors
+    // use, just linking to a caller-supplied point instead of the previous room —
+    // carving it directly like this guarantees the new room is connected, so unlike
+    // carve_hole_clusters() there's no separate reachability check to run afterward.
+    // Every tile either segment touches is tracked as it's carved, so the ring-moat
+    // step just below knows exactly which ring tile(s) to leave as a walkable entrance.
+    std::vector<std::pair<int, int>> corridor_tiles;
+    auto track_h = [&](int xa, int xb, int ty) {
+      for (int tx = std::min(xa, xb); tx <= std::max(xa, xb); ++tx) corridor_tiles.push_back({tx, ty});
+    };
+    auto track_v = [&](int ya, int yb, int tx) {
+      for (int ty = std::min(ya, yb); ty <= std::max(ya, yb); ++ty) corridor_tiles.push_back({tx, ty});
+    };
+    if (random_int(0, 1) == 0) {
+      dig_corridor_h(link_x, center_x, link_y);
+      dig_corridor_v(link_y, center_y, center_x);
+      track_h(link_x, center_x, link_y);
+      track_v(link_y, center_y, center_x);
+    } else {
+      dig_corridor_v(link_y, center_y, link_x);
+      dig_corridor_h(link_x, center_x, center_y);
+      track_v(link_y, center_y, link_x);
+      track_h(link_x, center_x, center_y);
+    }
+
+    // The room's outer ring becomes a moat of Hole tiles, except wherever the connector
+    // corridor actually crosses it — that gap is what keeps the room reachable at all.
+    // A straight line from outside the room (link_x/y) to strictly inside it
+    // (center_x/y, always within the interior) is guaranteed to cross the ring at least
+    // once, but this is exactly the kind of "should always hold" claim
+    // carve_hole_clusters() double-checks rather than trusts — so this does too: if
+    // nothing on the ring is actually part of the tracked corridor path, the moat is
+    // skipped entirely (room stays fully walkable) rather than risk sealing it shut.
+    bool has_entrance = std::any_of(corridor_tiles.begin(), corridor_tiles.end(), [&](const auto& t) {
+      int tx = t.first, ty = t.second;
+      if (tx < candidate.x1 || tx >= candidate.x2 || ty < candidate.y1 || ty >= candidate.y2) return false;
+      return tx == candidate.x1 || tx == candidate.x2 - 1 || ty == candidate.y1 || ty == candidate.y2 - 1;
+    });
+    if (has_entrance) {
+      for (int ry = candidate.y1; ry < candidate.y2; ++ry) {
+        for (int rx = candidate.x1; rx < candidate.x2; ++rx) {
+          bool on_ring = rx == candidate.x1 || rx == candidate.x2 - 1 || ry == candidate.y1 || ry == candidate.y2 - 1;
+          if (!on_ring) continue;
+          bool is_entrance = std::any_of(corridor_tiles.begin(), corridor_tiles.end(),
+                                          [&](const auto& t) { return t.first == rx && t.second == ry; });
+          if (is_entrance) continue;
+          Tile& t = tiles_[static_cast<size_t>(ry * width_ + rx)];
+          t.walkable = false;
+          t.transparent = true;  // already true from dig_room; explicit for clarity, matching carve_hole_clusters()
+          t.is_hole = true;
+        }
+      }
+    }
+
+    sync_fov_map();
+    return candidate;
+  }
+  return std::nullopt;
+}
+
 std::vector<std::pair<int, int>> trace_path(int from_x, int from_y, int to_x, int to_y) {
   std::vector<std::pair<int, int>> path;
   for (auto [x, y] : tcod::BresenhamLine({from_x, from_y}, {to_x, to_y}).without_start()) {

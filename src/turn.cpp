@@ -366,9 +366,12 @@ void run_hostile_ai(GameState& gs) {
           }
         }
       }
-      if (move_dx == 0 && move_dy == 0 && monster.last_seen_player_x < 0 && random_int(0, 1) == 0) {
+      if (move_dx == 0 && move_dy == 0 && monster.last_seen_player_x < 0 && monster.wanders &&
+          random_int(0, 1) == 0) {
         // Wander: only a coin-flip chance to shuffle each turn, so it reads as idle
         // rather than frantic. Only reachable with no memory to chase — see above.
+        // monster.wanders (Actor::wanders) opts a row out of this entirely — the
+        // Dungeon Overlord stands its ground instead of drifting out of its chamber.
         move_dx = random_int(-1, 1);
         move_dy = random_int(-1, 1);
       }

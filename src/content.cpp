@@ -253,13 +253,18 @@ const std::vector<MonsterTemplate> kMonsterTable = {
     //     saved for a future boss whose theme is actually about speed, not spent here
     //     just because this is the last one.
     //   - No carried potion or spells, kept deliberately simple as a temp row.
+    //   - wanders=false: it spawns in its own guaranteed chamber (see
+    //     Map::carve_special_room(), generate_level()) and stays there — an idle
+    //     random-walk could otherwise shuffle it out through the connecting corridor
+    //     over a long enough stretch of turns. Chasing/attacking are unaffected; this
+    //     only suppresses the "nothing to do" shuffle (see Actor::wanders).
     {"Dungeon Overlord", 'X', tcod::ColorRGB{255, 200, 40}, 90,
      Weapon{"Overlord's Blade", 2, 8, 0, false, 1, -1, /*hit_dice=*/1, 6}, /*xp_reward=*/150,
      /*evasion=*/6, /*dexterity=*/12, /*strength=*/8, /*min_depth=*/kFinalFloor, /*max_depth=*/kFinalFloor,
      /*armor=*/kArmorTable[2], /*extra_weapons=*/{}, /*potions=*/{},
      /*hp_regen_turns=*/80, /*extra_actions=*/0, /*is_boss=*/true,
      /*intelligence=*/0, /*max_mana=*/0, /*mana_regen_turns=*/0, /*spell_indices=*/{},
-     /*leaves_corpse=*/true, /*is_final_boss=*/true},
+     /*leaves_corpse=*/true, /*is_final_boss=*/true, /*wanders=*/false},
 };
 
 const std::vector<MinionTemplate> kMinionTable = {

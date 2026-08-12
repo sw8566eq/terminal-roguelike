@@ -2,6 +2,7 @@
 
 #include <libtcod.hpp>
 
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -15,6 +16,11 @@ struct Tile {
   // projectiles/spells/line-of-sight (transparent=true, unlike a wall). See
   // Map::blocks_projectile() and Map::carve_hole_clusters().
   bool is_hole = false;
+  // True for every tile of a room placed by Map::carve_special_room() — both its
+  // interior and its own surrounding wall ring, so the renderer can give the whole
+  // chamber (walls included) a distinct color. Purely cosmetic/informational; nothing
+  // in Map itself treats it differently from an ordinary room or wall tile.
+  bool in_special_room = false;
 };
 
 // Axis-aligned rectangle used while carving rooms, in tile coordinates.
@@ -75,6 +81,32 @@ class Map {
   // (from generate_level() in level.hpp), not from inside generate() itself, since
   // stairs_down_x/y don't exist yet when generate() runs.
   void carve_hole_clusters(int entry_x, int entry_y, int stairs_x, int stairs_y);
+
+  // Carves one additional room beyond generate()'s own `max_rooms`, sized
+  // room_min_size..room_max_size (independent of generate()'s own room size range, so
+  // it can be made deliberately bigger) and connected to (link_x, link_y) by the same
+  // randomized-bend L-shaped corridor generate()'s own room-to-room connections use.
+  // Must be called after generate() — it checks each candidate location directly
+  // against the tile grid (every tile in it, plus a 1-tile border, must still be
+  // untouched wall) rather than against generate()'s own room list, which isn't
+  // exposed outside this class. Retried a bounded number of times; returns the placed
+  // room's bounds, or std::nullopt if the map was too crowded to fit it anywhere (the
+  // caller should fall back to its normal placement in that case, same as
+  // carve_hole_clusters() silently placing fewer patches than requested rather than
+  // failing outright).
+  //
+  // Map itself has no notion of what goes in this room — that's entirely the caller's
+  // business (see generate_level(), which uses it for the final boss's chamber). This
+  // is just "one more, bigger, guaranteed room," a generic capability.
+  //
+  // The room's outer ring (every interior tile touching its own wall) becomes a moat of
+  // Hole tiles — walkable=false like a wall, but still shootable/castable over, per the
+  // usual Hole rules. Every tile the connector corridor actually crosses is left as
+  // plain floor instead, guaranteeing at least one walkable way in regardless of exactly
+  // where the corridor happens to meet the room. Every tile of the room (interior, ring
+  // and its own surrounding wall) is also tagged Tile::in_special_room, purely so the
+  // renderer can give the whole chamber a distinct look.
+  std::optional<Rect> carve_special_room(int room_min_size, int room_max_size, int link_x, int link_y);
 
  private:
   void dig_room(const Rect& room);

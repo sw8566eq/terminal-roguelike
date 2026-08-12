@@ -122,6 +122,11 @@ struct MonsterTemplate {
   // Mode::Win instead of the ordinary gear-drop/corpse/XP path. Trailing for the same
   // positional-aggregate-init reason as leaves_corpse just above.
   bool is_final_boss = false;
+  // See Actor::wanders — true (the ordinary idle-shuffle behavior) on every row but
+  // the Dungeon Overlord's, which stays put in its own chamber instead of eventually
+  // random-walking out through the corridor. Trailing for the same reason as the two
+  // bools just above.
+  bool wanders = true;
 };
 
 extern const std::vector<MonsterTemplate> kMonsterTable;

@@ -552,11 +552,13 @@ void render_sidebar(GameState& gs, tcod::Console& console) {
       bool is_stairs_down =
           level.has_stairs_down && (gs.target_x == level.stairs_down_x && gs.target_y == level.stairs_down_y);
       bool is_stairs_up = level.has_stairs_up && (gs.target_x == level.entry_x && gs.target_y == level.entry_y);
+      bool is_special_room = level.map.at(gs.target_x, gs.target_y).in_special_room;
       std::string terrain = is_stairs_down                             ? "Stairs down"
                              : is_stairs_up                             ? "Stairs up"
                              : level.map.at(gs.target_x, gs.target_y).is_hole ? "Hole"
-                             : level.map.is_walkable(gs.target_x, gs.target_y) ? "Floor"
-                                                                          : "Wall";
+                             : level.map.is_walkable(gs.target_x, gs.target_y)
+                                 ? (is_special_room ? "Boss chamber floor" : "Floor")
+                                 : (is_special_room ? "Boss chamber wall" : "Wall");
       sb_print("  " + terrain, tcod::ColorRGB{200, 200, 200});
 
       if (!tile_in_fov && !gs.reveal_all) {
@@ -722,6 +724,11 @@ void render_map_panel(GameState& gs, tcod::Console& console, const Camera& camer
       bool visible = level.map.is_in_fov(x, y);
       bool is_stairs_down = level.has_stairs_down && (x == level.stairs_down_x && y == level.stairs_down_y);
       bool is_stairs_up = level.has_stairs_up && (x == level.entry_x && y == level.entry_y);
+      // See Map::carve_special_room(): tags the final boss's chamber (interior, moat
+      // ring and its own walls) so it reads as visibly distinct from an ordinary room —
+      // recolored, same as everything else here; holes and stairs still win, so a pit
+      // or the stairs glyph inside the chamber isn't itself recolored.
+      bool is_special_room = level.map.at(x, y).in_special_room;
 
       auto& cell = console.at(camera.screen_x(x), camera.screen_y(y));
       if (is_stairs_down) {
@@ -739,6 +746,8 @@ void render_map_panel(GameState& gs, tcod::Console& console, const Camera& camer
           cell.fg = tcod::ColorRGB{255, 255, 150};
         } else if (is_hole) {
           cell.fg = tcod::ColorRGB{180, 90, 40};
+        } else if (is_special_room) {
+          cell.fg = walkable ? tcod::ColorRGB{150, 100, 100} : tcod::ColorRGB{150, 30, 30};
         } else {
           cell.fg = walkable ? tcod::ColorRGB{160, 160, 160} : tcod::ColorRGB{90, 90, 90};
         }
@@ -748,6 +757,8 @@ void render_map_panel(GameState& gs, tcod::Console& console, const Camera& camer
           cell.fg = tcod::ColorRGB{110, 110, 70};
         } else if (is_hole) {
           cell.fg = tcod::ColorRGB{70, 35, 15};
+        } else if (is_special_room) {
+          cell.fg = walkable ? tcod::ColorRGB{60, 40, 40} : tcod::ColorRGB{60, 15, 15};
         } else {
           cell.fg = walkable ? tcod::ColorRGB{60, 60, 60} : tcod::ColorRGB{35, 35, 35};
         }

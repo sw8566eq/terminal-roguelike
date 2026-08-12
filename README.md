@@ -154,10 +154,10 @@ These are for development/testing, not normal play:
   carrying (which is real loot, since it drops), then exit immediately
   without opening a window
 - `--fast-monsters` — give every hostile monster one extra action per turn,
-  so they move and attack twice for each turn you take. Two bosses exist now
-  (Orc Warlord, Troll Chieftain) and neither claims this — it's saved for a
-  future boss whose theme is actually about speed — so the flag is still the
-  only way to see the double-action behavior in play
+  so they move and attack twice for each turn you take. Three bosses exist
+  now (Orc Warlord, Troll Chieftain, Dungeon Overlord) and none of them claim
+  this — it's saved for a future boss whose theme is actually about speed —
+  so the flag is still the only way to see the double-action behavior in play
 - `--give=<name>[,<name>...]` — add items straight to your carried
   inventory at startup (not equipped), by exact name across weapons,
   armor, and potions, e.g. `--give="Dagger,Potion of Teleportation"`;
@@ -213,6 +213,11 @@ Everything here is built and playable.
 - [x] Procedurally generated multi-level dungeon — rooms, corridors, pits you
       can shoot over but not walk across, and stairs both ways. Floors persist
       as you leave and return
+- [x] The final floor gets a dedicated chamber for its boss instead of an
+      ordinary random room: bigger than usual, ringed with pits you can shoot
+      or cast across but not simply walk into (always with one guaranteed gap
+      to walk through instead), and visibly distinct — different colored
+      floor and walls, called out by name if you look at it with `x`
 - [x] Field of view and fog of war, including remembered monster sightings
 - [x] Depth scaling: monsters, weapons, armor and potions are all gated by floor,
       and monsters get both tougher and more numerous as you descend
@@ -283,7 +288,16 @@ Everything here is built and playable.
       by drinking its own Potion of Strength — the only monster carrying one.
       The Troll Chieftain (floor 6) regenerates a bit faster and hits harder,
       but deliberately doesn't act twice per turn — that's saved for a future
-      boss whose theme is actually about speed
+      boss whose theme is actually about speed. The Dungeon Overlord, on the
+      last floor, is the win condition below — it also never wanders off on
+      its own, so it's always exactly where its chamber left it
+
+**Win condition**
+
+- [x] Kill the Dungeon Overlord in its chamber on the last floor and the run
+      ends in victory — same "any key to start a new game, Esc to quit" shape
+      as dying, just framed as a win instead. That floor has no stairs down;
+      there's nowhere further to go once its boss is dead
 
 **Minions**
 

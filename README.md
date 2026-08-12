@@ -63,6 +63,9 @@ step 1.
 ## Controls
 
 - Arrow keys, `h j k l`, or `y u b n` (vim-style, including diagonals) to move
+- Hold `Shift` with a movement key to travel that direction turn-by-turn until
+  a hostile monster comes into view or you hit something (a wall, a monster,
+  your own minion)
 - Walk into an enemy to attack it (melee only, whatever you have equipped)
 - `f` to fire an equipped ranged weapon (a Bow) — movement steers a targeting
   cursor clamped to the weapon's range, with a preview line showing what the

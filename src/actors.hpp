@@ -49,6 +49,12 @@ int own_minion_at(const std::vector<Actor>& monsters, int x, int y);
 // advance_projectiles().
 int projectile_target_at(const std::vector<Actor>& monsters, int x, int y, Allegiance owner);
 
+// True if any living hostile monster is currently in `map`'s FOV — the same
+// is_in_fov() mutual-visibility proxy used everywhere else a monster's sight is
+// checked. The stop condition for run_in_direction() (input.cpp)'s Shift+move travel:
+// it means "is there something to react to right now."
+bool any_hostile_visible(const std::vector<Actor>& monsters, const Map& map);
+
 // Index into `actors` of the living Actor with the given id, or -1 if it's dead/gone.
 // Used to resolve MinionOrder::AttackTarget's attack_target_id back to an actual Actor
 // each turn, rather than holding a raw index (unsafe across a vector that erases in

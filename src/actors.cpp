@@ -16,6 +16,13 @@ int monster_at(const std::vector<Actor>& monsters, int x, int y) {
   return -1;
 }
 
+bool any_hostile_visible(const std::vector<Actor>& monsters, const Map& map) {
+  for (const auto& m : monsters) {
+    if (m.allegiance == Allegiance::Hostile && m.is_alive() && map.is_in_fov(m.x, m.y)) return true;
+  }
+  return false;
+}
+
 int hostile_monster_at(const std::vector<Actor>& monsters, int x, int y) {
   for (size_t i = 0; i < monsters.size(); ++i) {
     if (monsters[i].allegiance == Allegiance::Hostile && monsters[i].is_alive() && monsters[i].x == x &&

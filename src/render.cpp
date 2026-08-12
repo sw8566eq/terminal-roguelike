@@ -330,6 +330,8 @@ void render_help(tcod::Console& console) {
       "",
       "Arrows / hjkl / yubn (diagonals)  Move; walks into an enemy to attack, or",
       "                                  swaps places with your own minion",
+      "Shift + a movement key            Travel that way until a hostile comes into",
+      "                                  view or you hit something",
       ".                                 Wait a turn",
       ">  <                              Stairs down/up (must be standing on them)",
       "g                                 Pick up (menu if several items here)",

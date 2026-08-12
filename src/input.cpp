@@ -1188,6 +1188,44 @@ void handle_drop_input(GameState& gs, const SDL_Event& event) {
   return;
 }
 
+// Shift+direction: quicker navigation than tapping the same key over and over. Repeats
+// the plain movement step in one direction, a full real turn at a time — monster AI runs
+// on every step, exactly as it would if the key were pressed that many times by hand —
+// stopping the moment there's something to react to rather than after a fixed distance.
+// Stops when:
+//   - a hostile monster is in view (any_hostile_visible(), the same is_in_fov()
+//     mutual-visibility proxy used everywhere else), checked *before* every step —
+//     including the very first, so a monster already in sight when the run starts stops
+//     it before moving at all
+//   - the next tile is blocked (a wall) or occupied by anyone, monster or the player's
+//     own minion — a run is a "get me somewhere else" gesture, not a way to bump-attack
+//     or minion-swap on autopilot, so it stops short rather than resolving either
+//   - the player dies mid-run (a hostile can still land a hit on the same step that
+//     brings it into view — the end_turn() that reveals it is the same one that let it
+//     act)
+// kRunMaxSteps is a defensive cap, not a real limit — a straight line in one direction
+// always meets a wall well before it, on any map this size.
+constexpr int kRunMaxSteps = 200;
+
+void run_in_direction(GameState& gs, int dx, int dy) {
+  for (int step = 0; step < kRunMaxSteps; ++step) {
+    Level& level = gs.level();  // re-fetched every step; end_turn() never reallocates
+                                 // levels itself, but staying consistent with every
+                                 // other call site that re-fetches after a turn passes
+                                 // costs nothing and can't go stale.
+    if (any_hostile_visible(level.monsters, level.map)) return;
+    int new_x = gs.player.x + dx;
+    int new_y = gs.player.y + dy;
+    if (monster_at(level.monsters, new_x, new_y) >= 0) return;
+    if (!level.map.is_walkable(new_x, new_y)) return;
+    gs.player.x = new_x;
+    gs.player.y = new_y;
+    level.map.update_fov(gs.player.x, gs.player.y, FOV_RADIUS);
+    end_turn(gs);
+    if (gs.mode != Mode::Playing) return;  // e.g. died mid-run
+  }
+}
+
 void handle_playing_input(GameState& gs, const SDL_Event& event) {
   Level& level = gs.level();
   if (event.key.key == SDLK_ESCAPE) {
@@ -1390,6 +1428,11 @@ void handle_playing_input(GameState& gs, const SDL_Event& event) {
       break;
   }
   if (dx == 0 && dy == 0) return;
+
+  if (event.key.mod & SDL_KMOD_SHIFT) {
+    run_in_direction(gs, dx, dy);
+    return;
+  }
 
   int new_x = gs.player.x + dx;
   int new_y = gs.player.y + dy;

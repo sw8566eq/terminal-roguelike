@@ -177,10 +177,14 @@ Level generate_level(int width, int height, bool has_stairs_up, int depth) {
 
   std::vector<std::pair<int, int>> occupied = {{entry_x, entry_y}};
 
-  // Room-only so stairs never land in a corridor.
+  // Room-only so stairs never land in a corridor. Placed unconditionally, even on
+  // kFinalFloor: carve_hole_clusters() below still needs an anchor tile to validate
+  // reachability against, and occupied still needs it reserved. has_stairs_down is what
+  // actually decides whether this tile means anything to the player.
   auto [down_x, down_y] = random_free_tile(level.map, occupied, /*require_room=*/true);
   level.stairs_down_x = down_x;
   level.stairs_down_y = down_y;
+  level.has_stairs_down = (depth != kFinalFloor);
   occupied.push_back({down_x, down_y});
 
   // Must run after stairs are placed (Map::generate() itself returns before

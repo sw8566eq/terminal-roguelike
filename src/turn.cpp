@@ -125,7 +125,7 @@ void tick_minion_durations(GameState& gs) {
   // killing things. The two AI loops below carry the same guard.
 void tick_toggle_spell(GameState& gs) {
   Level& level = gs.level();
-  if (gs.active_toggle_spell >= 0 && gs.mode != Mode::Dead) {
+  if (gs.active_toggle_spell >= 0 && !is_game_over(gs)) {
     const Spell& storm = kSpellTable[static_cast<size_t>(gs.active_toggle_spell)];
     if (gs.player.mana < storm.tick_mana_cost) {
       add_message(gs, "Your " + storm.name + " dies down - out of mana.");
@@ -182,7 +182,7 @@ bool try_monster_step(GameState& gs, Actor& m, int step_dx, int step_dy) {
 void run_hostile_ai(GameState& gs) {
   Level& level = gs.level();
   for (auto& monster : level.monsters) {
-    if (gs.mode == Mode::Dead) break;  // player already died to an earlier monster this turn
+    if (is_game_over(gs)) break;  // the player already died, or already won, earlier this turn
     if (!monster.is_alive() || monster.allegiance != Allegiance::Hostile) continue;
     // Extra actions: an ordinary monster runs this body once, and a boss/elite row
     // with extra_actions > 0 runs it again for each extra. Every "this creature is
@@ -193,8 +193,10 @@ void run_hostile_ai(GameState& gs) {
     // own extra actions come from (see end_turn()'s free-action guard).
     for (int action = 0; action < total_actions_for(monster); ++action) {
       // Re-checked per action, not just per monster: the player can die to this
-      // monster's first swing, and nothing should get a second one after that.
-      if (gs.mode == Mode::Dead || !monster.is_alive()) break;
+      // monster's first swing, and nothing should get a second one after that. Also
+      // covers a Win set mid-loop — e.g. one monster's earlier action killed the final
+      // boss via a stray AoE splash — so no other hostile gets a free turn afterward.
+      if (is_game_over(gs) || !monster.is_alive()) break;
 
       // Picks this monster's target for the turn: the player, or the closest living
       // minion whose tile is currently in the player's FOV (there's no separate
@@ -432,14 +434,14 @@ bool try_minion_auto_defend(GameState& gs, Actor& minion) {
 void run_minion_ai(GameState& gs) {
   Level& level = gs.level();
   for (auto& minion : level.monsters) {
-    if (gs.mode == Mode::Dead) break;
+    if (is_game_over(gs)) break;
     if (!minion.is_alive() || minion.allegiance != Allegiance::Player) continue;
     // Same extra-actions inner loop the hostile loop above uses, for exactly the same
     // reason — a minion is an Actor, so a fast summon (MinionTemplate::extra_actions,
     // 0 on every row today) gets its extra actions through the same one function the
     // player and every monster do.
     for (int action = 0; action < total_actions_for(minion); ++action) {
-      if (gs.mode == Mode::Dead || !minion.is_alive()) break;
+      if (is_game_over(gs) || !minion.is_alive()) break;
 
       // Same gear/consumable upkeep the hostile loop runs, through the same helpers —
       // a minion carrying a spare weapon or a potion uses it on exactly the same terms
@@ -587,7 +589,7 @@ void end_turn(GameState& gs) {
   // Hit-scan projectiles are the one exception: an instant shot has no travel to observe,
   // so making it wait for the world would look broken. A slow projectile (Fireball's orb)
   // is meant to be visibly in flight and only advances on real turns.
-  if (gs.free_actions_used < total_actions_for(gs.player) - 1 && gs.mode != Mode::Dead) {
+  if (gs.free_actions_used < total_actions_for(gs.player) - 1 && !is_game_over(gs)) {
     ++gs.free_actions_used;
     advance_projectiles(gs, /*instant_only=*/true);
     return;

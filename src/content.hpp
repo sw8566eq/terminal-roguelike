@@ -117,6 +117,11 @@ struct MonsterTemplate {
   // here is positional aggregate init and the fields around is_boss are ints, so an
   // inserted bool would bind to the wrong argument on nine rows and still compile.
   bool leaves_corpse = true;
+  // The win condition. Exactly one row should ever set this (the floor-kFinalFloor
+  // boss) — on_actor_killed() checks it on every kill in the game and switches to
+  // Mode::Win instead of the ordinary gear-drop/corpse/XP path. Trailing for the same
+  // positional-aggregate-init reason as leaves_corpse just above.
+  bool is_final_boss = false;
 };
 
 extern const std::vector<MonsterTemplate> kMonsterTable;

@@ -37,6 +37,7 @@ enum class Mode {
   PotionMenu,
   Drop,
   Dead,
+  Win,
   LevelUp,
   SchoolChoice,
   SpellMenu,
@@ -72,6 +73,7 @@ struct GameState {
   std::vector<std::string> message_log;  // full history; the log panel shows the last few
   int log_scroll = 0;                    // lines scrolled up from the bottom, while Mode::MessageLog
   std::string death_cause;               // whatever last killed the player, for the death screen
+  std::string win_cause;                 // the final boss's name, for the win screen (Mode::Win)
   int pending_attribute_points = 0;      // unspent level-up points forcing a Mode::LevelUp prompt
 
   int casting_spell_index = -1;  // which kSpellTable entry is being aimed, while Mode::Targeting
@@ -171,6 +173,16 @@ bool try_actor_use_potion(GameState& gs, Actor& actor, bool enemy_near);
 // Actor::is_player: a dead player becomes a death screen instead of a corpse, and XP only
 // flows to the player (including from a minion's kill — your minion's kill is your kill).
 void on_actor_killed(GameState& gs, Actor& victim, bool killed_by_player_side, const std::string& cause);
+
+// True once the run is over (Mode::Dead or Mode::Win) — the shared "stop acting" check.
+// Every place that used to test `mode == Mode::Dead` to keep a dead run from continuing
+// (stairs, the AI loops, the toggle-spell tick, end_turn()'s free-action guard) now
+// tests this instead, so a win freezes the world exactly the same way a death always
+// has. Load-bearing, not just tidy: without it, e.g. a bump-melee kill of the final
+// boss would still let every other hostile on the floor take its turn immediately
+// afterward, since resolve_attack() and end_turn() run back-to-back with no mode check
+// between them.
+bool is_game_over(const GameState& gs);
 
 // The one and only melee/ranged attack resolution, for every possible pairing: you
 // hitting a Goblin, a Goblin hitting you, a Goblin hitting your minion, your minion

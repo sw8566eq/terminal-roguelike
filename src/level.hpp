@@ -75,6 +75,12 @@ struct Level {
   bool has_stairs_up = false;  // whether entry_x/y doubles as a stairs-up tile (false on floor 1)
   int stairs_down_x = 0;
   int stairs_down_y = 0;
+  // Whether stairs_down_x/y are real, interactive stairs. False only on kFinalFloor
+  // (rules.hpp) — there's nowhere further to go once its boss is dead. The coordinates
+  // are still populated even then (generate_level() still needs an anchor tile for
+  // carve_hole_clusters()'s reachability check); this flag is what stops them being
+  // drawn or descendable.
+  bool has_stairs_down = true;
 };
 
 // Debug flag --fast-monsters: gives every hostile monster spawned one extra action per

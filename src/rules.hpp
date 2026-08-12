@@ -101,6 +101,14 @@ constexpr int kRaisedMinionTurns = 50;
 // 2, and a 2 HP minion is barely worth the mana.
 int reanimated_hp(int living_max_hp);
 
+// --- World structure -------------------------------------------------------------------
+
+// The last floor of the dungeon. Two things key off it: the final boss's
+// min_depth/max_depth (kMonsterTable, content.cpp) and generate_level() refusing to
+// place stairs down on it (level.cpp) — there's nowhere further to go once its boss
+// (MonsterTemplate::is_final_boss) is dead, which ends the run instead.
+constexpr int kFinalFloor = 15;
+
 // --- One combat formula, used by every attack in the game ----------------------------
 //
 // This replaced three separate ones (a Dexterity contest for monster-vs-player, an

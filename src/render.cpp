@@ -303,6 +303,13 @@ void render_death_screen(GameState& gs, tcod::Console& console) {
               std::nullopt);
 }
 
+void render_win_screen(GameState& gs, tcod::Console& console) {
+  tcod::print(console, {0, 0}, "You have slain the " + gs.win_cause + " and conquered the dungeon!",
+              tcod::ColorRGB{255, 210, 60}, std::nullopt);
+  tcod::print(console, {0, 2}, "Press any key to start a new game, or Esc to quit.", tcod::ColorRGB{200, 200, 200},
+              std::nullopt);
+}
+
 void render_message_log(GameState& gs, tcod::Console& console) {
   tcod::print(console, {0, 0}, "Message Log - j/k or arrows to scroll, ']' or Esc to close",
               tcod::ColorRGB{255, 255, 255}, std::nullopt);
@@ -542,7 +549,8 @@ void render_sidebar(GameState& gs, tcod::Console& console) {
       sb_print("  (unexplored)", tcod::ColorRGB{120, 120, 120});
     } else {
       bool tile_in_fov = level.map.is_in_fov(gs.target_x, gs.target_y);
-      bool is_stairs_down = (gs.target_x == level.stairs_down_x && gs.target_y == level.stairs_down_y);
+      bool is_stairs_down =
+          level.has_stairs_down && (gs.target_x == level.stairs_down_x && gs.target_y == level.stairs_down_y);
       bool is_stairs_up = level.has_stairs_up && (gs.target_x == level.entry_x && gs.target_y == level.entry_y);
       std::string terrain = is_stairs_down                             ? "Stairs down"
                              : is_stairs_up                             ? "Stairs up"
@@ -712,7 +720,7 @@ void render_map_panel(GameState& gs, tcod::Console& console, const Camera& camer
       bool walkable = level.map.is_walkable(x, y);
       bool is_hole = level.map.at(x, y).is_hole;
       bool visible = level.map.is_in_fov(x, y);
-      bool is_stairs_down = (x == level.stairs_down_x && y == level.stairs_down_y);
+      bool is_stairs_down = level.has_stairs_down && (x == level.stairs_down_x && y == level.stairs_down_y);
       bool is_stairs_up = level.has_stairs_up && (x == level.entry_x && y == level.entry_y);
 
       auto& cell = console.at(camera.screen_x(x), camera.screen_y(y));
@@ -1062,6 +1070,7 @@ void render_frame(GameState& gs, tcod::Console& console) {
     case Mode::SpellMenu:    render_spell_menu(gs, console);    return;
     case Mode::Drop:         render_drop_screen(gs, console);   return;
     case Mode::Dead:         render_death_screen(gs, console);  return;
+    case Mode::Win:          render_win_screen(gs, console);    return;
     case Mode::MessageLog:   render_message_log(gs, console);   return;
     case Mode::Help:         render_help(console);          return;
     case Mode::MinionRoster: render_minion_roster(gs, console); return;

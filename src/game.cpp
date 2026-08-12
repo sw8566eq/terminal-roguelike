@@ -66,8 +66,15 @@ void grant_xp(GameState& gs, int amount) {
   // monster — and without this check the resulting level-up would overwrite
   // Mode::Dead, taking the death screen away and letting play continue at <=0 HP.
   // XP itself still accrues; only the mode transition is suppressed.
-  if (gs.pending_attribute_points > 0 && gs.player.is_alive()) gs.mode = Mode::LevelUp;
+  //
+  // Mode::Win needs the exact same guard for the mirror-image reason: an AoE blast that
+  // catches the final boss *and* an ordinary monster in the same explode() call grants
+  // XP for both, and the second grant must not overwrite the win screen with a level-up
+  // prompt just because the player is (very much) still alive.
+  if (gs.pending_attribute_points > 0 && gs.player.is_alive() && gs.mode != Mode::Win) gs.mode = Mode::LevelUp;
 }
+
+bool is_game_over(const GameState& gs) { return gs.mode == Mode::Dead || gs.mode == Mode::Win; }
 
 void apply_potion(GameState& gs, Actor& actor, const Potion& potion) {
   Level& level = gs.level();
@@ -182,6 +189,15 @@ void on_actor_killed(GameState& gs, Actor& victim, bool killed_by_player_side,
   if (victim.is_player) {
     gs.death_cause = cause;
     gs.mode = Mode::Dead;
+    return;
+  }
+  // The win condition: whoever/whatever actually landed the blow, killing the final
+  // boss ends the run right here — no gear drop, no corpse, no XP, same early-return
+  // shape as the is_player branch above, since none of that matters anymore.
+  if (victim.monster_template_index >= 0 &&
+      kMonsterTable[static_cast<size_t>(victim.monster_template_index)].is_final_boss) {
+    gs.win_cause = kMonsterTable[static_cast<size_t>(victim.monster_template_index)].name;
+    gs.mode = Mode::Win;
     return;
   }
   drop_actor_gear(gs.level(), victim);

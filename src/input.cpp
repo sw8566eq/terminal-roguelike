@@ -68,6 +68,15 @@ void handle_dead_input(GameState& gs, const SDL_Event& event) {
   return;
 }
 
+void handle_win_input(GameState& gs, const SDL_Event& event) {
+  if (event.key.key == SDLK_ESCAPE) {
+    gs.running = false;
+  } else {
+    start_new_game(gs);
+  }
+  return;
+}
+
 void handle_message_log_input(GameState& gs, const SDL_Event& event) {
   if (event.key.key == SDLK_ESCAPE || event.key.key == SDLK_RIGHTBRACKET) {
     gs.mode = Mode::Playing;
@@ -1435,9 +1444,11 @@ void handle_playing_input(GameState& gs, const SDL_Event& event) {
   // monster AI on every intermediate floor before the game even opens would be
   // wrong.
   if (pressed_stairs_down) {
-    if (gs.player.x == level.stairs_down_x && gs.player.y == level.stairs_down_y) {
+    if (level.has_stairs_down && gs.player.x == level.stairs_down_x && gs.player.y == level.stairs_down_y) {
       end_turn(gs);
-      if (gs.mode != Mode::Dead) descend(gs);
+      if (!is_game_over(gs)) descend(gs);
+    } else if (!level.has_stairs_down) {
+      add_message(gs, "This is the deepest floor of the dungeon.");
     } else {
       add_message(gs, "There are no stairs down here.");
     }
@@ -1446,7 +1457,7 @@ void handle_playing_input(GameState& gs, const SDL_Event& event) {
   if (pressed_stairs_up) {
     if (level.has_stairs_up && gs.player.x == level.entry_x && gs.player.y == level.entry_y) {
       end_turn(gs);
-      if (gs.mode != Mode::Dead) ascend(gs);
+      if (!is_game_over(gs)) ascend(gs);
     } else {
       add_message(gs, "There are no stairs up here.");
     }
@@ -1546,6 +1557,7 @@ void handle_event(GameState& gs, const SDL_Event& event) {
   // key it doesn't handle is swallowed rather than falling through to normal play.
   switch (gs.mode) {
     case Mode::Dead:         handle_dead_input(gs, event);          return;
+    case Mode::Win:          handle_win_input(gs, event);           return;
     case Mode::MessageLog:   handle_message_log_input(gs, event);   return;
     case Mode::Help:         handle_help_input(gs, event);          return;
     case Mode::LevelUp:      handle_level_up_input(gs, event);      return;

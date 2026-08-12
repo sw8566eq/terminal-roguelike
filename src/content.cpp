@@ -241,6 +241,25 @@ const std::vector<MonsterTemplate> kMonsterTable = {
      /*evasion=*/4, /*dexterity=*/10, /*strength=*/5, /*min_depth=*/6, /*max_depth=*/6,
      /*armor=*/kArmorTable[2], /*extra_weapons=*/{}, /*potions=*/{},
      /*hp_regen_turns=*/100, /*extra_actions=*/0, /*is_boss=*/true},
+    // The win condition. Floor-kFinalFloor-only, is_final_boss=true — the only row that
+    // sets it (see on_actor_killed(), game.cpp). A temp/placeholder row like the other
+    // two bosses were at first: name, glyph and color are all easy to reskin later.
+    //   - Scaled a clear step past the Troll Chieftain across the board: it's floor 15,
+    //     well past the uncapped Troll tier (8+), so it needs to actually stand out from
+    //     the ordinary monsters still spawning around it.
+    //   - hp_regen_turns=80, faster than either existing boss (120, 100) — the same
+    //     "shrugs off chip damage" trope taken one step further for the last fight.
+    //   - extra_actions stays 0, same reasoning as the Troll Chieftain's: that knob is
+    //     saved for a future boss whose theme is actually about speed, not spent here
+    //     just because this is the last one.
+    //   - No carried potion or spells, kept deliberately simple as a temp row.
+    {"Dungeon Overlord", 'X', tcod::ColorRGB{255, 200, 40}, 90,
+     Weapon{"Overlord's Blade", 2, 8, 0, false, 1, -1, /*hit_dice=*/1, 6}, /*xp_reward=*/150,
+     /*evasion=*/6, /*dexterity=*/12, /*strength=*/8, /*min_depth=*/kFinalFloor, /*max_depth=*/kFinalFloor,
+     /*armor=*/kArmorTable[2], /*extra_weapons=*/{}, /*potions=*/{},
+     /*hp_regen_turns=*/80, /*extra_actions=*/0, /*is_boss=*/true,
+     /*intelligence=*/0, /*max_mana=*/0, /*mana_regen_turns=*/0, /*spell_indices=*/{},
+     /*leaves_corpse=*/true, /*is_final_boss=*/true},
 };
 
 const std::vector<MinionTemplate> kMinionTable = {

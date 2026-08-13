@@ -24,6 +24,7 @@
 #include "level.hpp"
 #include "render.hpp"
 #include "rng.hpp"
+#include "turn.hpp"
 
 int main(int argc, char* argv[]) {
   // Pre-scan for the debug flags that have to be known before any level is generated
@@ -134,6 +135,11 @@ int main(int argc, char* argv[]) {
   // reference images (e.g. for the README) without a real display: pair with
   // SDL_VIDEODRIVER=offscreen. Excluded from menu_relevant_args below so
   // `--screenshot=x.png` alone still captures the start menu itself.
+  //
+  // `--pause-ai` (g_debug_pause_ai, turn.hpp) skips both AI loops in end_turn() every
+  // turn, so nothing but the player moves — for freezing a scene to compose a live,
+  // in-window screenshot (unlike --screenshot=, this is for a normal interactive
+  // session) without a monster wandering off or a fight breaking out mid-shot.
   bool dump_loot = false;
   bool start_dead = false;
   std::string screenshot_path;
@@ -163,6 +169,10 @@ int main(int argc, char* argv[]) {
     const std::string screenshot_prefix = "--screenshot=";
     if (arg.rfind(screenshot_prefix, 0) == 0) {
       screenshot_path = arg.substr(screenshot_prefix.size());
+      continue;
+    }
+    if (arg == "--pause-ai") {
+      g_debug_pause_ai = true;
       continue;
     }
     const std::string floor_prefix = "--floor=";

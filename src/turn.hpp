@@ -4,6 +4,16 @@
 
 #include "game.hpp"
 
+// Debug flag --pause-ai: skips both AI loops in end_turn() (hostile monsters, then
+// minions) entirely, so nothing but the player moves — for freezing a scene to compose
+// a screenshot without a monster wandering off or a fight breaking out mid-shot.
+// Everything else in a turn still runs normally (upkeep, regen, buff timers, projectiles
+// already in flight), so it's a narrower pause than it might sound: monsters just never
+// decide to act. A plain global rather than a GameState field, same shape as
+// g_debug_fast_monsters (level.hpp) — a debug knob set once at startup, not session
+// state anything in-game reads or toggles.
+extern bool g_debug_pause_ai;
+
 // The single hook every turn-consuming player action funnels through — moving,
 // attacking, waiting, equipping, dropping, drinking, casting, toggling a spell, giving a
 // minion an order. There are roughly twenty call sites and they all just call this.

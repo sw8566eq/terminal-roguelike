@@ -7,6 +7,8 @@
 #include "rng.hpp"
 #include "rules.hpp"
 
+bool g_debug_pause_ai = false;
+
 namespace {
 
   // Per-turn upkeep, run identically for every living Actor on the floor: passive HP
@@ -606,7 +608,7 @@ void end_turn(GameState& gs) {
   tick_minion_durations(gs);
   tick_toggle_spell(gs);
 
-  run_hostile_ai(gs);
+  if (!g_debug_pause_ai) run_hostile_ai(gs);
 
   // Load-bearing, and the counterpart of the advance_projectiles() call above that
   // follows the *player's* action. A hit-scan spell has to resolve in the turn it was
@@ -620,6 +622,6 @@ void end_turn(GameState& gs) {
   // a minion ever casts, run_minion_ai() needs the mirror of this call.
   advance_projectiles(gs, /*instant_only=*/true);
 
-  run_minion_ai(gs);
+  if (!g_debug_pause_ai) run_minion_ai(gs);
   sweep_dead(gs);
 }

@@ -9,6 +9,12 @@ This game is built with [Claude Code](https://claude.com/claude-code), an AI
 coding agent, as a test of its capabilities on a non-trivial C++ project. The
 README and code comments are also written by Claude Code.
 
+## Screenshots
+
+| Start menu | Fresh start | Death screen |
+| --- | --- | --- |
+| ![Start menu](docs/screenshots/start-menu.png) | ![A freshly started character on floor 1](docs/screenshots/fresh-start.png) | ![The death screen](docs/screenshots/death-screen.png) |
+
 ## One-time setup (Linux)
 
 You need `git`, `cmake`, a C++ compiler, and `ninja` (recommended, faster than

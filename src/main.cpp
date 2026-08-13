@@ -30,6 +30,8 @@ int main(int argc, char* argv[]) {
   // — start_new_game() below builds floor 1, and --floor=N replays descend(), both well
   // before the ordinary argv loop further down. See g_debug_fast_monsters, and seed_rng()
   // in rng.hpp: seeding after floor 1 already exists would defeat the whole point.
+  bool cli_seed_set = false;
+  unsigned int cli_seed_value = 0;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--fast-monsters") g_debug_fast_monsters = true;
@@ -43,7 +45,11 @@ int main(int argc, char* argv[]) {
       for (char c : value) {
         if (c < '0' || c > '9') numeric = false;
       }
-      if (numeric) seed_rng(static_cast<unsigned int>(std::strtoul(value.c_str(), nullptr, 10)));
+      if (numeric) {
+        cli_seed_value = static_cast<unsigned int>(std::strtoul(value.c_str(), nullptr, 10));
+        seed_rng(cli_seed_value);
+        cli_seed_set = true;
+      }
     }
   }
 
@@ -78,6 +84,7 @@ int main(int argc, char* argv[]) {
   gs.player.name = "Player";
   gs.player.is_player = true;
   gs.player.id = allocate_actor_id();
+  if (cli_seed_set) gs.current_seed_display = std::to_string(cli_seed_value);
 
   start_new_game(gs);
 
@@ -111,7 +118,25 @@ int main(int argc, char* argv[]) {
   // the same seed builds the same floors with the same monsters, gear and rolls. Handled
   // in the pre-scan at the top of main(), not here, since floor 1 is generated long
   // before this loop runs. Pairs with --dump-loot to make floor contents diffable.
+  //
+  // `--skip-menu` jumps straight into a normal, freshly-started game, bypassing
+  // Mode::StartMenu — the explicit spelling of what every other flag below already does
+  // as a side effect (see the menu_relevant_args check further down), for when you want
+  // that and nothing else.
+  //
+  // `--start-dead` forces the death screen up immediately after a normal fresh start,
+  // for eyeballing/screenshotting Mode::Dead without actually dying first. Debug-only —
+  // its death_cause is a made-up placeholder, not a real kill.
+  //
+  // `--screenshot=<path>` renders exactly one frame in whatever mode the rest of the
+  // flags land on, saves it via tcod::Context::save_screenshot(), and exits before the
+  // window's event loop ever starts — a scriptable, headless-friendly way to capture
+  // reference images (e.g. for the README) without a real display: pair with
+  // SDL_VIDEODRIVER=offscreen. Excluded from menu_relevant_args below so
+  // `--screenshot=x.png` alone still captures the start menu itself.
   bool dump_loot = false;
+  bool start_dead = false;
+  std::string screenshot_path;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--reveal") {
@@ -127,6 +152,18 @@ int main(int argc, char* argv[]) {
     }
     if (arg.rfind("--seed=", 0) == 0) {
       continue;  // likewise — seeding has to happen before floor 1 exists
+    }
+    if (arg == "--skip-menu") {
+      continue;  // no effect beyond being present in argv — see menu_relevant_args below
+    }
+    if (arg == "--start-dead") {
+      start_dead = true;
+      continue;
+    }
+    const std::string screenshot_prefix = "--screenshot=";
+    if (arg.rfind(screenshot_prefix, 0) == 0) {
+      screenshot_path = arg.substr(screenshot_prefix.size());
+      continue;
     }
     const std::string floor_prefix = "--floor=";
     if (arg.rfind(floor_prefix, 0) == 0) {
@@ -162,6 +199,25 @@ int main(int argc, char* argv[]) {
   }
   // Surfaces the LevelUp prompt if --level= queued any points, same as grant_xp does.
   if (gs.pending_attribute_points > 0) gs.mode = Mode::LevelUp;
+
+  // A plain launch shows the start menu instead of dropping straight into the floor 1
+  // that start_new_game() above already built (that floor is simply discarded/rebuilt
+  // once "Start Game" is actually chosen — see handle_start_menu_input()). Any flag at
+  // all normally means the user is setting up a specific scenario and wants to skip
+  // straight to it — except --screenshot=, which doesn't count on its own so
+  // `--screenshot=path` alone can still capture the menu itself (see its comment above).
+  int menu_relevant_args = 0;
+  for (int i = 1; i < argc; ++i) {
+    if (std::string(argv[i]).rfind("--screenshot=", 0) != 0) ++menu_relevant_args;
+  }
+  if (menu_relevant_args == 0) gs.mode = Mode::StartMenu;
+
+  if (start_dead) {
+    gs.death_cause = "Goblin";  // matches the real format: on_actor_killed() passes the
+                                // killer's bare Actor::name, and the death screen adds
+                                // "slain by the " itself.
+    gs.mode = Mode::Dead;
+  }
 
   if (dump_loot) {
     Level& level = gs.level();
@@ -200,6 +256,13 @@ int main(int argc, char* argv[]) {
       for (const auto& a : monster.armors) std::cout << "      carries armor: " << a.name << "\n";
       for (const auto& p : monster.potions) std::cout << "      carries potion: " << p.name << "\n";
     }
+    return 0;
+  }
+
+  if (!screenshot_path.empty()) {
+    render_frame(gs, console);
+    context.present(console);
+    context.save_screenshot(screenshot_path);
     return 0;
   }
 

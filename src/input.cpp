@@ -1,6 +1,7 @@
 #include "input.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <vector>
 
 #include "actors.hpp"
@@ -57,6 +58,86 @@ bool cycle_minion_focus(GameState& gs, int direction) {
   gs.target_x = level.monsters[static_cast<size_t>(fi)].x;
   gs.target_y = level.monsters[static_cast<size_t>(fi)].y;
   return true;
+}
+
+void handle_start_menu_input(GameState& gs, const SDL_Event& event) {
+  constexpr int kOptionCount = 4;  // Start Game, Set Seed, Run History, Exit
+  if (event.key.key == SDLK_UP || event.key.key == SDLK_K) {
+    gs.start_menu_selection = (gs.start_menu_selection + kOptionCount - 1) % kOptionCount;
+    return;
+  }
+  if (event.key.key == SDLK_DOWN || event.key.key == SDLK_J) {
+    gs.start_menu_selection = (gs.start_menu_selection + 1) % kOptionCount;
+    return;
+  }
+  if (event.key.key == SDLK_ESCAPE) {
+    gs.running = false;
+    return;
+  }
+
+  int chosen = -1;
+  if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER) {
+    chosen = gs.start_menu_selection;
+  } else if (event.key.key == SDLK_1) {
+    chosen = 0;
+  } else if (event.key.key == SDLK_2) {
+    chosen = 1;
+  } else if (event.key.key == SDLK_3) {
+    chosen = 2;
+  } else if (event.key.key == SDLK_4) {
+    chosen = 3;
+  }
+  if (chosen < 0) return;
+  gs.start_menu_selection = chosen;
+
+  switch (chosen) {
+    case 0:  // Start Game: discards whatever floor 1 start_new_game() already built at
+             // startup and builds a fresh one, so a seed set via the menu actually takes.
+      start_new_game(gs);
+      break;
+    case 1:  // Set Seed
+      gs.seed_input.clear();
+      gs.mode = Mode::SetSeed;
+      break;
+    case 2:  // Run History
+      gs.mode = Mode::RunHistory;
+      break;
+    case 3:  // Exit
+      gs.running = false;
+      break;
+  }
+}
+
+void handle_set_seed_input(GameState& gs, const SDL_Event& event) {
+  if (event.key.key == SDLK_ESCAPE) {
+    gs.mode = Mode::StartMenu;
+    return;
+  }
+  if (event.key.key == SDLK_BACKSPACE) {
+    if (!gs.seed_input.empty()) gs.seed_input.pop_back();
+    return;
+  }
+  if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER) {
+    // Empty input just backs out without touching the RNG, same free-cancel shape as
+    // Esc — there's nothing sensible to confirm.
+    if (!gs.seed_input.empty()) {
+      unsigned int value = static_cast<unsigned int>(std::strtoul(gs.seed_input.c_str(), nullptr, 10));
+      seed_rng(value);
+      gs.current_seed_display = gs.seed_input;
+    }
+    gs.mode = Mode::StartMenu;
+    return;
+  }
+  // SDLK_0..SDLK_9 are contiguous in SDL3. Capped at 10 digits, comfortably above
+  // unsigned int's range (~4.29 billion) — same "just don't overflow" spirit the
+  // --seed=N flag's own hand-rolled digit check already has.
+  if (event.key.key >= SDLK_0 && event.key.key <= SDLK_9 && gs.seed_input.size() < 10) {
+    gs.seed_input += static_cast<char>('0' + (event.key.key - SDLK_0));
+  }
+}
+
+void handle_run_history_input(GameState& gs, const SDL_Event& event) {
+  if (event.key.key == SDLK_ESCAPE) gs.mode = Mode::StartMenu;
 }
 
 void handle_dead_input(GameState& gs, const SDL_Event& event) {
@@ -1556,6 +1637,9 @@ void handle_event(GameState& gs, const SDL_Event& event) {
   // Each mode is exclusive: whichever screen is up consumes the key completely, and a
   // key it doesn't handle is swallowed rather than falling through to normal play.
   switch (gs.mode) {
+    case Mode::StartMenu:    handle_start_menu_input(gs, event);    return;
+    case Mode::SetSeed:      handle_set_seed_input(gs, event);      return;
+    case Mode::RunHistory:   handle_run_history_input(gs, event);   return;
     case Mode::Dead:         handle_dead_input(gs, event);          return;
     case Mode::Win:          handle_win_input(gs, event);           return;
     case Mode::MessageLog:   handle_message_log_input(gs, event);   return;

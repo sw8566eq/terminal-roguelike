@@ -7,6 +7,7 @@
 #include "content.hpp"
 #include "projectile.hpp"
 #include "rules.hpp"
+#include "run_history.hpp"
 #include "spells.hpp"
 
 // Darkens a color for the "remembered, but not currently visible" rendering tier.
@@ -293,6 +294,59 @@ void render_drop_screen(GameState& gs, tcod::Console& console) {
       line = std::string(1, letter) + ") " + p.name + " (" + describe_potion(p) + ")";
     }
     tcod::print(console, {0, 2 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
+  }
+}
+
+void render_start_menu(GameState& gs, tcod::Console& console) {
+  tcod::print(console, {0, 0}, "TERMINAL ROGUELIKE", tcod::ColorRGB{255, 210, 60}, std::nullopt);
+
+  static const std::vector<std::string> kOptions = {"Start Game", "Set Seed", "Run History", "Exit"};
+  for (size_t i = 0; i < kOptions.size(); ++i) {
+    bool selected = static_cast<int>(i) == gs.start_menu_selection;
+    std::string line =
+        (selected ? "> " : "  ") + std::to_string(i + 1) + ") " + kOptions[i];
+    if (i == 1) line += "  (current: " + gs.current_seed_display + ")";
+    tcod::print(console, {0, 2 + static_cast<int>(i)}, line,
+                selected ? tcod::ColorRGB{255, 255, 255} : tcod::ColorRGB{180, 180, 180}, std::nullopt);
+  }
+  tcod::print(console, {0, 2 + static_cast<int>(kOptions.size()) + 1},
+              "Up/Down or j/k to choose, Enter to select, or press 1-4. Esc quits.",
+              tcod::ColorRGB{140, 140, 140}, std::nullopt);
+}
+
+void render_set_seed_screen(GameState& gs, tcod::Console& console) {
+  tcod::print(console, {0, 0}, "Set Seed", tcod::ColorRGB{255, 255, 255}, std::nullopt);
+  tcod::print(console, {0, 2}, "Type digits, Enter to confirm, Backspace to edit, Esc to cancel.",
+              tcod::ColorRGB{200, 200, 200}, std::nullopt);
+  std::string shown = gs.seed_input.empty() ? "_" : gs.seed_input;
+  tcod::print(console, {0, 4}, "Seed: " + shown, tcod::ColorRGB{255, 210, 60}, std::nullopt);
+}
+
+void render_run_history_screen(tcod::Console& console) {
+  tcod::print(console, {0, 0}, "Run History - Esc to go back", tcod::ColorRGB{255, 255, 255}, std::nullopt);
+
+  std::vector<RunHistoryEntry> history = load_run_history();
+  if (history.empty()) {
+    tcod::print(console, {0, 2}, "No runs recorded yet.", tcod::ColorRGB{180, 180, 180}, std::nullopt);
+    return;
+  }
+
+  // Stored oldest-first (append order); shown most-recent-first, capped to what the
+  // console can actually fit.
+  int visible_rows = SCREEN_HEIGHT - 3;
+  int shown = std::min(static_cast<int>(history.size()), visible_rows);
+  for (int row = 0; row < shown; ++row) {
+    const RunHistoryEntry& entry = history[history.size() - 1 - static_cast<size_t>(row)];
+    std::string outcome = entry.won ? "WON " : "DIED";
+    tcod::ColorRGB color = entry.won ? tcod::ColorRGB{255, 210, 60} : tcod::ColorRGB{255, 80, 80};
+    std::string line = outcome + " - Floor " + std::to_string(entry.floor_reached) + ", Level " +
+                        std::to_string(entry.player_level) + ", seed " + entry.seed_display + " - " + entry.cause;
+    tcod::print(console, {0, 2 + row}, line, color, std::nullopt);
+  }
+  if (static_cast<int>(history.size()) > shown) {
+    tcod::print(console, {0, 2 + shown},
+                "(" + std::to_string(history.size() - static_cast<size_t>(shown)) + " more not shown)",
+                tcod::ColorRGB{140, 140, 140}, std::nullopt);
   }
 }
 
@@ -1075,6 +1129,9 @@ void render_frame(GameState& gs, tcod::Console& console) {
   // the modes that overlay it (Targeting, RangedAttack, MinionFocus, Look, LevelUp)
   // share the sectioned HUD drawn below.
   switch (gs.mode) {
+    case Mode::StartMenu:    render_start_menu(gs, console);      return;
+    case Mode::SetSeed:      render_set_seed_screen(gs, console); return;
+    case Mode::RunHistory:   render_run_history_screen(console);  return;
     case Mode::WeaponMenu:   render_weapon_menu(gs, console);   return;
     case Mode::ArmorMenu:    render_armor_menu(gs, console);    return;
     case Mode::PotionMenu:   render_potion_menu(gs, console);   return;

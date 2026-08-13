@@ -188,6 +188,8 @@ void on_actor_killed(GameState& gs, Actor& victim, bool killed_by_player_side,
                      const std::string& cause) {
   if (victim.is_player) {
     gs.death_cause = cause;
+    append_run_history_entry(
+        {/*won=*/false, gs.current_level + 1, gs.player.level, cause, gs.current_seed_display});
     gs.mode = Mode::Dead;
     return;
   }
@@ -197,6 +199,8 @@ void on_actor_killed(GameState& gs, Actor& victim, bool killed_by_player_side,
   if (victim.monster_template_index >= 0 &&
       kMonsterTable[static_cast<size_t>(victim.monster_template_index)].is_final_boss) {
     gs.win_cause = kMonsterTable[static_cast<size_t>(victim.monster_template_index)].name;
+    append_run_history_entry(
+        {/*won=*/true, gs.current_level + 1, gs.player.level, gs.win_cause, gs.current_seed_display});
     gs.mode = Mode::Win;
     return;
   }

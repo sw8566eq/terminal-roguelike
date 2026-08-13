@@ -16,6 +16,7 @@
 #include "entity.hpp"
 #include "level.hpp"
 #include "projectile.hpp"
+#include "run_history.hpp"
 #include "spells.hpp"
 
 // The dungeon's own dimensions, independent of how much of it is on screen at once (see
@@ -31,6 +32,9 @@ constexpr int FOV_RADIUS = 8;
 // screen flow. Adding a full-screen menu means a new value here, a render function, an
 // input handler, and a trigger key from Mode::Playing.
 enum class Mode {
+  StartMenu,
+  SetSeed,
+  RunHistory,
   Playing,
   WeaponMenu,
   ArmorMenu,
@@ -75,6 +79,16 @@ struct GameState {
   std::string death_cause;               // whatever last killed the player, for the death screen
   std::string win_cause;                 // the final boss's name, for the win screen (Mode::Win)
   int pending_attribute_points = 0;      // unspent level-up points forcing a Mode::LevelUp prompt
+
+  // Mode::StartMenu session state: which of its four options is highlighted. Session
+  // state rather than a character stat, same category as active_toggle_spell/
+  // focused_minion_id below.
+  int start_menu_selection = 0;
+  std::string seed_input;  // digits typed so far, while Mode::SetSeed
+  // The seed the shared RNG was last explicitly pinned to (via --seed=N or the Set Seed
+  // screen), shown on the start menu and recorded into run_history.txt when a run ends.
+  // "random" until one is actually set — see seed_rng() in rng.hpp.
+  std::string current_seed_display = "random";
 
   int casting_spell_index = -1;  // which kSpellTable entry is being aimed, while Mode::Targeting
   // Who is casting it: -1 for the player, otherwise an Actor::id — a minion using one of

@@ -66,7 +66,10 @@ If you already have the folder locally without having cloned it (e.g. you
 downloaded it some other way), run `git submodule update --init` instead of
 step 1.
 
-Controls are all in-game — press `?` any time for the full reference.
+Launches to a start menu (Start Game / Set Seed / Run History / Exit) — Run
+History remembers past runs (win or death, floor, level, seed) across
+launches. Controls in a run are all in-game — press `?` any time for the
+full reference.
 
 ## Debug flags
 
@@ -77,7 +80,12 @@ and exits without opening a window; `--fast-monsters` gives every hostile
 monster a second action per turn; `--give=<name>[,...]` adds items to your
 inventory at startup; `--seed=N` pins the RNG for a reproducible run.
 `--seed=N` + `--dump-loot`, diffed across floors, is this project's one
-regression check.
+regression check. Any of the above (or `--skip-menu`, which does nothing
+else) skips the start menu and drops straight into play. `--start-dead`
+forces up the death screen against a placeholder cause, and
+`--screenshot=<path>` renders one frame and saves it, both mainly for
+capturing reference images headlessly (`SDL_VIDEODRIVER=offscreen`) without
+a real display.
 
 ## Project layout
 
@@ -92,6 +100,7 @@ roguelike/
 │   ├── entity.hpp/.cpp      # Weapon/Armor/Potion/Actor types, damage rolls
 │   ├── map.hpp/.cpp         # dungeon generation, FOV, fog of war, pathfinding
 │   ├── rng.hpp/.cpp         # shared random-number and dice-rolling utility
+│   ├── run_history.hpp/.cpp # persisted past-run records (Run History menu)
 │   │
 │   │                        # content and numbers
 │   ├── content.hpp/.cpp     # the weapon/armor/potion/monster/minion tables
@@ -138,8 +147,8 @@ Everything below is built and playable.
 - **Minions** — summon or raise allies, command them individually or as a
   pack, minion abilities (Wither Curse), independent per-source caps totaling
   7 at once
-- **Interface** — sectioned HUD (stats, buffs, enemies, minions), scrollback
-  message log, look-around (`x`)
+- **Interface** — start menu with a persistent Run History, sectioned HUD
+  (stats, buffs, enemies, minions), scrollback message log, look-around (`x`)
 
 ## Where Claude struggled
 

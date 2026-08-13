@@ -120,8 +120,8 @@ constexpr int kFinalFloor = 15;
 //
 // Both sides of that come from plain Actor/Weapon fields that mean the same thing on
 // everybody, which is what makes a monster and the player balanceable against each
-// other: raising a monster's evasion by 8 is worth exactly as much as giving the player
-// one more point of Dexterity.
+// other: raising a monster's evasion rating by some amount is worth exactly as much as
+// the player's own Dexterity converting to that same amount of evasion.
 //
 // The two per-point knobs are deliberately different sizes, and that asymmetry is
 // between *offense and defense*, not between player and monster — everyone uses both:
@@ -129,8 +129,19 @@ constexpr int kFinalFloor = 15;
 //   - kAccuracyPerDexPoint (offense): what one point of Dexterity is worth as accuracy.
 // The floor/ceiling keep either side from ever reaching a guaranteed hit or a
 // guaranteed miss, however lopsided the matchup.
-constexpr int kDodgePerDexPoint = 8;
-constexpr int kAccuracyPerDexPoint = 4;
+//
+// Retuned from 8/4 (originally exactly 2:1) to 12/5 (still defense-favored, just not
+// as sharply): at 8/4, a Dexterity investment short of "nearly everything" did almost
+// nothing — the defense side needed ~5+ points just to climb out of kDodgeFloor against
+// a high-accuracy attacker, and the offense side saturated against most monsters'
+// (comparatively low) evasion by around Dexterity 2, so a mid-range build (roughly a
+// third of a level-13 character's points) got no visible benefit from either half of the
+// formula. A simulated level-13 Dexterity build's win rate against the floor-15 boss
+// went from single digits to roughly in line with a Strength build's, without
+// approaching Strength's own (still comfortably the strongest single-stat pick, since it
+// buys both max HP and melee damage at once).
+constexpr int kDodgePerDexPoint = 12;
+constexpr int kAccuracyPerDexPoint = 5;
 constexpr int kDodgeBaseline = 10;
 constexpr int kDodgeFloor = 5;
 constexpr int kDodgeCeiling = 85;

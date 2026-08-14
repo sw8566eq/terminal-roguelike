@@ -15,6 +15,16 @@ README and code comments are also written by Claude Code.
 | --- | --- | --- |
 | ![Start menu](docs/screenshots/start-menu.png) | ![A freshly started character on floor 1](docs/screenshots/fresh-start.png) | ![The death screen](docs/screenshots/death-screen.png) |
 
+A few more from an actual run:
+
+| Floor 15's boss chamber | Summoner spell list |
+| --- | --- |
+| ![Floor 15's moat-ringed boss chamber, closing in on the Dungeon Overlord](docs/screenshots/boss-chamber.png) | ![The Summoner's spell list: Summon Imp, Place Swap, Summon Demon, Raise Dead](docs/screenshots/summoner-spells.png) |
+
+| Commanding minions in a fight | A minion ability |
+| --- | --- |
+| ![Commanding a Demon and an Imp against an Orc](docs/screenshots/minion-command.png) | ![Ordering the Demon to use its Wither Curse ability](docs/screenshots/demon-ability.png) |
+
 ## One-time setup (Linux)
 
 You need `git`, `cmake`, a C++ compiler, and `ninja` (recommended, faster than

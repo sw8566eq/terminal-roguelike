@@ -18,6 +18,15 @@ This game is built with [Claude Code](https://claude.com/claude-code), an AI
 coding agent, as a test of its capabilities on a non-trivial C++ project. The
 README and code comments are also written by Claude Code.
 
+**The game is still very unbalanced, and that's not an oversight.** The
+actual goals here were testing Claude Code on a real, incrementally-grown
+C++ codebase, and proving out one specific mechanic — granular, per-unit
+control over a pack of minions — not shipping a tuned roguelike. Numbers
+throughout (damage, mana costs, spawn rates, XP, ...) were picked to be
+reasonable and moved on from rather than balanced; see [Where Claude
+struggled](#where-claude-struggled) below for the rough edges that did get
+found along the way.
+
 ## Screenshots
 
 | Start menu | Fresh start | Death screen |

@@ -3,14 +3,14 @@
 A turn-based, permadeath, ASCII fantasy dungeon crawler, written in modern
 C++17 using [libtcod](https://github.com/libtcod/libtcod) — built around
 **granular control over minions**. Go the Summoner route and you're not
-following one pet around: raise or summon a whole pack (up to 7 at once —
-each minion type guards its own independent cap, so summoning more Imps
-never crowds out room for a Demon or a raised corpse), then command each
-member individually — hold a chokepoint, focus a specific target, trigger
-one minion's own ability — or give the pack a single order at once. That
-per-minion command layer (`o`/`p` to cycle between them, `m` for the full
-roster) is the mechanic the rest of the game is built around, not a
-bolted-on pet system.
+following one pet around: raise or summon a whole pack — each minion type
+guards its own independent cap rather than sharing one pool, so summoning
+more Imps never crowds out room for a Demon or a raised corpse — then
+command each member individually — hold a chokepoint, focus a specific
+target, trigger one minion's own ability — or give the pack a single
+order at once. That per-minion command layer (`o`/`p` to cycle between
+them, `m` for the full roster) is the mechanic the rest of the game is
+built around, not a bolted-on pet system.
 
 ## About this project
 
@@ -155,7 +155,8 @@ Everything below is built and playable.
   (`o`/`p` to cycle, `m` for the full roster) with per-unit orders — Follow,
   Hold a position, or focus-fire a specific target — or issue one order to
   everyone at once. Minions get their own abilities too (the Demon's Wither
-  Curse), independent per-source caps stacking up to 7 allies at a time.
+  Curse); each minion type has its own independent cap rather than sharing
+  one pool.
 - **World** — procedural multi-level dungeon, FOV/fog of war, pits, depth-scaled
   monsters and gear; the last floor has a distinct, moat-ringed boss chamber
 - **Combat** — turn-based melee and ranged (`f`), permadeath, one shared

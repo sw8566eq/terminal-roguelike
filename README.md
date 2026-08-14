@@ -1,7 +1,14 @@
 # Terminal Roguelike
 
-A classic turn-based, permadeath, ASCII fantasy dungeon crawler, written in
-modern C++17 using [libtcod](https://github.com/libtcod/libtcod).
+A turn-based, permadeath, ASCII fantasy dungeon crawler, written in modern
+C++17 using [libtcod](https://github.com/libtcod/libtcod) — built around
+**granular control over minions**. Go the Summoner route and you're not
+following one pet around: raise or summon a whole pack (up to 7 at once),
+then command each member individually — hold a chokepoint, focus a
+specific target, trigger one minion's own ability — or give the pack a
+single order at once. That per-minion command layer (`o`/`p` to cycle
+between them, `m` for the full roster) is the mechanic the rest of the
+game is built around, not a bolted-on pet system.
 
 ## About this project
 
@@ -15,15 +22,17 @@ README and code comments are also written by Claude Code.
 | --- | --- | --- |
 | ![Start menu](docs/screenshots/start-menu.png) | ![A freshly started character on floor 1](docs/screenshots/fresh-start.png) | ![The death screen](docs/screenshots/death-screen.png) |
 
+The headline mechanic in action — commanding a pack individually, mid-fight:
+
+| Commanding minions in a fight | A minion ability |
+| --- | --- |
+| ![Commanding a Demon and an Imp against an Orc](docs/screenshots/minion-command.png) | ![Ordering the Demon to use its Wither Curse ability](docs/screenshots/demon-ability.png) |
+
 A few more from an actual run:
 
 | Floor 15's boss chamber | Summoner spell list |
 | --- | --- |
 | ![Floor 15's moat-ringed boss chamber, closing in on the Dungeon Overlord](docs/screenshots/boss-chamber.png) | ![The Summoner's spell list: Summon Imp, Place Swap, Summon Demon, Raise Dead](docs/screenshots/summoner-spells.png) |
-
-| Commanding minions in a fight | A minion ability |
-| --- | --- |
-| ![Commanding a Demon and an Imp against an Orc](docs/screenshots/minion-command.png) | ![Ordering the Demon to use its Wither Curse ability](docs/screenshots/demon-ability.png) |
 
 ## One-time setup (Linux)
 
@@ -139,6 +148,12 @@ handler, and a key to open it.
 
 Everything below is built and playable.
 
+- **Minions** — the headline mechanic: summon (Imp/Demon) or raise the
+  corpse of whatever you just killed, then command your pack individually
+  (`o`/`p` to cycle, `m` for the full roster) with per-unit orders — Follow,
+  Hold a position, or focus-fire a specific target — or issue one order to
+  everyone at once. Minions get their own abilities too (the Demon's Wither
+  Curse), independent per-source caps stacking up to 7 allies at a time.
 - **World** — procedural multi-level dungeon, FOV/fog of war, pits, depth-scaled
   monsters and gear; the last floor has a distinct, moat-ringed boss chamber
 - **Combat** — turn-based melee and ranged (`f`), permadeath, one shared
@@ -154,9 +169,6 @@ Everything below is built and playable.
   Wizard), and three bosses — Orc Warlord (floor 3), Troll Chieftain (floor
   6), and the Dungeon Overlord, the win condition, in its own chamber on the
   last floor
-- **Minions** — summon or raise allies, command them individually or as a
-  pack, minion abilities (Wither Curse), independent per-source caps totaling
-  7 at once
 - **Interface** — start menu with a persistent Run History, sectioned HUD
   (stats, buffs, enemies, minions), scrollback message log, look-around (`x`)
 

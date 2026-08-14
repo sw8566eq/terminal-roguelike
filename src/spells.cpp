@@ -43,15 +43,17 @@ const std::vector<Spell> kSpellTable = {
     // Summoner's entry spell — unlock_int=4 so it's already castable the moment the
     // Caster/Summoner choice is made, same as Fireball is for Caster above. See the
     // SpellMenu handler for how casting a summon spell differs from firing/toggling.
-    // minion_cap=3: cheap and temporary, so it's the biggest of the three independent
-    // pools (Imp/Demon/Raise Dead) below.
+    // minion_cap=-1: uncapped, at the user's explicit request — mana is the only limit
+    // on pack size now. (Spell::minion_cap and its enforcement in input.cpp/render.cpp
+    // are left in place rather than deleted: the sentinel already meant "no cap" for
+    // exactly this case, and a future spell can still opt into one.)
     {"Summon Imp", /*unlock_int=*/4, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/0,
      /*mana_cost=*/4, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
      /*hit_dice_count=*/0, /*hit_dice_sides=*/0, 'u', tcod::ColorRGB{100, 200, 220}, /*is_summon=*/true,
      /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::Summoner,
      /*is_melee_buff=*/false, /*is_armor_buff=*/false, /*is_haste_buff=*/false,
      /*buff_amount=*/0, /*buff_turns=*/0, /*pierces=*/false,
-     /*minion_only=*/false, /*is_debuff=*/false, /*is_raise=*/false, /*minion_cap=*/3},
+     /*minion_only=*/false, /*is_debuff=*/false, /*is_raise=*/false, /*minion_cap=*/-1},
     // Trades places with a minion instead of dealing damage — a tactical reposition
     // (pull yourself to a minion holding a doorway, or swap a hurt minion out of melee
     // and take its spot yourself). Summoner's second spell — unlock_int=5 keeps the
@@ -115,16 +117,16 @@ const std::vector<Spell> kSpellTable = {
     // unlock_int=9 is the parallel tier to Lightning Bolt above. mana_cost=9 is
     // steeper than Summon Imp's 4, reflecting a permanent and much stronger
     // minion — stated default, adjustable after playtesting.
-    // minion_cap=1: permanent and by far the strongest minion in the game, so its own
-    // pool stays singular rather than matching Imp/Raise Dead's 3 — a fielded Demon is
-    // meant to read as a commitment, not a stackable army.
+    // minion_cap=-1: uncapped, same as every other summon source now — see Summon Imp's
+    // comment above. A fielded Demon was meant to read as a commitment rather than a
+    // stackable army, but that's mana_cost=9's job to enforce, not a hard pool limit.
     {"Summon Demon", /*unlock_int=*/9, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/0,
      /*mana_cost=*/9, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
      /*hit_dice_count=*/0, /*hit_dice_sides=*/0, 'D', tcod::ColorRGB{200, 40, 180}, /*is_summon=*/true,
      /*summon_template_index=*/1, /*is_swap=*/false, /*school=*/SpellSchool::Summoner,
      /*is_melee_buff=*/false, /*is_armor_buff=*/false, /*is_haste_buff=*/false,
      /*buff_amount=*/0, /*buff_turns=*/0, /*pierces=*/false,
-     /*minion_only=*/false, /*is_debuff=*/false, /*is_raise=*/false, /*minion_cap=*/1},
+     /*minion_only=*/false, /*is_debuff=*/false, /*is_raise=*/false, /*minion_cap=*/-1},
     // Combat Mage's third spell, and the school's payoff: buff_amount extra actions per
     // world turn (see Actor::extra_actions / total_actions_for()). Structurally just a
     // third self-buff resolving from the menu like Battle Fury and Iron Skin — the new
@@ -174,9 +176,8 @@ const std::vector<Spell> kSpellTable = {
     // What it buys is a *timed* minion (kRaisedMinionTurns) whose quality depends on what
     // you managed to kill, which is what keeps Summon Demon worth its extra mana: the
     // Demon is the permanent, dependable option, while raising is opportunistic and rots.
-    // minion_cap=3, counted across every species it can produce (see
-    // count_raised_minions()) — matches Summon Imp's pool size, since both are cheap,
-    // timed conscripts.
+    // minion_cap=-1: uncapped, same as every other summon source now — see Summon Imp's
+    // comment above.
     // Stated defaults.
     {"Raise Dead", /*unlock_int=*/7, /*dice_count=*/0, /*dice_sides=*/0, /*speed=*/0, /*range=*/6,
      /*mana_cost=*/6, /*aoe_radius=*/0, /*is_toggle=*/false, /*tick_damage=*/0, /*tick_mana_cost=*/0,
@@ -184,7 +185,7 @@ const std::vector<Spell> kSpellTable = {
      /*summon_template_index=*/0, /*is_swap=*/false, /*school=*/SpellSchool::Summoner,
      /*is_melee_buff=*/false, /*is_armor_buff=*/false, /*is_haste_buff=*/false,
      /*buff_amount=*/0, /*buff_turns=*/0, /*pierces=*/false,
-     /*minion_only=*/false, /*is_debuff=*/false, /*is_raise=*/true, /*minion_cap=*/3},
+     /*minion_only=*/false, /*is_debuff=*/false, /*is_raise=*/true, /*minion_cap=*/-1},
 };
 
 std::vector<int> known_spell_indices(int intelligence, SpellSchool chosen_school) {

@@ -216,15 +216,25 @@ Level generate_level(int width, int height, bool has_stairs_up, int depth) {
     }
   }
 
+  // Every table's depth filter happens to leave every reachable floor with at least one
+  // entry today, but nothing enforces that, and random_int(0, size-1) on an empty pool
+  // is undefined behavior (std::uniform_int_distribution requires lo <= hi). Guarding the
+  // whole loop rather than asserting matches how the rest of generation already degrades
+  // — carve_hole_clusters() silently places fewer patches than requested,
+  // carve_special_room() falls back to ordinary placement — so a future depth-gated
+  // table addition that leaves some floor's pool empty just spawns nothing of that kind
+  // there instead of crashing.
   auto available_monsters = monsters_available_at_depth(depth);
   int monster_count = monster_count_for_depth(depth);
-  for (int i = 0; i < monster_count; ++i) {
-    auto [mx, my] = random_free_tile(level.map, occupied);
-    occupied.push_back({mx, my});
+  if (!available_monsters.empty()) {
+    for (int i = 0; i < monster_count; ++i) {
+      auto [mx, my] = random_free_tile(level.map, occupied);
+      occupied.push_back({mx, my});
 
-    int table_index =
-        available_monsters[static_cast<size_t>(random_int(0, static_cast<int>(available_monsters.size()) - 1))];
-    level.monsters.push_back(spawn_monster(table_index, mx, my));
+      int table_index =
+          available_monsters[static_cast<size_t>(random_int(0, static_cast<int>(available_monsters.size()) - 1))];
+      level.monsters.push_back(spawn_monster(table_index, mx, my));
+    }
   }
 
   // Bosses are placed on top of that count rather than drawn from it: one guaranteed
@@ -242,30 +252,39 @@ Level generate_level(int width, int height, bool has_stairs_up, int depth) {
     level.monsters.push_back(spawn_monster(table_index, bx, by));
   }
 
+  // Same empty-pool guard as the monster loop above, for each of the other three
+  // depth-gated tables.
   auto available_weapons = weapons_available_at_depth(depth);
-  for (int i = 0; i < NUM_ITEMS; ++i) {
-    auto [ix, iy] = random_free_tile(level.map, occupied);
-    occupied.push_back({ix, iy});
-    int table_index =
-        available_weapons[static_cast<size_t>(random_int(0, static_cast<int>(available_weapons.size()) - 1))];
-    level.items.push_back(GroundItem{ix, iy, kWeaponTable[static_cast<size_t>(table_index)]});
+  if (!available_weapons.empty()) {
+    for (int i = 0; i < NUM_ITEMS; ++i) {
+      auto [ix, iy] = random_free_tile(level.map, occupied);
+      occupied.push_back({ix, iy});
+      int table_index =
+          available_weapons[static_cast<size_t>(random_int(0, static_cast<int>(available_weapons.size()) - 1))];
+      level.items.push_back(GroundItem{ix, iy, kWeaponTable[static_cast<size_t>(table_index)]});
+    }
   }
 
   auto available_armor = armor_available_at_depth(depth);
-  for (int i = 0; i < NUM_ARMOR; ++i) {
-    auto [ax, ay] = random_free_tile(level.map, occupied);
-    occupied.push_back({ax, ay});
-    int table_index = available_armor[static_cast<size_t>(random_int(0, static_cast<int>(available_armor.size()) - 1))];
-    level.armor_items.push_back(GroundArmor{ax, ay, kArmorTable[static_cast<size_t>(table_index)]});
+  if (!available_armor.empty()) {
+    for (int i = 0; i < NUM_ARMOR; ++i) {
+      auto [ax, ay] = random_free_tile(level.map, occupied);
+      occupied.push_back({ax, ay});
+      int table_index =
+          available_armor[static_cast<size_t>(random_int(0, static_cast<int>(available_armor.size()) - 1))];
+      level.armor_items.push_back(GroundArmor{ax, ay, kArmorTable[static_cast<size_t>(table_index)]});
+    }
   }
 
   auto available_potions = potions_available_at_depth(depth);
-  for (int i = 0; i < NUM_POTIONS; ++i) {
-    auto [px, py] = random_free_tile(level.map, occupied);
-    occupied.push_back({px, py});
-    int table_index =
-        available_potions[static_cast<size_t>(random_int(0, static_cast<int>(available_potions.size()) - 1))];
-    level.potions.push_back(GroundPotion{px, py, kPotionTable[static_cast<size_t>(table_index)]});
+  if (!available_potions.empty()) {
+    for (int i = 0; i < NUM_POTIONS; ++i) {
+      auto [px, py] = random_free_tile(level.map, occupied);
+      occupied.push_back({px, py});
+      int table_index =
+          available_potions[static_cast<size_t>(random_int(0, static_cast<int>(available_potions.size()) - 1))];
+      level.potions.push_back(GroundPotion{px, py, kPotionTable[static_cast<size_t>(table_index)]});
+    }
   }
 
   return level;

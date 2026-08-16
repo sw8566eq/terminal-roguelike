@@ -207,9 +207,16 @@ void on_actor_killed(GameState& gs, Actor& victim, bool killed_by_player_side,
   drop_actor_gear(gs.level(), victim);
 
   // A slain monster may leave a body behind, for a Summoner to raise later. Only real
-  // monsters do: the check on monster_template_index also excludes minions, which come
-  // from kMinionTable and whose "death" is often just a summon timing out.
-  if (victim.monster_template_index >= 0) {
+  // *hostile* monsters do — the explicit allegiance check is what actually excludes
+  // minions, both kinds of them: a conjured one (Imp/Demon) already fails the
+  // monster_template_index >= 0 check below since it comes from kMinionTable, but a
+  // *raised* one (spawn_reanimated()) is built via spawn_monster() and keeps a real
+  // monster_template_index pointing at the species it was raised from — without this
+  // check, a raised Orc dying in combat (as opposed to its duration simply running out,
+  // which never reaches on_actor_killed() at all) could leave a fresh Orc corpse of its
+  // own, letting a Summoner re-raise the same "life" indefinitely instead of it staying
+  // the borrowed time kRaisedMinionTurns is supposed to be.
+  if (victim.allegiance != Allegiance::Player && victim.monster_template_index >= 0) {
     const MonsterTemplate& tmpl = kMonsterTable[static_cast<size_t>(victim.monster_template_index)];
     // Two independent exclusions. `is_boss` is automatic and always wins: a boss is the
     // hardest thing on its floor by construction, so handing its stat line back as a

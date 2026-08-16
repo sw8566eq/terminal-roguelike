@@ -115,7 +115,8 @@ else) skips the start menu and drops straight into play. `--start-dead`
 forces up the death screen against a placeholder cause, and
 `--screenshot=<path>` renders one frame and saves it, both mainly for
 capturing reference images headlessly (`SDL_VIDEODRIVER=offscreen`) without
-a real display.
+a real display. `--pause-ai` freezes monster/minion AI every turn, for
+composing a live in-window screenshot without anything wandering off mid-shot.
 
 ## Project layout
 

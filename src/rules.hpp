@@ -74,6 +74,15 @@ constexpr int kAiDrinkHealBelowPercent = 45;
 // melee reach so it drinks as you close rather than after you're already hitting it.
 constexpr int kAiBuffPotionRange = 4;
 
+// How far (Chebyshev tiles, no line-of-sight requirement — a shout carries around a
+// corner even though a shot or a glance doesn't) a monster's cry of alarm reaches other
+// living hostiles of the exact same species when it spots the player — see the pack-alert
+// step in run_hostile_ai() (turn.cpp). Same-species only, so one Rat noticing you doesn't
+// summon a Troll from across the map; this is what turns a knot of monsters around a
+// corner into a pack that turns to meet you together, instead of peeling off one at a
+// time as each happens to round the corner on its own.
+constexpr int kPackAlertRadius = 6;
+
 // Percent chance a slain monster leaves a corpse behind (see Corpse in level.hpp and
 // on_actor_killed()). A stated default: often enough that a necromancer can plan around
 // finding one, rare enough that a cleared floor isn't carpeted in them.

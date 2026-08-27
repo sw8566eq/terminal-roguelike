@@ -6,8 +6,8 @@
 #include "actors.hpp"
 #include "content.hpp"
 #include "projectile.hpp"
+#include "render_internal.hpp"
 #include "rules.hpp"
-#include "run_history.hpp"
 #include "spells.hpp"
 
 // Darkens a color for the "remembered, but not currently visible" rendering tier.
@@ -84,389 +84,21 @@ const Actor& targeting_caster(const GameState& gs) {
   return idx < 0 ? gs.player : gs.level().monsters[static_cast<size_t>(idx)];
 }
 
-void render_weapon_menu(GameState& gs, tcod::Console& console) {
-  tcod::print(console, {0, 0}, "Weapons - press a letter to equip, Esc to close", tcod::ColorRGB{255, 255, 255},
-              std::nullopt);
-  tcod::print(console, {0, 1}, "Equipped: " + gs.player.weapon.name + " (" + describe_weapon(gs.player.weapon) + ")",
-              tcod::ColorRGB{200, 200, 100}, std::nullopt);
 
-  // Fists is always slot 'a', so you can always bail back to unarmed; carried
-  // weapons fill 'b' onward.
-  std::string fists_line = "a) Fists (" + describe_weapon(kFists) + ")";
-  if (gs.player.weapon.is_intrinsic) fists_line += " [equipped]";
-  tcod::print(console, {0, 3}, fists_line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
 
-  for (size_t i = 0; i < gs.player.weapons.size(); ++i) {
-    std::string line = std::string(1, static_cast<char>('b' + i)) + ") " + gs.player.weapons[i].name + " (" +
-                        describe_weapon(gs.player.weapons[i]) + ")";
-    tcod::print(console, {0, 4 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
-  }
-}
 
-void render_armor_menu(GameState& gs, tcod::Console& console) {
-  tcod::print(console, {0, 0}, "Armor - press a letter to equip, Esc to close", tcod::ColorRGB{255, 255, 255},
-              std::nullopt);
-  tcod::print(console, {0, 1}, "Equipped: " + gs.player.armor.name + " (" + describe_armor(gs.player.armor) + ")",
-              tcod::ColorRGB{200, 200, 100}, std::nullopt);
 
-  // "Nothing" is always slot 'a', so you can always bail back to unarmored; carried
-  // armor fills 'b' onward.
-  std::string none_line = "a) " + kNoArmor.name + " (" + describe_armor(kNoArmor) + ")";
-  if (gs.player.armor.is_intrinsic) none_line += " [equipped]";
-  tcod::print(console, {0, 3}, none_line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
 
-  for (size_t i = 0; i < gs.player.armors.size(); ++i) {
-    std::string line = std::string(1, static_cast<char>('b' + i)) + ") " + gs.player.armors[i].name + " (" +
-                        describe_armor(gs.player.armors[i]) + ")";
-    tcod::print(console, {0, 4 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
-  }
-}
 
-void render_potion_menu(GameState& gs, tcod::Console& console) {
-  tcod::print(console, {0, 0}, "Potions - press a letter to drink, Esc to close", tcod::ColorRGB{255, 255, 255},
-              std::nullopt);
 
-  if (gs.player.potions.empty()) {
-    tcod::print(console, {0, 2}, "(no potions carried)", tcod::ColorRGB{120, 120, 120}, std::nullopt);
-  }
-  for (size_t i = 0; i < gs.player.potions.size(); ++i) {
-    std::string line = std::string(1, static_cast<char>('a' + i)) + ") " + gs.player.potions[i].name + " (" +
-                        describe_potion(gs.player.potions[i]) + ")";
-    tcod::print(console, {0, 2 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
-  }
-}
 
-void render_spell_menu(GameState& gs, tcod::Console& console) {
-  Level& level = gs.level();
-  tcod::print(console, {0, 0}, "Spells - press a letter to cast, Esc to close", tcod::ColorRGB{255, 255, 255},
-              std::nullopt);
 
-  auto known = known_spell_indices(gs.player.intelligence, gs.player.chosen_school);
-  if (known.empty()) {
-    tcod::print(console, {0, 2}, "(no spells known yet)", tcod::ColorRGB{120, 120, 120}, std::nullopt);
-  }
-  for (size_t i = 0; i < known.size(); ++i) {
-    const Spell& s = kSpellTable[static_cast<size_t>(known[i])];
-    bool is_active = gs.active_toggle_spell == known[i];
-    std::string line;
-    bool at_minion_cap = false;
-    if (s.is_toggle) {
-      line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (" +
-             std::to_string(s.tick_damage) + " dmg/turn in " + std::to_string(2 * s.aoe_radius + 1) + "x" +
-             std::to_string(2 * s.aoe_radius + 1) + ", " + std::to_string(s.tick_mana_cost) + " MP/turn) - " +
-             std::to_string(s.mana_cost) + " MP to toggle" + (is_active ? " [ACTIVE]" : "");
-    } else if (s.is_summon) {
-      const MinionTemplate& tmpl = kMinionTable[static_cast<size_t>(s.summon_template_index)];
-      std::string duration_str =
-          tmpl.duration_turns > 0 ? std::to_string(tmpl.duration_turns) + " turns" : "permanent";
-      at_minion_cap = s.minion_cap >= 0 && count_minions_named(level.monsters, tmpl.name) >= s.minion_cap;
-      line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (summons a " + tmpl.name + ", " +
-             duration_str + ") - " + std::to_string(s.mana_cost) + " MP" + (at_minion_cap ? " [AT CAP]" : "");
-    } else if (s.is_raise) {
-      at_minion_cap = s.minion_cap >= 0 && count_raised_minions(level.monsters) >= s.minion_cap;
-      line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (raise a corpse as a minion) - " +
-             std::to_string(s.mana_cost) + " MP" + (at_minion_cap ? " [AT CAP]" : "");
-    } else if (s.is_melee_buff) {
-      line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (+" + std::to_string(s.buff_amount) +
-             " melee damage, " + std::to_string(s.buff_turns) + " turns) - " + std::to_string(s.mana_cost) +
-             " MP";
-    } else if (s.is_armor_buff) {
-      line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (+" + std::to_string(s.buff_amount) +
-             " armor, " + std::to_string(s.buff_turns) + " turns) - " + std::to_string(s.mana_cost) + " MP";
-    } else if (s.is_haste_buff) {
-      line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (+" + std::to_string(s.buff_amount) +
-             " action/turn, " + std::to_string(s.buff_turns) + " turns) - " + std::to_string(s.mana_cost) + " MP";
-    } else if (s.is_swap) {
-      line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (swap places with a minion) - " +
-             std::to_string(s.mana_cost) + " MP";
-    } else {
-      line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (" + std::to_string(s.dice_count) +
-             "d" + std::to_string(s.dice_sides) + "+INT/3) - " + std::to_string(s.mana_cost) + " MP";
-    }
-    // Dimmed red instead of the usual grey once you can't actually afford it — a
-    // currently-active toggle is always "affordable" to select again (turning it
-    // off is always free) so it doesn't get the red treatment.
-    bool affordable = is_active || (gs.player.mana >= s.mana_cost && !at_minion_cap);
-    tcod::print(console, {0, 2 + static_cast<int>(i)}, line,
-                affordable ? tcod::ColorRGB{200, 200, 200} : tcod::ColorRGB{150, 80, 80}, std::nullopt);
-  }
-}
 
-// One line per item on the player's tile, with a checkbox. Parallel to
-// gs.pickup_selected by index — see ground_slots_at(), whose ordering is what makes that
-// safe. Describing an item reuses the same describe_* helpers the Drop screen uses.
-void render_pickup_screen(GameState& gs, tcod::Console& console) {
-  const Level& level = gs.level();
-  auto slots = ground_slots_at(level, gs.player.x, gs.player.y);
 
-  tcod::print(console, {0, 0}, "Pick up - letters to toggle, Enter to take, Esc to cancel",
-              tcod::ColorRGB{255, 255, 255}, std::nullopt);
 
-  int selected = 0;
-  for (size_t i = 0; i < slots.size(); ++i) {
-    bool on = i < gs.pickup_selected.size() && gs.pickup_selected[i];
-    if (on) ++selected;
-    char letter = static_cast<char>('a' + i);
-    std::string name, detail;
-    if (slots[i].kind == ItemKind::Weapon) {
-      const Weapon& w = level.items[static_cast<size_t>(slots[i].index)].weapon;
-      name = w.name;
-      detail = describe_weapon(w);
-    } else if (slots[i].kind == ItemKind::Armor) {
-      const Armor& a = level.armor_items[static_cast<size_t>(slots[i].index)].armor;
-      name = a.name;
-      detail = describe_armor(a);
-    } else {
-      const Potion& p = level.potions[static_cast<size_t>(slots[i].index)].potion;
-      name = p.name;
-      detail = describe_potion(p);
-    }
-    std::string line = std::string("  ") + letter + ") [" + (on ? "x" : " ") + "] " + name + " (" + detail + ")";
-    tcod::print(console, {0, 2 + static_cast<int>(i)}, line,
-                on ? tcod::ColorRGB{220, 220, 220} : tcod::ColorRGB{130, 130, 130}, std::nullopt);
-  }
 
-  int footer = 3 + static_cast<int>(slots.size());
-  tcod::print(console, {0, footer},
-              "  Enter) take " + std::to_string(selected) + " selected      Shift+A) select all / none",
-              tcod::ColorRGB{150, 150, 150}, std::nullopt);
-}
 
-// One focused minion's abilities. Deliberately the same lettered shape as the player's
-// spell menu, since it's the same gesture ('z') aimed at a different caster — the only
-// extra column is whose mana pays.
-void render_minion_ability_menu(GameState& gs, tcod::Console& console) {
-  const Level& level = gs.level();
-  int idx = actor_index_by_id(level.monsters, gs.focused_minion_id);
-  if (idx < 0) {
-    tcod::print(console, {0, 0}, "That minion is gone. Esc to close.", tcod::ColorRGB{255, 255, 255}, std::nullopt);
-    return;
-  }
-  const Actor& minion = level.monsters[static_cast<size_t>(idx)];
 
-  tcod::print(console, {0, 0}, minion.name + " abilities - press a letter to use, Esc to go back",
-              tcod::ColorRGB{255, 255, 255}, std::nullopt);
-  tcod::print(console, {0, 1},
-              "Mana: " + std::to_string(minion.mana) + "/" + std::to_string(minion.max_mana) +
-                  (minion.mana_regen_turns == 0 ? "  (does not regenerate)" : ""),
-              tcod::ColorRGB{150, 200, 255}, std::nullopt);
-
-  if (minion.abilities.empty()) {
-    tcod::print(console, {0, 3}, "(none)", tcod::ColorRGB{120, 120, 120}, std::nullopt);
-    return;
-  }
-  for (size_t i = 0; i < minion.abilities.size(); ++i) {
-    const Spell& s = kSpellTable[static_cast<size_t>(minion.abilities[i])];
-    bool affordable = minion.mana >= s.mana_cost;
-    std::string line = std::string(1, static_cast<char>('a' + i)) + ") " + s.name + " (" +
-                       std::to_string(s.mana_cost) + " MP, range " + std::to_string(s.range) + ")";
-    if (s.is_debuff) {
-      line += "  " + std::to_string(s.buff_amount) + " melee damage to the target for " +
-              std::to_string(s.buff_turns) + " turns";
-    }
-    if (!affordable) line += "  [not enough mana]";
-    tcod::print(console, {0, 3 + static_cast<int>(i)}, line,
-                affordable ? tcod::ColorRGB{200, 200, 200} : tcod::ColorRGB{120, 120, 120}, std::nullopt);
-  }
-}
-
-void render_drop_screen(GameState& gs, tcod::Console& console) {
-  tcod::print(console, {0, 0}, "Drop - press a letter to drop, Esc to cancel", tcod::ColorRGB{255, 255, 255},
-              std::nullopt);
-
-  auto slots = drop_slots(gs.player);
-  if (slots.empty()) {
-    tcod::print(console, {0, 2}, "(nothing to drop)", tcod::ColorRGB{120, 120, 120}, std::nullopt);
-  }
-  for (size_t i = 0; i < slots.size(); ++i) {
-    char letter = static_cast<char>('a' + i);
-    std::string line;
-    if (slots[i].kind == ItemKind::Weapon) {
-      const Weapon& w = (slots[i].index == -1) ? gs.player.weapon : gs.player.weapons[static_cast<size_t>(slots[i].index)];
-      line = std::string(1, letter) + ") " + w.name + " (" + describe_weapon(w) + ")";
-      if (slots[i].index == -1) line += " [equipped]";
-    } else if (slots[i].kind == ItemKind::Armor) {
-      const Armor& a = (slots[i].index == -1) ? gs.player.armor : gs.player.armors[static_cast<size_t>(slots[i].index)];
-      line = std::string(1, letter) + ") " + a.name + " (" + describe_armor(a) + ")";
-      if (slots[i].index == -1) line += " [equipped]";
-    } else {
-      const Potion& p = gs.player.potions[static_cast<size_t>(slots[i].index)];
-      line = std::string(1, letter) + ") " + p.name + " (" + describe_potion(p) + ")";
-    }
-    tcod::print(console, {0, 2 + static_cast<int>(i)}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
-  }
-}
-
-void render_start_menu(GameState& gs, tcod::Console& console) {
-  tcod::print(console, {0, 0}, "TERMINAL ROGUELIKE", tcod::ColorRGB{255, 210, 60}, std::nullopt);
-
-  static const std::vector<std::string> kOptions = {"Start Game", "Set Seed", "Run History", "Exit"};
-  for (size_t i = 0; i < kOptions.size(); ++i) {
-    bool selected = static_cast<int>(i) == gs.start_menu_selection;
-    std::string line =
-        (selected ? "> " : "  ") + std::to_string(i + 1) + ") " + kOptions[i];
-    if (i == 1) line += "  (current: " + gs.current_seed_display + ")";
-    tcod::print(console, {0, 2 + static_cast<int>(i)}, line,
-                selected ? tcod::ColorRGB{255, 255, 255} : tcod::ColorRGB{180, 180, 180}, std::nullopt);
-  }
-  tcod::print(console, {0, 2 + static_cast<int>(kOptions.size()) + 1},
-              "Up/Down or j/k to choose, Enter to select, or press 1-4. Esc quits.",
-              tcod::ColorRGB{140, 140, 140}, std::nullopt);
-}
-
-void render_set_seed_screen(GameState& gs, tcod::Console& console) {
-  tcod::print(console, {0, 0}, "Set Seed", tcod::ColorRGB{255, 255, 255}, std::nullopt);
-  tcod::print(console, {0, 2}, "Type digits, Enter to confirm, Backspace to edit, Esc to cancel.",
-              tcod::ColorRGB{200, 200, 200}, std::nullopt);
-  std::string shown = gs.seed_input.empty() ? "_" : gs.seed_input;
-  tcod::print(console, {0, 4}, "Seed: " + shown, tcod::ColorRGB{255, 210, 60}, std::nullopt);
-}
-
-void render_run_history_screen(tcod::Console& console) {
-  tcod::print(console, {0, 0}, "Run History - Esc to go back", tcod::ColorRGB{255, 255, 255}, std::nullopt);
-
-  std::vector<RunHistoryEntry> history = load_run_history();
-  if (history.empty()) {
-    tcod::print(console, {0, 2}, "No runs recorded yet.", tcod::ColorRGB{180, 180, 180}, std::nullopt);
-    return;
-  }
-
-  // Stored oldest-first (append order); shown most-recent-first, capped to what the
-  // console can actually fit.
-  int visible_rows = SCREEN_HEIGHT - 3;
-  int shown = std::min(static_cast<int>(history.size()), visible_rows);
-  for (int row = 0; row < shown; ++row) {
-    const RunHistoryEntry& entry = history[history.size() - 1 - static_cast<size_t>(row)];
-    std::string outcome = entry.won ? "WON " : "DIED";
-    tcod::ColorRGB color = entry.won ? tcod::ColorRGB{255, 210, 60} : tcod::ColorRGB{255, 80, 80};
-    std::string line = outcome + " - Floor " + std::to_string(entry.floor_reached) + ", Level " +
-                        std::to_string(entry.player_level) + ", seed " + entry.seed_display + " - " + entry.cause;
-    tcod::print(console, {0, 2 + row}, line, color, std::nullopt);
-  }
-  if (static_cast<int>(history.size()) > shown) {
-    tcod::print(console, {0, 2 + shown},
-                "(" + std::to_string(history.size() - static_cast<size_t>(shown)) + " more not shown)",
-                tcod::ColorRGB{140, 140, 140}, std::nullopt);
-  }
-}
-
-void render_death_screen(GameState& gs, tcod::Console& console) {
-  tcod::print(console, {0, 0}, "You died, slain by the " + gs.death_cause + ".", tcod::ColorRGB{255, 80, 80},
-              std::nullopt);
-  tcod::print(console, {0, 2}, "Press any key to start a new game, or Esc to quit.", tcod::ColorRGB{200, 200, 200},
-              std::nullopt);
-}
-
-void render_win_screen(GameState& gs, tcod::Console& console) {
-  tcod::print(console, {0, 0}, "You have slain the " + gs.win_cause + " and conquered the dungeon!",
-              tcod::ColorRGB{255, 210, 60}, std::nullopt);
-  tcod::print(console, {0, 2}, "Press any key to start a new game, or Esc to quit.", tcod::ColorRGB{200, 200, 200},
-              std::nullopt);
-}
-
-void render_message_log(GameState& gs, tcod::Console& console) {
-  tcod::print(console, {0, 0}, "Message Log - j/k or arrows to scroll, ']' or Esc to close",
-              tcod::ColorRGB{255, 255, 255}, std::nullopt);
-
-  int visible_rows = SCREEN_HEIGHT - 1;
-  int total = static_cast<int>(gs.message_log.size());
-  int max_scroll = std::max(0, total - visible_rows);
-  gs.log_scroll = std::min(gs.log_scroll, max_scroll);  // clamp in case the log shrank (e.g. after a restart)
-
-  // Oldest at top, newest at bottom, like a terminal scrollback — log_scroll is how
-  // many lines scrolled up from the bottom (0 = showing the most recent messages).
-  int end_index = total - gs.log_scroll;
-  int start_index = std::max(0, end_index - visible_rows);
-  for (int i = start_index; i < end_index; ++i) {
-    int row = 1 + (i - start_index);
-    tcod::print(console, {0, row}, gs.message_log[static_cast<size_t>(i)], tcod::ColorRGB{200, 200, 200},
-                std::nullopt);
-  }
-}
-
-// Static text; reads no game state, hence no GameState parameter.
-void render_help(tcod::Console& console) {
-  tcod::print(console, {0, 0}, "Controls - '?' or Esc to close", tcod::ColorRGB{255, 255, 255}, std::nullopt);
-  static const std::vector<std::string> kHelpLines = {
-      "",
-      "Arrows / hjkl / yubn (diagonals)  Move; walks into an enemy to attack, or",
-      "                                  swaps places with your own minion",
-      "Shift + a movement key            Travel that way until a hostile comes into",
-      "                                  view or you hit something",
-      ".                                 Wait a turn",
-      ">  <                              Stairs down/up (must be standing on them)",
-      "g                                 Pick up (menu if several items here)",
-      "w  a  q                           Weapon / Armor / Potion menu (equip or drink)",
-      "d                                 Drop a weapon, armor, or potion",
-      "f                                 Fire the equipped ranged weapon (move to target,",
-      "                                  Enter to loose it, Esc to cancel)",
-      "z                                 Cast a known spell — or, while focused on a single",
-      "                                  minion, open that minion's own abilities instead",
-      "m                                 Command a minion or all of them (roster menu; Shift+A",
-      "                                  there jumps straight to All)",
-      "o  p                              Cycle command focus to the next/previous minion",
-      "Shift+P                           Return focus to yourself",
-      "f  g  Enter                       While focused on a minion instead: Follow / go",
-      "                                  Aggressive / confirm Attack or Hold (sidebar shows",
-      "                                  each minion's order as [F]ollow / [G]o aggressive /",
-      "                                  [H]old / [A]ttack)",
-      "x                                 Look around (move the cursor, side panel shows",
-      "                                  details); x or Esc to close",
-      "]                                 Message log (full scrollback)",
-      "Shift+S  Shift+D  Shift+I         On level up: spend the point on STR/DEX/INT",
-      "Shift+C  Shift+U  Shift+M         At Intelligence 4: choose Caster, Summoner, or",
-      "                                  Combat Mage (once, permanent)",
-      "?                                 This screen",
-      "Esc                               Quit (or close the current menu)",
-  };
-  for (size_t i = 0; i < kHelpLines.size(); ++i) {
-    tcod::print(console, {0, 1 + static_cast<int>(i)}, kHelpLines[i], tcod::ColorRGB{200, 200, 200},
-                std::nullopt);
-  }
-}
-
-void render_minion_roster(GameState& gs, tcod::Console& console) {
-  Level& level = gs.level();
-  tcod::print(console, {0, 0}, "Command a minion - press a letter, Esc to close", tcod::ColorRGB{255, 255, 255},
-              std::nullopt);
-  // "All" is a fixed hotkey (Shift+A) pinned above the roster rather than a letter
-  // tacked onto the end of it — a trailing letter shifts around as the pack's size
-  // changes (and got long enough with a real attack target named to run off the
-  // sidebar in the equivalent per-minion list, see minion_order_flag() above), so
-  // anchoring it first keeps the ordering predictable regardless of pack size.
-  tcod::print(console, {0, 2}, "Shift+A) All minions at once", tcod::ColorRGB{200, 200, 200}, std::nullopt);
-  // Each living minion then gets its own letter, in level.monsters order (stable
-  // turn to turn barring a death).
-  int row = 4;
-  char letter = 'a';
-  for (const auto& m : level.monsters) {
-    if (m.allegiance != Allegiance::Player || !m.is_alive()) continue;
-    std::string line =
-        std::string(1, letter) + ") " + m.name + " (" + describe_minion_order(m, level.monsters) + ")";
-    tcod::print(console, {0, row}, line, tcod::ColorRGB{200, 200, 200}, std::nullopt);
-    ++row;
-    ++letter;
-  }
-}
-
-// Static text; reads no game state, hence no GameState parameter.
-void render_school_choice(tcod::Console& console) {
-  // Full-screen forced prompt, same shape as MinionRoster above rather than
-  // LevelUp's one-line CONTEXT_ROW style — this needs room to explain all three
-  // paths, since it's a permanent, run-defining choice rather than a quick stat bump.
-  tcod::print(console, {0, 0},
-              "You have grown wise enough to specialize your magic. Choose a path - this choice is permanent.",
-              tcod::ColorRGB{255, 255, 255}, std::nullopt);
-  tcod::print(console, {0, 2},
-              "Shift+C) Caster      -- offensive magic: Fireball, Sandstorm, Lightning Bolt",
-              tcod::ColorRGB{200, 200, 200}, std::nullopt);
-  tcod::print(console, {0, 3},
-              "Shift+U) Summoner    -- minions: Summon Imp, Place Swap, Raise Dead, Summon Demon",
-              tcod::ColorRGB{200, 200, 200}, std::nullopt);
-  tcod::print(console, {0, 4},
-              "Shift+M) Combat Mage -- self-buffs: Battle Fury, Iron Skin, Haste",
-              tcod::ColorRGB{200, 200, 200}, std::nullopt);
-}
 
 void render_context_row(GameState& gs, tcod::Console& console) {
   Level& level = gs.level();
@@ -748,16 +380,35 @@ void render_sidebar(GameState& gs, tcod::Console& console) {
 }
 
 void render_log_panel(GameState& gs, tcod::Console& console) {
-  // --- Message log panel: always exactly the last MESSAGE_ROWS distinct
-  // messages, oldest on top, one per line — never wrapped or combined, even if
-  // several things happened on the same turn. (']' opens full scrollback.)
+  // --- Message log panel: the last MESSAGE_ROWS *rows* worth of history, oldest on
+  // top, wrapped rather than clipped if a message is too long to fit the panel's width
+  // — distinct messages are still never combined, even if several things happened on
+  // the same turn. (']' opens full scrollback.) A message that fits in one row still
+  // takes exactly one row, so this is a no-op for the common case; it only matters once
+  // a message is longer than the panel is wide.
   draw_panel(console, LOG_PANEL_X, LOG_PANEL_Y, LOG_PANEL_W, LOG_PANEL_H, "Log");
-  int log_total = static_cast<int>(gs.message_log.size());
-  for (int row = 0; row < MESSAGE_ROWS; ++row) {
-    int idx = log_total - MESSAGE_ROWS + row;
-    if (idx < 0) continue;
-    tcod::print(console, {LOG_PANEL_X + 1, LOG_PANEL_Y + 1 + row}, gs.message_log[static_cast<size_t>(idx)],
-                tcod::ColorRGB{255, 255, 100}, std::nullopt);
+  int width = LOG_PANEL_W - 2;  // interior width, matching the border draw_panel() just drew
+  int total = static_cast<int>(gs.message_log.size());
+
+  // Walk backward from the newest message, wrapped-height first, until adding the next
+  // one would overflow the MESSAGE_ROWS budget — picks which messages to show (favoring
+  // the most recent, same as the old one-message-per-row version), not how to draw them.
+  int first_shown = total;
+  int used = 0;
+  while (first_shown > 0) {
+    int h = tcod::get_height_rect(width, gs.message_log[static_cast<size_t>(first_shown - 1)]);
+    if (used + h > MESSAGE_ROWS) break;
+    used += h;
+    --first_shown;
+  }
+  if (first_shown == total && total > 0) first_shown = total - 1;  // always show at least one message
+
+  int y = LOG_PANEL_Y + 1;
+  int bottom = LOG_PANEL_Y + LOG_PANEL_H - 2;  // last interior row, before the border
+  for (int i = first_shown; i < total && y <= bottom; ++i) {
+    int remaining = bottom - y + 1;
+    y += tcod::print_rect(console, {LOG_PANEL_X + 1, y, width, remaining}, gs.message_log[static_cast<size_t>(i)],
+                           tcod::ColorRGB{255, 255, 100}, std::nullopt);
   }
 }
 
@@ -1131,7 +782,7 @@ void render_frame(GameState& gs, tcod::Console& console) {
   switch (gs.mode) {
     case Mode::StartMenu:    render_start_menu(gs, console);      return;
     case Mode::SetSeed:      render_set_seed_screen(gs, console); return;
-    case Mode::RunHistory:   render_run_history_screen(console);  return;
+    case Mode::RunHistory:   render_run_history_screen(gs, console);  return;
     case Mode::WeaponMenu:   render_weapon_menu(gs, console);   return;
     case Mode::ArmorMenu:    render_armor_menu(gs, console);    return;
     case Mode::PotionMenu:   render_potion_menu(gs, console);   return;

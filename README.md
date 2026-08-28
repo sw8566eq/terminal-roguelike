@@ -2,12 +2,11 @@
 
 A turn-based, permadeath, ASCII fantasy dungeon crawler, written in modern
 C++17 using [libtcod](https://github.com/libtcod/libtcod) — built around
-**granular control over minions**. Become a Summoner to see unique features.
-Command each member individually: hold a chokepoint, focus a specific
-target, trigger one minion's own ability, or give a single pack
-order. Per-minion command (`o`/`p` to cycle between
-them, `m` for the full roster) is the mechanic the rest of the game is
-built for.
+**granular control over minions**. Become a Summoner, then command each
+member of your pack individually: hold a chokepoint, focus a specific
+target, trigger one minion's own ability, or give a single pack order to
+everyone at once. Per-minion command (`o`/`p` to cycle between them, `m`
+for the full roster) is the mechanic the rest of the game is built for.
 
 ## About this project
 
@@ -86,8 +85,9 @@ cmake --build build
 ./build/bin/roguelike
 ```
 
-After the first configure, steps 3–4 are all you need when you change code.
-If you add new .cpp files, re-run step 2 so CMake picks them up.
+After the first configure, steps 3–4 are all you need when you change code —
+that includes adding new `.cpp`/`.hpp` files under `src/`, which `cmake --build`
+picks up on its own (no need to re-run step 2).
 
 If you already have the folder locally without having cloned it (e.g. you
 downloaded it some other way), run `git submodule update --init` instead of
@@ -100,21 +100,28 @@ full reference.
 
 ## Debug flags
 
-Not for normal play: `--floor=N` jumps straight to floor N; `--level=N`
-starts at player level N; `--reveal` shows the whole current floor regardless
-of exploration/FOV; `--dump-loot` prints everything on the `--floor=N` floor
-and exits without opening a window; `--fast-monsters` gives every hostile
-monster a second action per turn; `--give=<name>[,...]` adds items to your
-inventory at startup; `--seed=N` pins the RNG for a reproducible run.
+Not for normal play — every flag below skips the start menu and drops
+straight into play (as does `--skip-menu`, which does nothing else):
+
+- `--seed=N` — pins the RNG for a reproducible run
+- `--floor=N` — jumps straight to floor N
+- `--level=N` — starts at player level N
+- `--reveal` — shows the whole current floor regardless of exploration/FOV
+- `--dump-loot` — prints everything on the `--floor=N` floor and exits
+  without opening a window
+- `--fast-monsters` — gives every hostile monster a second action per turn
+- `--give=<name>[,...]` — adds items to your inventory at startup
+- `--start-dead` — forces up the death screen against a placeholder cause
+  (for screenshotting the death screen without dying for real)
+- `--screenshot=<path>` — renders exactly one frame, saves it, and exits
+  before the window ever opens — pairs with `SDL_VIDEODRIVER=offscreen` to
+  capture reference images with no real display at all
+- `--pause-ai` — freezes monster/minion AI every turn, for composing a live
+  in-window screenshot without anything wandering off mid-shot
+
 `--seed=N` + `--dump-loot`, diffed across floors, is this project's one
-generation/content regression check (there's also a small unit-test suite for
-the combat/stat math — see the tests/ directory). Any of the above (or `--skip-menu`, which does nothing
-else) skips the start menu and drops straight into play. `--start-dead`
-forces up the death screen against a placeholder cause, and
-`--screenshot=<path>` renders one frame and saves it, both mainly for
-capturing reference images headlessly (`SDL_VIDEODRIVER=offscreen`) without
-a real display. `--pause-ai` freezes monster/minion AI every turn, for
-composing a live in-window screenshot without anything wandering off mid-shot.
+generation/content regression check; there's also a small unit-test suite
+for the combat/stat math (see the `tests/` directory).
 
 ## Project layout
 

@@ -2,15 +2,12 @@
 
 A turn-based, permadeath, ASCII fantasy dungeon crawler, written in modern
 C++17 using [libtcod](https://github.com/libtcod/libtcod) — built around
-**granular control over minions**. Go the Summoner route and you're not
-following one pet around: raise or summon a whole pack — each minion type
-guards its own independent cap rather than sharing one pool, so summoning
-more Imps never crowds out room for a Demon or a raised corpse — then
-command each member individually — hold a chokepoint, focus a specific
-target, trigger one minion's own ability — or give the pack a single
-order at once. That per-minion command layer (`o`/`p` to cycle between
+**granular control over minions**. Become a Summoner to see unique features.
+Command each member individually: hold a chokepoint, focus a specific
+target, trigger one minion's own ability, or give a single pack
+order. Per-minion command (`o`/`p` to cycle between
 them, `m` for the full roster) is the mechanic the rest of the game is
-built around, not a bolted-on pet system.
+built for.
 
 ## About this project
 

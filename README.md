@@ -2,15 +2,12 @@
 
 A turn-based, permadeath, ASCII fantasy dungeon crawler, written in modern
 C++17 using [libtcod](https://github.com/libtcod/libtcod) — built around
-**granular control over minions**. Go the Summoner route and you're not
-following one pet around: raise or summon a whole pack — each minion type
-guards its own independent cap rather than sharing one pool, so summoning
-more Imps never crowds out room for a Demon or a raised corpse — then
-command each member individually — hold a chokepoint, focus a specific
-target, trigger one minion's own ability — or give the pack a single
-order at once. That per-minion command layer (`o`/`p` to cycle between
+**granular control over minions**. Become a Summoner to see unique features.
+Command each member individually: hold a chokepoint, focus a specific
+target, trigger one minion's own ability, or give a single pack
+order. Per-minion command (`o`/`p` to cycle between
 them, `m` for the full roster) is the mechanic the rest of the game is
-built around, not a bolted-on pet system.
+built for.
 
 ## About this project
 
@@ -110,7 +107,8 @@ and exits without opening a window; `--fast-monsters` gives every hostile
 monster a second action per turn; `--give=<name>[,...]` adds items to your
 inventory at startup; `--seed=N` pins the RNG for a reproducible run.
 `--seed=N` + `--dump-loot`, diffed across floors, is this project's one
-regression check. Any of the above (or `--skip-menu`, which does nothing
+generation/content regression check (there's also a small unit-test suite for
+the combat/stat math — see the tests/ directory). Any of the above (or `--skip-menu`, which does nothing
 else) skips the start menu and drops straight into play. `--start-dead`
 forces up the death screen against a placeholder cause, and
 `--screenshot=<path>` renders one frame and saves it, both mainly for
@@ -146,8 +144,12 @@ roguelike/
 │   │                        # the game
 │   ├── game.hpp/.cpp        # GameState and the operations on it
 │   ├── turn.hpp/.cpp        # what the world does between two player actions
-│   ├── render.hpp/.cpp      # screen layout and every function that draws
-│   └── input.hpp/.cpp       # one keyboard handler per mode
+│   ├── render*.cpp          # screen layout and every function that draws,
+│   │                        #   split by mode-group; render.hpp is the contract
+│   └── input*.cpp           # one keyboard handler per mode, same split;
+│                            #   input.hpp is the contract
+├── tests/
+│   └── rules_test.cpp   # unit tests for rules.hpp's pure math (own CMake target)
 └── vcpkg/               # (created by you) vendored package manager
 ```
 
@@ -177,11 +179,12 @@ Everything below is built and playable.
   Sandstorm, Lightning Bolt; Summoner: summons, Raise Dead, Place Swap; Combat
   Mage: Battle Fury, Iron Skin, Haste), shared mana pool, Haste-granted extra
   actions
-- **Monsters** — the same combat math as the player, A* chase AI, ranged
-  specialists (Goblin Slinger, Orc Archer), casters (Goblin Shaman, Orc
-  Wizard), and three bosses — Orc Warlord (floor 3), Troll Chieftain (floor
-  6), and the Dungeon Overlord, the win condition, in its own chamber on the
-  last floor
+- **Monsters** — the same combat math as the player, A* chase AI, same-species
+  pack alerts, ranged specialists (Goblin Slinger, Orc Archer) that fire real
+  projectiles, casters (Goblin Shaman, Orc Wizard), and four bosses — Orc
+  Warlord (floor 3), Troll Chieftain (floor 6), Orc Assassin (floor 9), and
+  the Dungeon Overlord, the win condition, in its own chamber on the last
+  floor
 - **Interface** — start menu with a persistent Run History, sectioned HUD
   (stats, buffs, enemies, minions), scrollback message log, look-around (`x`)
 
@@ -229,8 +232,10 @@ Three things stand out:
   treated as a scheduling change when it was really a semantic one. Nothing in
   the diff looked wrong; the deadlock was only visible from thinking about what
   the conditions now *meant*.
-- **Manual playtesting hid it.** The project has no automated tests, so every one
-  of these reached the user before anyone noticed. The build was clean and the
-  one regression check the project does have (`--seed` + `--dump-loot`) covers
-  world generation, which this code doesn't touch — so it passed, every time,
-  while the feature was broken.
+- **Manual playtesting hid it.** At the time, the project had no automated tests
+  at all, so every one of these reached the user before anyone noticed. The build
+  was clean and the one regression check the project had (`--seed` + `--dump-loot`)
+  covers world generation, which this code doesn't touch — so it passed, every
+  time, while the feature was broken. (A small unit-test suite exists now, but
+  only for combat/stat math — movement/travel logic like this is still nothing
+  but manual playtest, so the same class of bug could still slip through today.)

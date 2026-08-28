@@ -232,6 +232,22 @@ void run_hostile_ai(GameState& gs) {
       if (can_see_player) {
         monster.last_seen_player_x = gs.player.x;
         monster.last_seen_player_y = gs.player.y;
+
+        // Pack alert: plant the same last-seen memory in every other living hostile of
+        // the exact same species within kPackAlertRadius (rules.hpp) — they start
+        // chasing/closing in even without their own line of sight, the same as if
+        // they'd spotted the player themselves. Deliberately no "already alerted" flag:
+        // this just runs every turn a pack member has eyes on the player, which reads
+        // as the pack staying coordinated for as long as any one of them can see you,
+        // rather than a one-shot alarm.
+        for (auto& ally : level.monsters) {
+          if (&ally == &monster) continue;
+          if (ally.allegiance != Allegiance::Hostile || !ally.is_alive()) continue;
+          if (ally.monster_template_index != monster.monster_template_index) continue;
+          if (distance_between(monster, ally) > kPackAlertRadius) continue;
+          ally.last_seen_player_x = gs.player.x;
+          ally.last_seen_player_y = gs.player.y;
+        }
       }
 
       // Gear and consumables, decided before anything else this turn and using the same
@@ -325,6 +341,42 @@ void run_hostile_ai(GameState& gs) {
       int effective_range = monster.melee_engaged ? 1 : monster.weapon.attack_range;
       bool in_range = best_dist <= effective_range && best_dist > 0;
       if (in_range && line_clear(monster.x, monster.y, target->x, target->y, level.map)) {
+        if (monster.weapon.attack_range > 1) {
+          // A ranged weapon (Goblin Slinger's Rock, Orc Archer's Bow) fires a real
+          // Projectile through the same pipeline a monster's own spell already uses
+          // above, rather than resolving as an instant hit-scan right here. Built from
+          // the equipped Weapon exactly the way Mode::RangedAttack fires the player's
+          // own Bow (see the comment there): same struct, same dodge/damage
+          // resolution (resolve_projectile_hit() in advance_projectiles()), just
+          // sourced from a Weapon instead of a Spell — and it opens the door to a
+          // future slower ranged weapon actually being visible in flight, which a
+          // hit-scan resolve_attack() call could never be. Always "instant" for now,
+          // matching every fired shot in the game today (player's Bow included), and
+          // resolved this same turn by the load-bearing instant-only
+          // advance_projectiles() call right after this loop.
+          const Weapon& weapon = monster.weapon;
+          Projectile proj;
+          proj.path = trace_path(monster.x, monster.y, target->x, target->y);
+          proj.speed = kInstantSpellSpeed;
+          proj.dice_count = weapon.dice_count;
+          proj.dice_sides = weapon.dice_sides;
+          proj.hit_dice_count = weapon.hit_dice_count;
+          proj.hit_dice_sides = weapon.hit_dice_sides;
+          proj.prev_x = monster.x;
+          proj.prev_y = monster.y;
+          proj.bonus = weapon.bonus + damage_bonus_for(monster, weapon);
+          proj.accuracy_bonus = (monster.dexterity + monster.temp_dex_bonus) * kAccuracyPerDexPoint;
+          proj.name = weapon.name;
+          proj.glyph = '-';
+          proj.color = tcod::ColorRGB{200, 170, 100};
+          proj.owner_allegiance = monster.allegiance;
+          proj.owner_is_player = false;
+          proj.owner_name = monster.name;
+          level.projectiles.push_back(proj);
+          std::string wielder = monster.is_player ? "your " : "its ";  // same wielder idiom resolve_attack() uses
+          add_message(gs, actor_subject(monster) + actor_verb(monster, " fire") + " " + wielder + weapon.name + ".");
+          continue;
+        }
         resolve_attack(gs, monster, *target, monster.weapon);
         continue;
       }
@@ -388,14 +440,18 @@ void run_hostile_ai(GameState& gs) {
   }
 }
 
-  // Distance to the nearest living hostile, or -1 if there are none left on the floor.
+  // Distance to the nearest living, line_clear()'d hostile, or -1 if none qualifies.
   // Used to decide whether a minion should draw a melee weapon or pop a buff potion,
-  // the same two questions the hostile loop above asks about its own target.
+  // the same two questions the hostile loop above asks about its own target. The
+  // line_clear() filter matters: without it, a hostile one tile away *through a wall*
+  // could still drive a minion's weapon choice or trigger a buff potion, even though
+  // nothing the minion carries could actually reach it there.
 int nearest_hostile_distance(GameState& gs, const Actor& minion) {
   Level& level = gs.level();
     int best = -1;
     for (const auto& hostile : level.monsters) {
       if (hostile.allegiance != Allegiance::Hostile || !hostile.is_alive()) continue;
+      if (!line_clear(minion.x, minion.y, hostile.x, hostile.y, level.map)) continue;
       int dist = distance_between(minion, hostile);
       if (best < 0 || dist < best) best = dist;
     }
@@ -451,8 +507,21 @@ void run_minion_ai(GameState& gs) {
       // Same gear/consumable upkeep the hostile loop runs, through the same helpers —
       // a minion carrying a spare weapon or a potion uses it on exactly the same terms
       // a monster does.
+      //
+      // Weapon selection uses the minion's actual AttackTarget order, when it has one,
+      // rather than whatever hostile happens to be nearest — otherwise an adjacent Rat
+      // could make a minion under orders to shoot something across the room draw its
+      // melee weapon instead, even though the Rat isn't what it's fighting. Anything
+      // else (Follow/Hold/Aggressive, or a stale/dead AttackTarget id) falls back to the
+      // general "what's nearby" question nearest_hostile_distance() already answers,
+      // which is also what the potion trigger below always uses.
       int hostile_dist = nearest_hostile_distance(gs, minion);
-      if (hostile_dist >= 0) equip_best_weapon_for_range(minion, hostile_dist);
+      int weapon_dist = hostile_dist;
+      if (minion.order == MinionOrder::AttackTarget) {
+        int wti = actor_index_by_id(level.monsters, minion.attack_target_id);
+        if (wti >= 0) weapon_dist = distance_between(minion, level.monsters[static_cast<size_t>(wti)]);
+      }
+      if (weapon_dist >= 0) equip_best_weapon_for_range(minion, weapon_dist);
       if (try_actor_use_potion(gs, minion, /*enemy_near=*/hostile_dist >= 0 && hostile_dist <= kAiBuffPotionRange)) {
         continue;
       }

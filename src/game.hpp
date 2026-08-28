@@ -89,6 +89,10 @@ struct GameState {
   // screen), shown on the start menu and recorded into run_history.txt when a run ends.
   // "random" until one is actually set — see seed_rng() in rng.hpp.
   std::string current_seed_display = "random";
+  // Mode::RunHistory scroll offset, same "lines scrolled up from the bottom" idiom as
+  // log_scroll above — entries are shown newest-first, so 0 means showing the most
+  // recent runs. Reset to 0 whenever the screen is (re-)entered from the start menu.
+  int run_history_scroll = 0;
 
   int casting_spell_index = -1;  // which kSpellTable entry is being aimed, while Mode::Targeting
   // Who is casting it: -1 for the player, otherwise an Actor::id — a minion using one of

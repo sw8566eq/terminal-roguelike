@@ -241,6 +241,27 @@ const std::vector<MonsterTemplate> kMonsterTable = {
      /*evasion=*/4, /*dexterity=*/10, /*strength=*/5, /*min_depth=*/6, /*max_depth=*/6,
      /*armor=*/kArmorTable[2], /*extra_weapons=*/{}, /*potions=*/{},
      /*hp_regen_turns=*/100, /*extra_actions=*/0, /*is_boss=*/true},
+    // Third boss, and the one that finally claims extra_actions — the boss knob every
+    // earlier row's comment kept pointing at ("save it for a boss whose flavor is
+    // actually about speed... an Orc Assassin is the leading idea"). Where the Warlord
+    // and Chieftain are bruisers that out-tank you (regen + raw HP), the Assassin is
+    // built the opposite way: modest HP for a boss, but extra_actions=1 doubles its
+    // attacks per turn, and both defensive stats lean into "hard to hit, hard to pin
+    // down" instead — evasion far above either earlier boss, and dexterity to match, off
+    // a fast, accurate weapon (light dice, heavy hit-dice, the same "light is accurate"
+    // convention kWeaponTable's Dagger uses) rather than a slow, heavy one.
+    // hp_regen_turns=0 is deliberate, not an oversight: unlike the two melee bosses
+    // before it, this one's threat is entirely tempo, not attrition, so it doesn't need
+    // to out-heal a fight it's already winning on turns.
+    // Slotted at floor 9 — past both the Warlord (3) and the Chieftain (6), and past the
+    // Troll tier's own start (8), so it reads as the Orcs finally catching up to you deep
+    // in the dungeon rather than another early ambush. Chainmail (kArmorTable[1], same as
+    // the Warlord's) rather than Plate: real armor, but light enough to still be fast in.
+    {"Orc Assassin", 'A', tcod::ColorRGB{90, 30, 110}, 34,
+     Weapon{"Assassin's Blades", 1, 6, 0, false, 1, -1, /*hit_dice=*/3, 5}, /*xp_reward=*/100,
+     /*evasion=*/16, /*dexterity=*/12, /*strength=*/4, /*min_depth=*/9, /*max_depth=*/9,
+     /*armor=*/kArmorTable[1], /*extra_weapons=*/{}, /*potions=*/{},
+     /*hp_regen_turns=*/0, /*extra_actions=*/1, /*is_boss=*/true},
     // The win condition. Floor-kFinalFloor-only, is_final_boss=true — the only row that
     // sets it (see on_actor_killed(), game.cpp). A temp/placeholder row like the other
     // two bosses were at first: name, glyph and color are all easy to reskin later.

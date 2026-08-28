@@ -33,3 +33,29 @@ endif()
 find_package(SDL3 CONFIG REQUIRED)
 find_package(libtcod CONFIG REQUIRED)
 target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 libtcod::libtcod)
+
+# --- roguelike_tests: minimal, dependency-free unit tests for rules.hpp's pure math ---
+#
+# Deliberately its own executable rather than folded into src/'s glob: the main binary
+# has exactly one main() (main.cpp), and this target needs its own. It links only
+# rules.cpp + rng.cpp — the actual dependency closure of rules.hpp's declarations (see
+# tests/rules_test.cpp) — not SDL3/libtcod, so it builds and runs with no display at all.
+# `ctest` (or just running the binary directly) reports pass/fail; see tests/rules_test.cpp
+# for what's covered and why this is the one layer that gets real unit tests today.
+enable_testing()
+add_executable(roguelike_tests
+    tests/rules_test.cpp
+    src/rules.cpp
+    src/rng.cpp
+)
+target_include_directories(roguelike_tests PRIVATE src)
+target_compile_features(roguelike_tests PRIVATE cxx_std_17)
+# entity.hpp (transitively included via rules.hpp) uses tcod::ColorRGB, so this needs
+# libtcod's headers even though none of its actual drawing code is ever called or linked.
+target_link_libraries(roguelike_tests PRIVATE libtcod::libtcod)
+if (MSVC)
+    target_compile_options(roguelike_tests PRIVATE /utf-8 /W4)
+else()
+    target_compile_options(roguelike_tests PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME rules_test COMMAND roguelike_tests)

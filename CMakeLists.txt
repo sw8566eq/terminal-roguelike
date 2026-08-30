@@ -169,3 +169,46 @@ else()
     target_compile_options(roguelike_movement_tests PRIVATE -Wall -Wextra)
 endif()
 add_test(NAME movement_test COMMAND roguelike_movement_tests)
+
+# --- dump_loot_golden: automates what used to be a manual regression check -----------
+#
+# Phase 4 of the testing overhaul: --seed=42 --dump-loot across floors 1-10, diffed
+# against a checked-in golden file (tests/golden/dump_loot_seed42.txt) instead of a human
+# running it by hand and eyeballing the diff (see CLAUDE.md's Testing overhaul section).
+# Runs the real ${PROJECT_NAME} binary (a shell script, not a CMake source list, since
+# this is driving the actual game executable rather than linking against its logic
+# layer) — $<TARGET_FILE:...> resolves to wherever it actually gets built, so this stays
+# correct across platforms/generators without hardcoding bin/roguelike.
+add_test(NAME dump_loot_golden
+         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_dump_loot_golden.sh
+                 $<TARGET_FILE:${PROJECT_NAME}>
+                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/dump_loot_seed42.txt)
+
+# --- roguelike_generation_tests: Phase 4's other half — multi-seed generation invariants
+#
+# Same headless closure as roguelike_game_tests, plus generate_level() itself
+# (level.cpp already in that closure) as the entry point under test.
+add_executable(roguelike_generation_tests
+    tests/generation_test.cpp
+    src/entity.cpp
+    src/rng.cpp
+    src/rules.cpp
+    src/content.cpp
+    src/spells.cpp
+    src/actors.cpp
+    src/projectile.cpp
+    src/map.cpp
+    src/level.cpp
+    src/game.cpp
+    src/turn.cpp
+    src/run_history.cpp
+)
+target_include_directories(roguelike_generation_tests PRIVATE src)
+target_compile_features(roguelike_generation_tests PRIVATE cxx_std_17)
+target_link_libraries(roguelike_generation_tests PRIVATE libtcod::libtcod)
+if (MSVC)
+    target_compile_options(roguelike_generation_tests PRIVATE /utf-8 /W4)
+else()
+    target_compile_options(roguelike_generation_tests PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME generation_test COMMAND roguelike_generation_tests)

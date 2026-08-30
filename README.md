@@ -119,9 +119,10 @@ straight into play (as does `--skip-menu`, which does nothing else):
 - `--pause-ai` — freezes monster/minion AI every turn, for composing a live
   in-window screenshot without anything wandering off mid-shot
 
-`--seed=N` + `--dump-loot`, diffed across floors, is this project's one
-generation/content regression check; there's also a small unit-test suite
-for the combat/stat math (see the `tests/` directory).
+`--seed=N` + `--dump-loot`, diffed across floors, is one of several regression checks;
+see the `tests/` directory for the full automated suite (unit tests for combat/stat
+math, plus headless coverage of combat resolution, monster/minion AI, Shift+direction
+travel, world generation, and rendering/input).
 
 ## Project layout
 
@@ -155,8 +156,8 @@ roguelike/
 │   │                        #   split by mode-group; render.hpp is the contract
 │   └── input*.cpp           # one keyboard handler per mode, same split;
 │                            #   input.hpp is the contract
-├── tests/
-│   └── rules_test.cpp   # unit tests for rules.hpp's pure math (own CMake target)
+├── tests/               # eight ctest-registered suites — pure math, combat/AI/travel/
+│                        #   generation/rendering/input, all headless (see CLAUDE.md)
 └── vcpkg/               # (created by you) vendored package manager
 ```
 
@@ -244,6 +245,8 @@ Three things stand out:
   at all, so every one of these reached the user before anyone noticed. The build
   was clean and the one regression check the project had (`--seed` + `--dump-loot`)
   covers world generation, which this code doesn't touch — so it passed, every
-  time, while the feature was broken. (A small unit-test suite exists now, but
-  only for combat/stat math — movement/travel logic like this is still nothing
-  but manual playtest, so the same class of bug could still slip through today.)
+  time, while the feature was broken. (A later testing pass added a dedicated
+  regression suite for exactly this movement/travel logic — see `tests/movement_test.cpp`
+  — precisely because this story showed the gap; this exact class of bug is now
+  covered, though the general lesson, that a clean build proves nothing about logic
+  untouched by any test, still applies to whatever isn't covered yet.)

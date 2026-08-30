@@ -212,3 +212,75 @@ else()
     target_compile_options(roguelike_generation_tests PRIVATE -Wall -Wextra)
 endif()
 add_test(NAME generation_test COMMAND roguelike_generation_tests)
+
+# --- roguelike_render_tests: Phase 5 of the testing overhaul — render crash coverage ---
+#
+# render.cpp and its three satellites (render_item_menus/render_screens/
+# render_spell_minion_menus.cpp) have zero SDL includes — confirmed before adding this,
+# same as every other headless target here — so this needs only libtcod, no window, no
+# font, no SDL_Init(). Same headless closure as roguelike_game_tests otherwise.
+add_executable(roguelike_render_tests
+    tests/render_test.cpp
+    tests/arena.cpp
+    src/entity.cpp
+    src/rng.cpp
+    src/rules.cpp
+    src/content.cpp
+    src/spells.cpp
+    src/actors.cpp
+    src/projectile.cpp
+    src/map.cpp
+    src/level.cpp
+    src/game.cpp
+    src/turn.cpp
+    src/run_history.cpp
+    src/render.cpp
+    src/render_item_menus.cpp
+    src/render_screens.cpp
+    src/render_spell_minion_menus.cpp
+)
+target_include_directories(roguelike_render_tests PRIVATE src tests)
+target_compile_features(roguelike_render_tests PRIVATE cxx_std_17)
+target_link_libraries(roguelike_render_tests PRIVATE libtcod::libtcod)
+if (MSVC)
+    target_compile_options(roguelike_render_tests PRIVATE /utf-8 /W4)
+else()
+    target_compile_options(roguelike_render_tests PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME render_test COMMAND roguelike_render_tests)
+
+# --- roguelike_input_tests: Phase 5's other half — synthesized-SDL_Event menu roundtrips
+#
+# Same closure as roguelike_movement_tests (input.cpp needs all four satellites for
+# handle_event()'s switch to link — see that target's own comment): SDL headers only,
+# no real SDL runtime function called by anything this suite exercises.
+add_executable(roguelike_input_tests
+    tests/input_test.cpp
+    tests/arena.cpp
+    src/entity.cpp
+    src/rng.cpp
+    src/rules.cpp
+    src/content.cpp
+    src/spells.cpp
+    src/actors.cpp
+    src/projectile.cpp
+    src/map.cpp
+    src/level.cpp
+    src/game.cpp
+    src/turn.cpp
+    src/run_history.cpp
+    src/input.cpp
+    src/input_item_menus.cpp
+    src/input_spell_minion_menus.cpp
+    src/input_screens.cpp
+    src/input_overlays.cpp
+)
+target_include_directories(roguelike_input_tests PRIVATE src tests)
+target_compile_features(roguelike_input_tests PRIVATE cxx_std_17)
+target_link_libraries(roguelike_input_tests PRIVATE libtcod::libtcod SDL3::SDL3)
+if (MSVC)
+    target_compile_options(roguelike_input_tests PRIVATE /utf-8 /W4)
+else()
+    target_compile_options(roguelike_input_tests PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME input_test COMMAND roguelike_input_tests)

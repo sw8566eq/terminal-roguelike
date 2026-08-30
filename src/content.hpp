@@ -127,7 +127,25 @@ struct MonsterTemplate {
   // random-walking out through the corridor. Trailing for the same reason as the two
   // bools just above.
   bool wanders = true;
+  // Which kin group this species belongs to for pack alert and caster-escort purposes
+  // (see same_pack() below) — deliberately *not* the same thing as species identity
+  // (monster_template_index). Empty (the default, every row but the Orc/Goblin/Troll
+  // lines) means "no group beyond its own species" — same_pack() falls back to an exact
+  // species match, so leaving this empty changes nothing about a row's existing
+  // behavior. Set to a shared string ("Orc", "Goblin", "Troll") to let same_pack()
+  // recognize a whole line as one group instead of only identical species — e.g. so an
+  // Orc Archer's alert reaches an Orc Wizard nearby, not just another Orc Archer.
+  // Trailing for the same positional-aggregate-init reason as the three fields above.
+  std::string faction = "";
 };
+
+// Whether two hostile monsters (by kMonsterTable index) count as the same pack for pack
+// alert (see the same-species step in run_hostile_ai(), turn.cpp) and caster escort (see
+// the caster-specific chase guard in the same function): either they're the exact same
+// species, or both rows share a non-empty MonsterTemplate::faction. A monster with an
+// empty faction only ever matches its own species, so a row that never opts in behaves
+// exactly as it did before this existed.
+bool same_pack(int monster_template_index_a, int monster_template_index_b);
 
 extern const std::vector<MonsterTemplate> kMonsterTable;
 

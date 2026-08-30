@@ -233,17 +233,18 @@ void run_hostile_ai(GameState& gs) {
         monster.last_seen_player_x = gs.player.x;
         monster.last_seen_player_y = gs.player.y;
 
-        // Pack alert: plant the same last-seen memory in every other living hostile of
-        // the exact same species within kPackAlertRadius (rules.hpp) — they start
-        // chasing/closing in even without their own line of sight, the same as if
-        // they'd spotted the player themselves. Deliberately no "already alerted" flag:
-        // this just runs every turn a pack member has eyes on the player, which reads
-        // as the pack staying coordinated for as long as any one of them can see you,
-        // rather than a one-shot alarm.
+        // Pack alert: plant the same last-seen memory in every other living hostile in
+        // the same pack (same_pack(), content.cpp — an exact species match, or a shared
+        // MonsterTemplate::faction for a kin group like the Orc line) within
+        // kPackAlertRadius (rules.hpp) — they start chasing/closing in even without
+        // their own line of sight, the same as if they'd spotted the player themselves.
+        // Deliberately no "already alerted" flag: this just runs every turn a pack
+        // member has eyes on the player, which reads as the pack staying coordinated
+        // for as long as any one of them can see you, rather than a one-shot alarm.
         for (auto& ally : level.monsters) {
           if (&ally == &monster) continue;
           if (ally.allegiance != Allegiance::Hostile || !ally.is_alive()) continue;
-          if (ally.monster_template_index != monster.monster_template_index) continue;
+          if (!same_pack(ally.monster_template_index, monster.monster_template_index)) continue;
           if (distance_between(monster, ally) > kPackAlertRadius) continue;
           ally.last_seen_player_x = gs.player.x;
           ally.last_seen_player_y = gs.player.y;
@@ -384,6 +385,31 @@ void run_hostile_ai(GameState& gs) {
       int tgt_x = target->x;
       int tgt_y = target->y;
       bool target_is_player = target->is_player;
+
+      // Caster escort: reaching here means this monster couldn't cast (out of range,
+      // out of mana, or it has no spells at all) and isn't in melee range either. A
+      // caster specifically (spell_indices non-empty) that has a same-pack ally
+      // (same_pack(), content.cpp) already melee-engaged with this exact target holds
+      // position instead of closing the rest of the way in on foot — let the melee ally
+      // screen it rather than walking a squishy caster into melee itself. Not kiting:
+      // no retreat, no re-evaluating distance once engaged, and it never applies once
+      // the caster is close enough to actually cast (that branch resolves and
+      // `continue`s above, never reaching here) — only ordinary monsters chasing an
+      // ordinary distance are unaffected, since this whole block is gated on having
+      // spells in the first place.
+      if (!monster.spell_indices.empty()) {
+        bool ally_engaged = false;
+        for (auto& ally : level.monsters) {
+          if (&ally == &monster) continue;
+          if (ally.allegiance != Allegiance::Hostile || !ally.is_alive()) continue;
+          if (!same_pack(ally.monster_template_index, monster.monster_template_index)) continue;
+          if (distance_between(ally, *target) <= 1) {
+            ally_engaged = true;
+            break;
+          }
+        }
+        if (ally_engaged) continue;  // hold position this turn; don't chase or wander
+      }
 
       // Out of range (or no line of sight): chase toward the chosen target if it's
       // currently visible — for the player specifically, "visible" means the

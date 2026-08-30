@@ -171,6 +171,76 @@ void test_pack_alert_same_species_only() {
         "a different-species monster in an equivalent spot is NOT alerted — same-species only, by design");
 }
 
+// same_pack() (content.cpp) extends the rule above from exact-species to a shared
+// MonsterTemplate::faction — a kin group like the Orc line. This is the same test
+// shape as test_pack_alert_same_species_only() above, just with the "ally" being a
+// genuinely different species that happens to share the spotter's faction, and the
+// "stranger" being a different species with no shared faction at all (unaffected by
+// this feature, still governed by the same-species fallback).
+void test_pack_alert_faction_extends_to_kin_species() {
+  GameState gs = arena::make_gamestate(kLongOpenCorridor, 1, 1);
+  int orc_index = monster_index_named("Orc");
+  int orc_archer_index = monster_index_named("Orc Archer");
+  int goblin_index = monster_index_named("Goblin");
+
+  arena::place_monster(gs, orc_index, 8, 1);                            // sees the player directly
+  int kin_ally_id = arena::place_monster(gs, orc_archer_index, 13, 1);  // different species, same faction ("Orc")
+  int unrelated_id = arena::place_monster(gs, goblin_index, 12, 1);     // different species, different faction
+
+  Actor* kin_ally = arena::find_actor(gs, kin_ally_id);
+  Actor* unrelated = arena::find_actor(gs, unrelated_id);
+  check(distance_between(gs.player, *kin_ally) > FOV_RADIUS,
+        "test setup: the kin ally is too far to ever see the player on its own");
+  check(distance_between(gs.player, *unrelated) > FOV_RADIUS,
+        "test setup: the unrelated monster is too far to ever see the player on its own");
+
+  end_turn(gs);
+
+  check(kin_ally->last_seen_player_x == gs.player.x && kin_ally->last_seen_player_y == gs.player.y,
+        "an Orc Archer within pack-alert range of an alerted Orc gets the sighting planted "
+        "— same faction, different species");
+  check(unrelated->last_seen_player_x == -1 && unrelated->last_seen_player_y == -1,
+        "a Goblin in an equivalent spot is not alerted by an Orc — different factions stay separate");
+}
+
+// --- Caster escort ----------------------------------------------------------------------
+//
+// A caster that can't currently cast (out of range or, here, out of mana) and isn't in
+// melee range either would otherwise fall through to the same chase logic as any
+// ordinary monster. If a same-pack ally is already melee-engaged with the target, it
+// holds position instead — see turn.cpp's own comment on the exact guard.
+
+void test_caster_escort_holds_when_ally_engaged() {
+  GameState gs = arena::make_gamestate(kLongOpenCorridor, 1, 1);
+  arena::place_monster(gs, monster_index_named("Orc"), 2, 1);  // already melee-engaged with the player
+  int wizard_id = arena::place_monster(gs, monster_index_named("Orc Wizard"), 5, 1);
+  Actor* wizard = arena::find_actor(gs, wizard_id);
+  wizard->mana = 0;  // can't afford Magic Dart or Fireball, so it would otherwise chase
+
+  end_turn(gs);
+
+  check(wizard->x == 5 && wizard->y == 1,
+        "a caster with a same-pack ally already melee-engaged with the target holds position "
+        "instead of closing in on foot");
+}
+
+void test_caster_chases_normally_without_an_engaged_ally() {
+  GameState gs = arena::make_gamestate(kLongOpenCorridor, 1, 1);
+  int wizard_id = arena::place_monster(gs, monster_index_named("Orc Wizard"), 5, 1);
+  Actor* wizard = arena::find_actor(gs, wizard_id);
+  wizard->mana = 0;  // same as above, but with no ally at all this time
+
+  auto expected_path = gs.level().map.find_path(5, 1, 1, 1);
+  check(!expected_path.empty(), "test setup: a path exists back toward the player");
+  auto [ex, ey] = expected_path[0];
+
+  end_turn(gs);
+
+  check(wizard->x == ex && wizard->y == ey,
+        "with no pack ally already engaged, a caster that can't cast still chases normally, "
+        "same as any ordinary monster");
+}
+
 // --- Goblin Slinger snipe-then-engage-then-rearm ----------------------------------------
 //
 // equip_best_weapon_for_range() is a pure decision over an Actor and a distance — calling
@@ -337,6 +407,9 @@ int main() {
   test_hostile_wander_vs_hold();
   test_perception_recorded_even_when_turn_ends_via_cast();
   test_pack_alert_same_species_only();
+  test_pack_alert_faction_extends_to_kin_species();
+  test_caster_escort_holds_when_ally_engaged();
+  test_caster_chases_normally_without_an_engaged_ally();
   test_goblin_slinger_snipe_then_engage_then_rearm();
   test_orc_wizard_prefers_higher_scoring_affordable_spell();
   test_minion_follow_paths_toward_player();

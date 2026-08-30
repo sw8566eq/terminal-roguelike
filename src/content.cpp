@@ -92,8 +92,17 @@ const Weapon kThrownRock =
 const std::vector<MonsterTemplate> kMonsterTable = {
     {"Rat", 'r', tcod::ColorRGB{150, 100, 60}, 4, kBite, /*xp_reward=*/5, /*evasion=*/15,
      /*dexterity=*/2, /*strength=*/0, /*min_depth=*/1, /*max_depth=*/4},
+    // faction="Goblin" (shared with Goblin Slinger/Goblin Shaman below): lets pack alert
+    // and caster escort (see run_hostile_ai(), turn.cpp) recognize the whole line as one
+    // group instead of only identical species — same_pack() in content.cpp is the one
+    // place this is read. Every row that doesn't opt in stays faction="" and behaves
+    // exactly as before (same_pack() falls back to an exact species match).
     {"Goblin", 'g', tcod::ColorRGB{80, 180, 80}, 7, kClaws, /*xp_reward=*/10, /*evasion=*/5,
-     /*dexterity=*/4, /*strength=*/1, /*min_depth=*/1, /*max_depth=*/4},
+     /*dexterity=*/4, /*strength=*/1, /*min_depth=*/1, /*max_depth=*/4, /*armor=*/kNoArmor,
+     /*extra_weapons=*/{}, /*potions=*/{}, /*hp_regen_turns=*/0, /*extra_actions=*/0,
+     /*is_boss=*/false, /*intelligence=*/0, /*max_mana=*/0, /*mana_regen_turns=*/0,
+     /*spell_indices=*/{}, /*leaves_corpse=*/true, /*is_final_boss=*/false, /*wanders=*/true,
+     /*faction=*/"Goblin"},
     // A squishier, ranged relative of the melee Goblin above — glass cannon: less HP,
     // same damage tier, but can fight from range instead of closing to melee. Its Rock
     // has attack_range 5, so it snipes from well across a room without needing to
@@ -109,7 +118,10 @@ const std::vector<MonsterTemplate> kMonsterTable = {
     // and it drops as loot when the Slinger dies.
     {"Goblin Slinger", 'G', tcod::ColorRGB{150, 150, 70}, 5, kThrownRock, /*xp_reward=*/8,
      /*evasion=*/8, /*dexterity=*/2, /*strength=*/1, /*min_depth=*/1, /*max_depth=*/4, /*armor=*/kNoArmor,
-     /*extra_weapons=*/{kWeaponTable[0]}},
+     /*extra_weapons=*/{kWeaponTable[0]}, /*potions=*/{}, /*hp_regen_turns=*/0, /*extra_actions=*/0,
+     /*is_boss=*/false, /*intelligence=*/0, /*max_mana=*/0, /*mana_regen_turns=*/0,
+     /*spell_indices=*/{}, /*leaves_corpse=*/true, /*is_final_boss=*/false, /*wanders=*/true,
+     /*faction=*/"Goblin"},
     // The first monster in the game that actually casts: it spends real mana on the same
     // kSpellTable Magic Dart the player learns, and it launches a real travelling
     // Projectile you can see coming and dodge — not an instant hit resolved inside the AI
@@ -144,7 +156,8 @@ const std::vector<MonsterTemplate> kMonsterTable = {
      /*evasion=*/8, /*dexterity=*/3, /*strength=*/0, /*min_depth=*/1, /*max_depth=*/4,
      /*armor=*/kNoArmor, /*extra_weapons=*/{}, /*potions=*/{}, /*hp_regen_turns=*/0,
      /*extra_actions=*/0, /*is_boss=*/false, /*intelligence=*/3, /*max_mana=*/4,
-     /*mana_regen_turns=*/kManaRegenTurns, /*spell_indices=*/{0}},
+     /*mana_regen_turns=*/kManaRegenTurns, /*spell_indices=*/{0}, /*leaves_corpse=*/true,
+     /*is_final_boss=*/false, /*wanders=*/true, /*faction=*/"Goblin"},
     // leaves_corpse=false: it's already animated bones, so putting it down destroys the
     // very thing a necromancer would have raised. The one row using the flag today, and a
     // single cell to change if that reads as too precious.
@@ -160,14 +173,20 @@ const std::vector<MonsterTemplate> kMonsterTable = {
     // hit (see resolve_attack()).
     {"Orc", 'o', tcod::ColorRGB{60, 120, 60}, 14, Weapon{"Orc Axe", 1, 6, 0, false, 1, -1, /*hit_dice=*/1, 4},
      /*xp_reward=*/22, /*evasion=*/5, /*dexterity=*/8, /*strength=*/2, /*min_depth=*/5, /*max_depth=*/-1,
-     /*armor=*/kArmorTable[0]},
+     /*armor=*/kArmorTable[0], /*extra_weapons=*/{}, /*potions=*/{}, /*hp_regen_turns=*/0,
+     /*extra_actions=*/0, /*is_boss=*/false, /*intelligence=*/0, /*max_mana=*/0,
+     /*mana_regen_turns=*/0, /*spell_indices=*/{}, /*leaves_corpse=*/true,
+     /*is_final_boss=*/false, /*wanders=*/true, /*faction=*/"Orc"},
     // Orc Archer: the same snipe-then-engage behavior as Goblin Slinger,
     // just with every stat scaled up to match this floor-5+ tier — the same
     // relationship Orc already has to Goblin.
     {"Orc Archer", 'O', tcod::ColorRGB{110, 130, 60}, 10,
      Weapon{"Short Bow", 1, 6, 0, false, 1, -1, /*hit_dice=*/2, 4, /*attack_range=*/5}, /*xp_reward=*/18,
      /*evasion=*/6, /*dexterity=*/4, /*strength=*/2, /*min_depth=*/5, /*max_depth=*/-1, /*armor=*/kNoArmor,
-     /*extra_weapons=*/{kWeaponTable[1]}},
+     /*extra_weapons=*/{kWeaponTable[1]}, /*potions=*/{}, /*hp_regen_turns=*/0, /*extra_actions=*/0,
+     /*is_boss=*/false, /*intelligence=*/0, /*max_mana=*/0, /*mana_regen_turns=*/0,
+     /*spell_indices=*/{}, /*leaves_corpse=*/true, /*is_final_boss=*/false, /*wanders=*/true,
+     /*faction=*/"Orc"},
     // The floor-5+ tier-up of the Goblin Shaman, and the first monster (and first real
     // exercise of Actor::spell_indices — see its comment) with a genuine two-spell kit
     // rather than one spell repeated: Magic Dart (kSpellTable[0], cheap poke) and
@@ -188,10 +207,15 @@ const std::vector<MonsterTemplate> kMonsterTable = {
      /*evasion=*/8, /*dexterity=*/5, /*strength=*/0, /*min_depth=*/5, /*max_depth=*/-1,
      /*armor=*/kNoArmor, /*extra_weapons=*/{}, /*potions=*/{}, /*hp_regen_turns=*/0,
      /*extra_actions=*/0, /*is_boss=*/false, /*intelligence=*/6, /*max_mana=*/10,
-     /*mana_regen_turns=*/kManaRegenTurns, /*spell_indices=*/{0, 2}},
+     /*mana_regen_turns=*/kManaRegenTurns, /*spell_indices=*/{0, 2}, /*leaves_corpse=*/true,
+     /*is_final_boss=*/false, /*wanders=*/true, /*faction=*/"Orc"},
     {"Troll", 'T', tcod::ColorRGB{100, 110, 80}, 22,
      Weapon{"Massive Club", 1, 8, 0, false, 1, -1, /*hit_dice=*/1, 3}, /*xp_reward=*/40,
-     /*evasion=*/2, /*dexterity=*/10, /*strength=*/3, /*min_depth=*/8, /*max_depth=*/-1},
+     /*evasion=*/2, /*dexterity=*/10, /*strength=*/3, /*min_depth=*/8, /*max_depth=*/-1,
+     /*armor=*/kNoArmor, /*extra_weapons=*/{}, /*potions=*/{}, /*hp_regen_turns=*/0,
+     /*extra_actions=*/0, /*is_boss=*/false, /*intelligence=*/0, /*max_mana=*/0,
+     /*mana_regen_turns=*/0, /*spell_indices=*/{}, /*leaves_corpse=*/true,
+     /*is_final_boss=*/false, /*wanders=*/true, /*faction=*/"Troll"},
     // The first boss (is_boss — exactly one spawns on floor 3, and it's excluded from
     // that floor's random pool; see bosses_at_depth()). An outsized Orc arriving two
     // floors before ordinary Orcs do, on a floor whose normal residents are Rats and
@@ -220,7 +244,9 @@ const std::vector<MonsterTemplate> kMonsterTable = {
      Weapon{"Warlord's Cleaver", 1, 8, 0, false, 1, -1, /*hit_dice=*/1, 3}, /*xp_reward=*/55,
      /*evasion=*/4, /*dexterity=*/8, /*strength=*/3, /*min_depth=*/3, /*max_depth=*/3,
      /*armor=*/kArmorTable[1], /*extra_weapons=*/{}, /*potions=*/{kPotionTable[1]},
-     /*hp_regen_turns=*/120, /*extra_actions=*/0, /*is_boss=*/true},
+     /*hp_regen_turns=*/120, /*extra_actions=*/0, /*is_boss=*/true, /*intelligence=*/0,
+     /*max_mana=*/0, /*mana_regen_turns=*/0, /*spell_indices=*/{}, /*leaves_corpse=*/true,
+     /*is_final_boss=*/false, /*wanders=*/true, /*faction=*/"Orc"},
     // Second boss. Same shape as the Orc Warlord: an outsized version of a tier that
     // hasn't "started" yet — the Warlord is an Orc boss two floors ahead of the
     // Skeleton/Orc tier (floor 5); this is a Troll boss two floors ahead of the Troll
@@ -240,7 +266,9 @@ const std::vector<MonsterTemplate> kMonsterTable = {
      Weapon{"Chieftain's Warclub", 1, 10, 0, false, 1, -1, /*hit_dice=*/1, 4}, /*xp_reward=*/75,
      /*evasion=*/4, /*dexterity=*/10, /*strength=*/5, /*min_depth=*/6, /*max_depth=*/6,
      /*armor=*/kArmorTable[2], /*extra_weapons=*/{}, /*potions=*/{},
-     /*hp_regen_turns=*/100, /*extra_actions=*/0, /*is_boss=*/true},
+     /*hp_regen_turns=*/100, /*extra_actions=*/0, /*is_boss=*/true, /*intelligence=*/0,
+     /*max_mana=*/0, /*mana_regen_turns=*/0, /*spell_indices=*/{}, /*leaves_corpse=*/true,
+     /*is_final_boss=*/false, /*wanders=*/true, /*faction=*/"Troll"},
     // Third boss, and the one that finally claims extra_actions — the boss knob every
     // earlier row's comment kept pointing at ("save it for a boss whose flavor is
     // actually about speed... an Orc Assassin is the leading idea"). Where the Warlord
@@ -261,7 +289,9 @@ const std::vector<MonsterTemplate> kMonsterTable = {
      Weapon{"Assassin's Blades", 1, 6, 0, false, 1, -1, /*hit_dice=*/3, 5}, /*xp_reward=*/100,
      /*evasion=*/16, /*dexterity=*/12, /*strength=*/4, /*min_depth=*/9, /*max_depth=*/9,
      /*armor=*/kArmorTable[1], /*extra_weapons=*/{}, /*potions=*/{},
-     /*hp_regen_turns=*/0, /*extra_actions=*/1, /*is_boss=*/true},
+     /*hp_regen_turns=*/0, /*extra_actions=*/1, /*is_boss=*/true, /*intelligence=*/0,
+     /*max_mana=*/0, /*mana_regen_turns=*/0, /*spell_indices=*/{}, /*leaves_corpse=*/true,
+     /*is_final_boss=*/false, /*wanders=*/true, /*faction=*/"Orc"},
     // The win condition. Floor-kFinalFloor-only, is_final_boss=true — the only row that
     // sets it (see on_actor_killed(), game.cpp). A temp/placeholder row like the other
     // two bosses were at first: name, glyph and color are all easy to reskin later.
@@ -322,6 +352,13 @@ const std::vector<MinionTemplate> kMinionTable = {
      /*extra_actions=*/0, /*abilities=*/{kWitherCurseIndex},
      /*max_mana=*/10, /*mana_regen_turns=*/kManaRegenTurns},
 };
+
+bool same_pack(int monster_template_index_a, int monster_template_index_b) {
+  if (monster_template_index_a == monster_template_index_b) return true;
+  const std::string& faction_a = kMonsterTable[static_cast<size_t>(monster_template_index_a)].faction;
+  const std::string& faction_b = kMonsterTable[static_cast<size_t>(monster_template_index_b)].faction;
+  return !faction_a.empty() && faction_a == faction_b;
+}
 
 std::vector<int> monsters_available_at_depth(int depth) {
   std::vector<int> indices = available_at_depth(kMonsterTable, depth);

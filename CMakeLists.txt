@@ -95,3 +95,35 @@ else()
     target_compile_options(roguelike_game_tests PRIVATE -Wall -Wextra)
 endif()
 add_test(NAME game_test COMMAND roguelike_game_tests)
+
+# --- roguelike_ai_tests: Phase 2 of the testing overhaul — monster/minion AI behavior -
+#
+# Same headless closure as roguelike_game_tests (see its own comment above); split into
+# its own binary/executable rather than folded into game_test.cpp so ctest reports each
+# phase's suite separately, and so no single test file grows unmanageably long as more
+# phases land.
+add_executable(roguelike_ai_tests
+    tests/ai_test.cpp
+    tests/arena.cpp
+    src/entity.cpp
+    src/rng.cpp
+    src/rules.cpp
+    src/content.cpp
+    src/spells.cpp
+    src/actors.cpp
+    src/projectile.cpp
+    src/map.cpp
+    src/level.cpp
+    src/game.cpp
+    src/turn.cpp
+    src/run_history.cpp
+)
+target_include_directories(roguelike_ai_tests PRIVATE src tests)
+target_compile_features(roguelike_ai_tests PRIVATE cxx_std_17)
+target_link_libraries(roguelike_ai_tests PRIVATE libtcod::libtcod)
+if (MSVC)
+    target_compile_options(roguelike_ai_tests PRIVATE /utf-8 /W4)
+else()
+    target_compile_options(roguelike_ai_tests PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME ai_test COMMAND roguelike_ai_tests)

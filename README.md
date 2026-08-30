@@ -177,7 +177,8 @@ Everything below is built and playable.
   Curse); each minion type has its own independent cap rather than sharing
   one pool.
 - **World** — procedural multi-level dungeon, FOV/fog of war, pits, depth-scaled
-  monsters and gear; the last floor has a distinct, moat-ringed boss chamber
+  monsters and gear, Shift+direction travel for quick navigation; the last floor has a
+  distinct, moat-ringed boss chamber
 - **Combat** — turn-based melee and ranged (`f`), permadeath, one shared
   accuracy/dodge/armor formula for every attacker, player or monster
 - **Character** — Strength/Dexterity/Intelligence leveling, HP/mana regen,

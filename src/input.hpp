@@ -14,3 +14,10 @@
 // Applies one key-down event to the game, dispatching on the current mode. The caller
 // filters out quit and non-key events before calling this.
 void handle_event(GameState& gs, const SDL_Event& event);
+
+// Test-support only (see tests/movement_test.cpp): the Shift+direction travel handler,
+// normally reached only via handle_playing_input()'s Shift-modifier check. Declared here
+// so a test can drive it directly against a hand-painted map (Map::paint_ascii()) rather
+// than synthesizing SDL_Events — the same reasoning as paint_ascii()'s own comment.
+// dx/dy are one movement step's direction, e.g. (1, 0) for Shift+Right/Shift+l.
+void run_in_direction(GameState& gs, int dx, int dy);

@@ -50,6 +50,11 @@ void Map::paint_ascii(const std::vector<std::string>& rows) {
           tile.transparent = true;
           tile.in_room = true;
           break;
+        case ',':
+          tile.walkable = true;
+          tile.transparent = true;
+          tile.in_room = false;
+          break;
         case '^':
           tile.walkable = false;
           tile.transparent = true;

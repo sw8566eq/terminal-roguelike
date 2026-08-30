@@ -107,6 +107,8 @@ bool would_see_hostile_from(const std::vector<Actor>& monsters, const Map& map, 
   return false;
 }
 
+}  // namespace
+
 // Shift+direction: quicker navigation than tapping the same key over and over. Repeats
 // the plain movement step in one direction, a full real turn at a time — monster AI runs
 // on every step, exactly as it would if the key were pressed that many times by hand.
@@ -137,6 +139,12 @@ bool would_see_hostile_from(const std::vector<Actor>& monsters, const Map& map, 
 //
 // kRunMaxSteps is a defensive cap, not a real limit — a straight line in one direction
 // always meets a wall well before it, on any map this size.
+//
+// External linkage (declared in input.hpp, "test-support" section) purely so
+// tests/movement_test.cpp can drive it directly with a hand-painted map (see
+// Map::paint_ascii()) instead of synthesizing SDL_Events — the same reasoning as that
+// method's own doc comment. Not called from anywhere outside this file in the real game;
+// handle_playing_input() below is still the only production call site.
 constexpr int kRunMaxSteps = 200;
 
 void run_in_direction(GameState& gs, int dx, int dy) {
@@ -408,8 +416,6 @@ void handle_playing_input(GameState& gs, const SDL_Event& event) {
     end_turn(gs);
   }
 }
-
-}  // namespace
 
 void handle_event(GameState& gs, const SDL_Event& event) {
   // Each mode is exclusive: whichever screen is up consumes the key completely, and a

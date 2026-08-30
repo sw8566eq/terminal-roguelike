@@ -110,19 +110,20 @@ class Map {
   std::optional<Rect> carve_special_room(int room_min_size, int room_max_size, int link_x, int link_y);
 
   // Test-support only (see tests/arena.cpp): overwrites tiles from a compact ASCII
-  // layout, one string per row top-to-bottom — '#' wall, '.' floor, '^' hole
-  // (Tile::is_hole); any other character leaves that tile untouched. Exists so a test
-  // can hand-build an exact corridor/room shape — a side passage, a room threshold —
-  // instead of relying on generate()'s randomness, the same thing the Shift+direction
-  // travel fix (see README.md's "Where Claude struggled") was once checked against by
-  // hand with 21 throwaway maps, now made permanent. Rows/columns beyond `rows`' own
-  // extent are simply left as whatever the map already was (all-wall on a freshly
-  // constructed Map) rather than asserting on a short row — a test with a too-small
-  // map will fail on its own placement/assertions instead, a clearer signal than a
-  // crash here. Every painted floor/hole tile is also marked in_room=true, since an
-  // arena test has no corridor/room distinction worth modeling. Calls sync_fov_map()
-  // once at the end, the same step generate() itself ends with, so is_in_fov()/
-  // find_path() see the result immediately.
+  // layout, one string per row top-to-bottom — '#' wall, '.' room floor (in_room=true),
+  // ',' corridor floor (in_room=false — the one thing plain '.' can't express, and the
+  // Shift+direction travel suite (tests/movement_test.cpp) needs it to model a genuine
+  // room threshold), '^' hole (Tile::is_hole); any other character leaves that tile
+  // untouched. Exists so a test can hand-build an exact corridor/room shape — a side
+  // passage, a room threshold — instead of relying on generate()'s randomness, the same
+  // thing the Shift+direction travel fix (see README.md's "Where Claude struggled") was
+  // once checked against by hand with 21 throwaway maps, now made permanent. Rows/
+  // columns beyond `rows`' own extent are simply left as whatever the map already was
+  // (all-wall on a freshly constructed Map) rather than asserting on a short row — a
+  // test with a too-small map will fail on its own placement/assertions instead, a
+  // clearer signal than a crash here. Calls sync_fov_map() once at the end, the same
+  // step generate() itself ends with, so is_in_fov()/find_path() see the result
+  // immediately.
   void paint_ascii(const std::vector<std::string>& rows);
 
  private:

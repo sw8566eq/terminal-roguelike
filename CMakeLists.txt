@@ -127,3 +127,45 @@ else()
     target_compile_options(roguelike_ai_tests PRIVATE -Wall -Wextra)
 endif()
 add_test(NAME ai_test COMMAND roguelike_ai_tests)
+
+# --- roguelike_movement_tests: Phase 3 of the testing overhaul — Shift+direction travel
+#
+# The addition here beyond roguelike_game_tests'/roguelike_ai_tests' own closure is the
+# whole input.cpp/input_*.cpp group, for run_in_direction() itself (declared for tests in
+# input.hpp — see its own comment); handle_event()'s switch in input.cpp references every
+# other mode's handler, so all four satellites have to come along too, even though this
+# suite never calls any of them. Every one of these files includes <SDL3/SDL.h> for
+# SDLK_*/SDL_KMOD_* constants and the SDL_Event type, so this target needs SDL3 — but
+# nothing this suite's tests actually exercise calls a real SDL runtime function (no
+# SDL_Init(), no window), same headless spirit as every other test target here.
+find_package(SDL3 CONFIG REQUIRED)
+add_executable(roguelike_movement_tests
+    tests/movement_test.cpp
+    tests/arena.cpp
+    src/entity.cpp
+    src/rng.cpp
+    src/rules.cpp
+    src/content.cpp
+    src/spells.cpp
+    src/actors.cpp
+    src/projectile.cpp
+    src/map.cpp
+    src/level.cpp
+    src/game.cpp
+    src/turn.cpp
+    src/run_history.cpp
+    src/input.cpp
+    src/input_item_menus.cpp
+    src/input_spell_minion_menus.cpp
+    src/input_screens.cpp
+    src/input_overlays.cpp
+)
+target_include_directories(roguelike_movement_tests PRIVATE src tests)
+target_compile_features(roguelike_movement_tests PRIVATE cxx_std_17)
+target_link_libraries(roguelike_movement_tests PRIVATE libtcod::libtcod SDL3::SDL3)
+if (MSVC)
+    target_compile_options(roguelike_movement_tests PRIVATE /utf-8 /W4)
+else()
+    target_compile_options(roguelike_movement_tests PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME movement_test COMMAND roguelike_movement_tests)

@@ -59,3 +59,39 @@ else()
     target_compile_options(roguelike_tests PRIVATE -Wall -Wextra)
 endif()
 add_test(NAME rules_test COMMAND roguelike_tests)
+
+# --- roguelike_game_tests: headless integration tests over GameState -----------------
+#
+# The testing overhaul's Phase 0+ (see CLAUDE.md's "Testing overhaul" section): combat
+# resolution, AI behavior, movement/travel and world-generation invariants, all driven
+# through the real GameState/end_turn()/resolve_attack() entry points via the
+# tests/arena.* helpers instead of a parallel simulation. Links the full headless logic
+# layer — everything except main.cpp and the render*.cpp/input*.cpp files, which are the
+# only parts of src/ that touch SDL or a real console — the same closure --dump-loot
+# already proves out with no window at all. Confirmed empirically before adding this:
+# none of these .cpp files include anything SDL-related.
+add_executable(roguelike_game_tests
+    tests/game_test.cpp
+    tests/arena.cpp
+    src/entity.cpp
+    src/rng.cpp
+    src/rules.cpp
+    src/content.cpp
+    src/spells.cpp
+    src/actors.cpp
+    src/projectile.cpp
+    src/map.cpp
+    src/level.cpp
+    src/game.cpp
+    src/turn.cpp
+    src/run_history.cpp
+)
+target_include_directories(roguelike_game_tests PRIVATE src tests)
+target_compile_features(roguelike_game_tests PRIVATE cxx_std_17)
+target_link_libraries(roguelike_game_tests PRIVATE libtcod::libtcod)
+if (MSVC)
+    target_compile_options(roguelike_game_tests PRIVATE /utf-8 /W4)
+else()
+    target_compile_options(roguelike_game_tests PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME game_test COMMAND roguelike_game_tests)

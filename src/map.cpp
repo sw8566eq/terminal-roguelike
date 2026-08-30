@@ -36,6 +36,34 @@ std::vector<std::pair<int, int>> Map::find_path(int from_x, int from_y, int to_x
   return result;
 }
 
+void Map::paint_ascii(const std::vector<std::string>& rows) {
+  for (int y = 0; y < static_cast<int>(rows.size()) && y < height_; ++y) {
+    const std::string& row = rows[static_cast<size_t>(y)];
+    for (int x = 0; x < static_cast<int>(row.size()) && x < width_; ++x) {
+      Tile& tile = tiles_[static_cast<size_t>(y * width_ + x)];
+      switch (row[static_cast<size_t>(x)]) {
+        case '#':
+          tile = Tile{};
+          break;
+        case '.':
+          tile.walkable = true;
+          tile.transparent = true;
+          tile.in_room = true;
+          break;
+        case '^':
+          tile.walkable = false;
+          tile.transparent = true;
+          tile.is_hole = true;
+          tile.in_room = true;
+          break;
+        default:
+          break;  // unrecognized character: leave this tile as it was
+      }
+    }
+  }
+  sync_fov_map();
+}
+
 void Map::sync_fov_map() {
   for (int y = 0; y < height_; ++y) {
     for (int x = 0; x < width_; ++x) {

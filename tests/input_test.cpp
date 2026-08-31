@@ -1114,6 +1114,154 @@ void test_look_toggle_and_cursor_movement() {
   check(gs.mode == Mode::Playing, "Escape also closes Look");
 }
 
+// --- Mode::Playing itself: movement, bump-attack/swap, stairs, wait, g/f/o/p ------------
+// (input.cpp's own handle_playing_input(), as opposed to the modes it opens)
+
+void test_playing_plain_movement_and_wall_block() {
+  GameState gs = arena::make_gamestate(kRoom, 2, 1);
+  handle_event(gs, key_down(SDLK_L));
+  check(gs.player.x == 3 && gs.player.y == 1, "a plain movement key steps onto open floor");
+
+  gs.player.x = 1;
+  gs.player.y = 1;  // right next to the west wall
+  handle_event(gs, key_down(SDLK_H));
+  check(gs.player.x == 1 && gs.player.y == 1, "a wall blocks the step; the player doesn't move into it");
+}
+
+void test_playing_diagonal_movement() {
+  GameState gs = arena::make_gamestate(kBigRoom, 3, 2);
+  handle_event(gs, key_down(SDLK_N));  // down-right
+  check(gs.player.x == 4 && gs.player.y == 3, "'n' moves down-right");
+  handle_event(gs, key_down(SDLK_Y));  // up-left, back to start
+  check(gs.player.x == 3 && gs.player.y == 2, "'y' moves up-left");
+}
+
+void test_playing_shift_movement_dispatches_to_run_in_direction() {
+  // The dispatch itself (handle_playing_input() -> run_in_direction()) is the one thing
+  // worth confirming here — run_in_direction()'s own stop rules are tests/movement_test.cpp's
+  // job, exercised there by calling it directly.
+  GameState gs = arena::make_gamestate(kBigRoom, 1, 2);
+  handle_event(gs, key_down(SDLK_L, SDL_KMOD_SHIFT));
+  check(gs.player.x > 1, "Shift+movement runs rather than taking a single step");
+}
+
+void test_playing_bump_attack_and_minion_swap() {
+  GameState gs = arena::make_gamestate(kRoom, 1, 1);
+  int rat_id = arena::place_monster(gs, monster_index_named("Rat"), 2, 1);
+  size_t log_before = gs.message_log.size();
+  handle_event(gs, key_down(SDLK_L));
+  check(gs.player.x == 1 && gs.player.y == 1, "bumping into a hostile attacks in place rather than moving");
+  check(gs.message_log.size() > log_before, "the attack logged a message");
+  (void)rat_id;
+
+  GameState gs2 = arena::make_gamestate(kRoom, 1, 1);
+  int minion_id = arena::place_minion(gs2, kMinionTable[0], 2, 1);
+  handle_event(gs2, key_down(SDLK_L));
+  check(gs2.player.x == 2 && gs2.player.y == 1, "bumping into your own minion swaps places with it");
+  Actor* minion = arena::find_actor(gs2, minion_id);
+  check(minion->x == 1 && minion->y == 1, "the minion ends up where the player was");
+}
+
+void test_playing_wait() {
+  GameState gs = arena::make_gamestate(kRoom, 1, 1);
+  size_t log_before = gs.message_log.size();
+  handle_event(gs, key_down(SDLK_PERIOD));
+  check(gs.message_log.back() == "You wait.", "'.' (no shift) waits and logs it");
+  check(gs.message_log.size() > log_before, "a turn was actually spent");
+}
+
+void test_playing_stairs_down() {
+  GameState gs = arena::make_gamestate(kRoom, 2, 1);
+  gs.level().has_stairs_down = true;
+  gs.level().stairs_down_x = 2;
+  gs.level().stairs_down_y = 1;
+  int floor_before = gs.current_level;
+  handle_event(gs, key_down(SDLK_GREATER));
+  check(gs.current_level == floor_before + 1, "standing on real stairs down descends a floor");
+
+  GameState gs2 = arena::make_gamestate(kRoom, 2, 1);
+  gs2.level().has_stairs_down = true;
+  gs2.level().stairs_down_x = 5;
+  gs2.level().stairs_down_y = 1;  // not where the player is standing
+  handle_event(gs2, key_down(SDLK_GREATER));
+  check(gs2.current_level == 0, "not standing on the stairs: nothing happens");
+
+  GameState gs3 = arena::make_gamestate(kRoom, 2, 1);
+  gs3.level().has_stairs_down = false;  // kFinalFloor's own case
+  gs3.level().stairs_down_x = 2;
+  gs3.level().stairs_down_y = 1;
+  handle_event(gs3, key_down(SDLK_GREATER));
+  check(gs3.current_level == 0, "no real stairs down here (kFinalFloor): nothing happens either");
+}
+
+void test_playing_stairs_up() {
+  GameState gs = arena::make_gamestate(kRoom, 2, 1);
+  // ascend() needs a floor above to return to — build a second Level the same way
+  // arena::make_gamestate() built the first (Level isn't copyable: it holds a TCODMap),
+  // land the player on floor 1 with real stairs up, then ascend back to floor 0.
+  gs.levels.push_back(Level{Map(MAP_WIDTH, MAP_HEIGHT), {}, {}, {}, {}, {}, {}, {}});
+  gs.levels[1].map.paint_ascii(kRoom);
+  gs.levels[1].has_stairs_up = true;
+  gs.levels[1].entry_x = 2;
+  gs.levels[1].entry_y = 1;
+  gs.current_level = 1;
+  gs.player.x = 2;
+  gs.player.y = 1;
+  handle_event(gs, key_down(SDLK_LESS));
+  check(gs.current_level == 0, "standing on the entry tile with real stairs up ascends a floor");
+}
+
+void test_playing_pickup_key() {
+  GameState gs = arena::make_gamestate(kRoom, 1, 1);
+  handle_event(gs, key_down(SDLK_G));
+  check(gs.message_log.back() == "There's nothing here to pick up.", "'g' on an empty tile just says so");
+
+  GameState gs2 = arena::make_gamestate(kRoom, 1, 1);
+  gs2.level().items.push_back(GroundItem{1, 1, kWeaponTable[0]});
+  handle_event(gs2, key_down(SDLK_G));
+  check(gs2.player.weapons.size() == 1, "a single item is picked up immediately");
+  check(gs2.mode == Mode::Playing, "no menu needed for just one item");
+
+  GameState gs3 = arena::make_gamestate(kRoom, 1, 1);
+  gs3.level().items.push_back(GroundItem{1, 1, kWeaponTable[0]});
+  gs3.level().armor_items.push_back(GroundArmor{1, 1, kArmorTable[0]});
+  handle_event(gs3, key_down(SDLK_G));
+  check(gs3.mode == Mode::Pickup, "two or more items open the Pickup menu instead");
+  check(gs3.pickup_selected.size() == 2 && gs3.pickup_selected[0] && gs3.pickup_selected[1],
+        "everything starts checked");
+}
+
+void test_playing_fire_key() {
+  GameState gs = arena::make_gamestate(kRoom, 1, 1);
+  gs.player.weapon = kWeaponTable[weapon_index_named("Dagger")];  // melee
+  handle_event(gs, key_down(SDLK_F));
+  check(gs.mode == Mode::Playing, "'f' with a melee weapon doesn't open RangedAttack");
+  check(gs.message_log.back() == "Your Dagger isn't a ranged weapon.", "...and says so");
+
+  GameState gs2 = arena::make_gamestate(kRoom, 1, 1);
+  gs2.player.weapon = kWeaponTable[weapon_index_named("Bow")];
+  handle_event(gs2, key_down(SDLK_F));
+  check(gs2.mode == Mode::RangedAttack, "'f' with a ranged weapon opens RangedAttack");
+}
+
+void test_playing_minion_focus_cycle_keys() {
+  GameState gs = arena::make_gamestate(kRoom, 1, 1);
+  handle_event(gs, key_down(SDLK_O));
+  check(gs.message_log.back() == "You have no minions to command.", "'o' with no minions says so");
+  check(gs.mode == Mode::Playing, "and doesn't open MinionFocus");
+
+  GameState gs2 = arena::make_gamestate(kBigRoom, 3, 2);
+  int id = arena::place_minion(gs2, kMinionTable[0], 1, 1);
+  handle_event(gs2, key_down(SDLK_O));
+  check(gs2.mode == Mode::MinionFocus, "'o' with a minion present opens MinionFocus");
+  check(gs2.focused_minion_id == id, "...focused on that minion");
+
+  gs2.mode = Mode::Playing;
+  handle_event(gs2, key_down(SDLK_P, SDL_KMOD_SHIFT));
+  check(gs2.focused_minion_id == -1, "Shift+P resets focus from Mode::Playing too");
+  check(gs2.mode == Mode::Playing, "...without opening anything");
+}
+
 }  // namespace
 
 int main() {
@@ -1156,6 +1304,17 @@ int main() {
   test_ranged_attack_fires_and_updates_last_target();
   test_ranged_attack_escape_and_cursor_range_clamp();
   test_look_toggle_and_cursor_movement();
+
+  test_playing_plain_movement_and_wall_block();
+  test_playing_diagonal_movement();
+  test_playing_shift_movement_dispatches_to_run_in_direction();
+  test_playing_bump_attack_and_minion_swap();
+  test_playing_wait();
+  test_playing_stairs_down();
+  test_playing_stairs_up();
+  test_playing_pickup_key();
+  test_playing_fire_key();
+  test_playing_minion_focus_cycle_keys();
 
   std::printf("%d/%d checks passed\n", g_checks - g_failures, g_checks);
   return g_failures == 0 ? 0 : 1;

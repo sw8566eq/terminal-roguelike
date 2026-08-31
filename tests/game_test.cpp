@@ -12,6 +12,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,8 @@
 #include "projectile.hpp"
 #include "rng.hpp"
 #include "rules.hpp"
+#include "run_history.hpp"
+#include "turn.hpp"
 
 namespace {
 
@@ -388,6 +391,277 @@ void test_on_actor_killed_no_xp_when_not_killed_by_player_side() {
   check(gs.player.xp == 0, "no XP flows to the player when the kill wasn't credited to their side");
 }
 
+// --- apply_potion() / try_actor_use_potion() (game.cpp) -----------------------------
+//
+// apply_potion() is the single definition of what every potion does, shared by the
+// player's own q menu and a monster/minion deciding to drink — only the heal_percent
+// branch got any incidental coverage before this (via input_test.cpp's PotionMenu
+// test), so the STR/DEX/INT/teleport branches and try_actor_use_potion()'s own
+// decision logic were entirely untested.
+
+int potion_index_named(const std::string& name) {
+  for (size_t i = 0; i < kPotionTable.size(); ++i) {
+    if (kPotionTable[i].name == name) return static_cast<int>(i);
+  }
+  return -1;
+}
+
+void test_apply_potion_strength_buff_refreshes_not_stacks() {
+  GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
+  const Potion& str_potion = kPotionTable[static_cast<size_t>(potion_index_named("Potion of Strength"))];
+  int max_hp_before = gs.player.max_hp;
+  apply_potion(gs, gs.player, str_potion);
+  check(gs.player.temp_str_bonus == str_potion.buff_amount && gs.player.temp_str_turns == str_potion.buff_turns,
+        "drinking sets the bonus and starts the timer");
+  check(gs.player.max_hp == max_hp_before + str_potion.buff_amount * kHpPerStrength,
+        "the max HP ceiling rises by exactly the delta");
+
+  // Drink a second one before the first wears off: refreshes the timer, doesn't stack
+  // the bonus (or the max HP delta) a second time.
+  apply_potion(gs, gs.player, str_potion);
+  check(gs.player.temp_str_bonus == str_potion.buff_amount, "the bonus itself doesn't compound on a second drink");
+  check(gs.player.max_hp == max_hp_before + str_potion.buff_amount * kHpPerStrength,
+        "max HP doesn't rise a second time either");
+  check(gs.player.temp_str_turns == str_potion.buff_turns, "the timer refreshes back to the full duration");
+}
+
+void test_apply_potion_dexterity_buff() {
+  GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
+  const Potion& dex_potion = kPotionTable[static_cast<size_t>(potion_index_named("Potion of Dexterity"))];
+  int evasion_before = gs.player.evasion;
+  apply_potion(gs, gs.player, dex_potion);
+  check(gs.player.temp_dex_bonus == dex_potion.buff_amount && gs.player.temp_dex_turns == dex_potion.buff_turns,
+        "drinking sets the bonus and starts the timer");
+  check(gs.player.evasion == evasion_before + dex_potion.buff_amount * kDodgePerDexPoint,
+        "evasion rises by exactly the delta");
+}
+
+void test_apply_potion_intelligence_buff() {
+  GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
+  const Potion& int_potion = kPotionTable[static_cast<size_t>(potion_index_named("Potion of Intelligence"))];
+  int max_mana_before = gs.player.max_mana;
+  int expected_delta = max_mana_for_intelligence(gs.player.intelligence + int_potion.buff_amount) -
+                        max_mana_for_intelligence(gs.player.intelligence);
+  apply_potion(gs, gs.player, int_potion);
+  check(gs.player.temp_int_bonus == int_potion.buff_amount && gs.player.temp_int_turns == int_potion.buff_turns,
+        "drinking sets the bonus and starts the timer");
+  check(gs.player.max_mana == max_mana_before + expected_delta, "max mana rises by exactly the delta");
+}
+
+void test_apply_potion_teleport_moves_to_a_free_tile() {
+  GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
+  const Potion& teleport_potion = kPotionTable[static_cast<size_t>(potion_index_named("Potion of Teleportation"))];
+  apply_potion(gs, gs.player, teleport_potion);
+  check(gs.level().map.is_walkable(gs.player.x, gs.player.y), "teleporting lands on a walkable tile");
+}
+
+void test_apply_potion_monster_drink_message_only_if_visible() {
+  GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
+  int id = arena::place_monster(gs, monster_index_named("Rat"), 2, 1);  // in the player's small, lit room
+  Actor* rat = arena::find_actor(gs, id);
+  const Potion& heal_potion = kPotionTable[static_cast<size_t>(potion_index_named("Heal Potion"))];
+  size_t log_before = gs.message_log.size();
+  apply_potion(gs, *rat, heal_potion);
+  check(gs.message_log.size() > log_before, "a monster drinking in view logs a message about it");
+}
+
+void test_try_actor_use_potion_heals_when_badly_hurt() {
+  GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
+  int id = arena::place_monster(gs, monster_index_named("Rat"), 2, 1);
+  Actor* rat = arena::find_actor(gs, id);
+  rat->potions.push_back(kPotionTable[static_cast<size_t>(potion_index_named("Heal Potion"))]);
+  rat->hp = 1;  // well below kAiDrinkHealBelowPercent of max_hp
+  bool drank = try_actor_use_potion(gs, *rat, /*enemy_near=*/false);
+  check(drank, "badly hurt with a heal potion carried: it drinks");
+  check(rat->potions.empty(), "the potion is consumed");
+  check(rat->hp > 1, "and it actually healed");
+}
+
+void test_try_actor_use_potion_buffs_when_enemy_near() {
+  GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
+  int id = arena::place_monster(gs, monster_index_named("Rat"), 2, 1);
+  Actor* rat = arena::find_actor(gs, id);
+  rat->potions.push_back(kPotionTable[static_cast<size_t>(potion_index_named("Potion of Strength"))]);
+  bool drank_far = try_actor_use_potion(gs, *rat, /*enemy_near=*/false);
+  check(!drank_far, "a buff potion isn't wasted with nothing around to fight");
+  check(!rat->potions.empty(), "the potion is still carried");
+
+  bool drank_near = try_actor_use_potion(gs, *rat, /*enemy_near=*/true);
+  check(drank_near, "an enemy near: the buff potion is worth drinking now");
+  check(rat->potions.empty(), "the potion is consumed");
+  check(rat->temp_str_turns > 0, "the Strength buff actually applied");
+}
+
+void test_try_actor_use_potion_false_when_nothing_wanted() {
+  GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
+  int id = arena::place_monster(gs, monster_index_named("Rat"), 2, 1);
+  Actor* rat = arena::find_actor(gs, id);
+  rat->potions.push_back(kPotionTable[static_cast<size_t>(potion_index_named("Heal Potion"))]);
+  // Full HP, no enemy near: a carried heal potion is wanted only when badly hurt.
+  bool drank = try_actor_use_potion(gs, *rat, /*enemy_near=*/false);
+  check(!drank, "full HP and nothing pressing: the potion is left alone");
+  check(!rat->potions.empty(), "and it's still carried");
+}
+
+// --- tick_upkeep(): regen accumulators and temp-buff expiry (turn.cpp) --------------
+//
+// tick_upkeep() itself is file-local to turn.cpp — exercised here through end_turn(),
+// the same way every other turn.cpp behavior in this suite is (see ai_test.cpp for the
+// AI side of it). A fresh arena GameState has no monsters/projectiles/toggle spell
+// active, so end_turn() here exercises upkeep and nothing else.
+
+void test_hp_and_mana_regen_accumulate_and_cap_at_max() {
+  GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
+  gs.player.max_hp = 10;
+  gs.player.hp = 5;
+  gs.player.hp_regen_turns = 10;  // exactly 1.0 HP/turn — the accumulator crosses 1.0 in a single turn
+  gs.player.hp_regen_accumulator = 0.0f;
+  gs.player.max_mana = 10;
+  gs.player.mana = 5;
+  gs.player.mana_regen_turns = 10;
+  gs.player.mana_regen_accumulator = 0.0f;
+  end_turn(gs);
+  check(gs.player.hp == 6, "HP regen adds exactly 1 HP after one turn at a 1.0/turn rate");
+  check(gs.player.mana == 6, "mana regen adds exactly 1 mana after one turn at a 1.0/turn rate");
+
+  gs.player.hp = gs.player.max_hp;
+  gs.player.mana = gs.player.max_mana;
+  end_turn(gs);
+  check(gs.player.hp == gs.player.max_hp, "regen does nothing once already at max HP — no overheal");
+  check(gs.player.mana == gs.player.max_mana, "same for mana once already at max");
+}
+
+void test_str_buff_expiry_reverts_max_hp_delta() {
+  GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
+  gs.player.hp_regen_turns = 0;  // isolate: no regen interfering with the HP check below
+  gs.player.max_hp = 100;
+  gs.player.hp = 100;
+  gs.player.temp_str_bonus = 5;
+  gs.player.temp_str_turns = 1;
+  end_turn(gs);
+  check(gs.player.temp_str_bonus == 0 && gs.player.temp_str_turns == 0, "the Strength buff expires after its last turn");
+  check(gs.player.max_hp == 100 - 5 * kHpPerStrength, "max HP reverts by exactly the delta the buff added");
+  check(gs.player.hp == gs.player.max_hp, "current HP clamps down to the new, lower ceiling");
+}
+
+void test_dex_buff_expiry_reverts_evasion_delta() {
+  GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
+  int evasion_before = gs.player.evasion;
+  gs.player.temp_dex_bonus = 3;
+  gs.player.temp_dex_turns = 1;
+  end_turn(gs);
+  check(gs.player.temp_dex_bonus == 0 && gs.player.temp_dex_turns == 0, "the Dexterity buff expires");
+  check(gs.player.evasion == evasion_before - 3 * kDodgePerDexPoint, "evasion reverts by exactly the delta");
+}
+
+void test_int_buff_expiry_reverts_max_mana_delta() {
+  GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
+  int max_mana_before = gs.player.max_mana;
+  int expected_delta =
+      max_mana_for_intelligence(gs.player.intelligence + 4) - max_mana_for_intelligence(gs.player.intelligence);
+  gs.player.max_mana += expected_delta;  // as if the buff had already lifted the ceiling
+  gs.player.mana = gs.player.max_mana;
+  gs.player.temp_int_bonus = 4;
+  gs.player.temp_int_turns = 1;
+  end_turn(gs);
+  check(gs.player.temp_int_bonus == 0 && gs.player.temp_int_turns == 0, "the Intelligence buff expires");
+  check(gs.player.max_mana == max_mana_before, "max mana reverts to exactly its pre-buff ceiling");
+}
+
+void test_combat_mage_buff_expiry() {
+  GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
+  gs.player.temp_melee_damage_bonus = 4;
+  gs.player.temp_melee_damage_turns = 1;
+  gs.player.temp_armor_bonus = 3;
+  gs.player.temp_armor_turns = 1;
+  end_turn(gs);
+  check(gs.player.temp_melee_damage_bonus == 0 && gs.player.temp_melee_damage_turns == 0, "Battle Fury's buff expires");
+  check(gs.player.temp_armor_bonus == 0 && gs.player.temp_armor_turns == 0, "Iron Skin's buff expires");
+}
+
+void test_haste_buff_expiry() {
+  GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
+  gs.player.temp_extra_actions_bonus = 1;
+  gs.player.temp_extra_actions_turns = 1;
+  // Setting temp_extra_actions_bonus here means total_actions_for(player) is now 2 — so
+  // the *first* end_turn() call is itself consumed as the free action the buff grants
+  // (see end_turn()'s free-action guard) and returns before upkeep ever runs. A second
+  // call is the actual world turn that ticks the buff timer down.
+  end_turn(gs);
+  check(gs.player.temp_extra_actions_bonus == 1, "the first call is spent as the buff's own free action; upkeep hasn't run yet");
+  end_turn(gs);
+  check(gs.player.temp_extra_actions_bonus == 0 && gs.player.temp_extra_actions_turns == 0,
+        "the second call is a real world turn, and Haste's buff expires on it");
+}
+
+// --- load_run_history() (run_history.cpp) -------------------------------------------
+//
+// append_run_history_entry() is already exercised indirectly via the on_actor_killed()
+// death/win tests above (from the scratch working directory main() below chdir()s
+// into); this is the one function nothing else in this suite calls — parsing real
+// pipe-delimited lines back into RunHistoryEntry values.
+
+void test_load_run_history_parses_real_entries() {
+  std::ofstream out("run_history.txt");  // truncates whatever an earlier test left there
+  out << "WIN|15|10|42|Dungeon Overlord\n";
+  out << "DEAD|3|2|random|Goblin\n";
+  out.close();
+
+  auto entries = load_run_history();
+  check(entries.size() == 2, "both lines parsed into entries");
+  check(entries[0].won && entries[0].floor_reached == 15 && entries[0].player_level == 10 &&
+            entries[0].seed_display == "42" && entries[0].cause == "Dungeon Overlord",
+        "the WIN entry's fields all parse correctly");
+  check(!entries[1].won && entries[1].floor_reached == 3 && entries[1].player_level == 2 &&
+            entries[1].seed_display == "random" && entries[1].cause == "Goblin",
+        "the DEAD entry's fields all parse correctly");
+}
+
+// --- find_impact() / projectile_possessive() / projectile_subject() (projectile.cpp) -
+
+void test_find_impact_three_stopping_rules() {
+  GameState gs = arena::make_gamestate(kCorridor, 1, 1);  // interior x=1..6
+  auto path_past_the_wall = trace_path(1, 1, 10, 1);      // runs well past the corridor's real end at x=7
+
+  auto impact_wall = find_impact(path_past_the_wall, 1, 1, gs.level().map, gs.level().monsters);
+  check(impact_wall.first == 6 && impact_wall.second == 1, "a wall stops the impact one tile short of it");
+
+  arena::place_monster(gs, monster_index_named("Rat"), 4, 1);
+  auto impact_hostile = find_impact(path_past_the_wall, 1, 1, gs.level().map, gs.level().monsters);
+  check(impact_hostile.first == 4 && impact_hostile.second == 1, "a hostile in the way stops the impact on its own tile");
+
+  GameState gs2 = arena::make_gamestate(kCorridor, 1, 1);  // fresh floor, no hostile
+  auto path_within_bounds = trace_path(1, 1, 5, 1);        // stays well inside the open corridor
+  auto impact_end = find_impact(path_within_bounds, 1, 1, gs2.level().map, gs2.level().monsters);
+  check(impact_end.first == 5 && impact_end.second == 1,
+        "reaching the end of the path with nothing there stops on the final tile");
+}
+
+void test_projectile_phrasing_player_minion_and_hostile() {
+  Projectile player_proj;
+  player_proj.owner_is_player = true;
+  player_proj.owner_allegiance = Allegiance::Player;
+  player_proj.name = "Magic Dart";
+  check(projectile_possessive(player_proj) == "your", "the player's own shot reads as \"your\", ignoring owner_name");
+  check(projectile_subject(player_proj) == "Your Magic Dart", "...and \"Your <spell>\" as the subject");
+
+  Projectile minion_proj;
+  minion_proj.owner_is_player = false;
+  minion_proj.owner_allegiance = Allegiance::Player;
+  minion_proj.owner_name = "Demon";
+  minion_proj.name = "Wither Curse";
+  check(projectile_possessive(minion_proj) == "your Demon's", "a minion's shot reads as \"your <name>'s\"");
+  check(projectile_subject(minion_proj) == "Your Demon's Wither Curse", "...and \"Your <name>'s <spell>\" as the subject");
+
+  Projectile hostile_proj;
+  hostile_proj.owner_is_player = false;
+  hostile_proj.owner_allegiance = Allegiance::Hostile;
+  hostile_proj.owner_name = "Goblin Shaman";
+  hostile_proj.name = "Magic Dart";
+  check(projectile_possessive(hostile_proj) == "the Goblin Shaman's", "a hostile's shot reads as \"the <name>'s\"");
+  check(projectile_subject(hostile_proj) == "The Goblin Shaman's Magic Dart", "...and \"The <name>'s <spell>\" as the subject");
+}
+
 }  // namespace
 
 int main() {
@@ -412,6 +686,27 @@ int main() {
   test_on_actor_killed_leaves_corpse_false_never_leaves_one();
   test_on_actor_killed_ordinary_hostile_sometimes_leaves_corpse_and_grants_xp();
   test_on_actor_killed_no_xp_when_not_killed_by_player_side();
+
+  test_apply_potion_strength_buff_refreshes_not_stacks();
+  test_apply_potion_dexterity_buff();
+  test_apply_potion_intelligence_buff();
+  test_apply_potion_teleport_moves_to_a_free_tile();
+  test_apply_potion_monster_drink_message_only_if_visible();
+  test_try_actor_use_potion_heals_when_badly_hurt();
+  test_try_actor_use_potion_buffs_when_enemy_near();
+  test_try_actor_use_potion_false_when_nothing_wanted();
+
+  test_hp_and_mana_regen_accumulate_and_cap_at_max();
+  test_str_buff_expiry_reverts_max_hp_delta();
+  test_dex_buff_expiry_reverts_evasion_delta();
+  test_int_buff_expiry_reverts_max_mana_delta();
+  test_combat_mage_buff_expiry();
+  test_haste_buff_expiry();
+
+  test_load_run_history_parses_real_entries();
+
+  test_find_impact_three_stopping_rules();
+  test_projectile_phrasing_player_minion_and_hostile();
 
   std::printf("%d/%d checks passed\n", g_checks - g_failures, g_checks);
   return g_failures == 0 ? 0 : 1;

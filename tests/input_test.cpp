@@ -1041,6 +1041,31 @@ void test_targeting_swap_branches() {
   handle_event(gs2, key_down(SDLK_RETURN));
   check(gs2.mode == Mode::Playing, "no minion under the cursor: still closes back to Playing");
   check(gs2.player.x == 3 && gs2.player.y == 2, "no minion there: the player doesn't move");
+
+  // A minion behind a wall is a real, valid minion (own_minion_at() finds it — the
+  // cursor already knows where it is, since minions are drawn out of sight), but the
+  // swap itself is still refused: a guaranteed, undodgeable teleport through solid rock
+  // is exactly what line_clear() here is priced against.
+  const std::vector<std::string> kSplitRoom = {
+      "#######",
+      "#.#...#",
+      "#.#...#",
+      "#######",
+  };
+  GameState gs3 = arena::make_gamestate(kSplitRoom, 1, 1);
+  gs3.player.mana = 100;
+  int minion_id3 = arena::place_minion(gs3, kMinionTable[0], 4, 1);
+  gs3.casting_spell_index = spell_index_named("Place Swap");
+  gs3.casting_actor_id = -1;
+  gs3.target_x = 4;
+  gs3.target_y = 1;
+  gs3.mode = Mode::Targeting;
+  handle_event(gs3, key_down(SDLK_RETURN));
+  check(gs3.mode == Mode::Playing, "blocked by a wall: still closes back to Playing");
+  check(gs3.player.x == 1 && gs3.player.y == 1, "a minion behind a wall: the swap is refused, the player doesn't move");
+  check(gs3.player.mana == 100, "and no mana is spent on a refused swap");
+  Actor* minion3 = arena::find_actor(gs3, minion_id3);
+  check(minion3->x == 4 && minion3->y == 1, "the minion doesn't move either");
 }
 
 void test_targeting_ordinary_cast_fires_and_updates_last_target() {

@@ -88,12 +88,7 @@ Projectile make_test_projectile(int from_x, int from_y, int to_x, int to_y, Alle
 // kMonsterTable is ordered by roughly-increasing depth/toughness and could grow or be
 // reordered; every test below looks a row up by name rather than hardcoding an index, so
 // this file can't quietly start testing the wrong monster after a content-table edit.
-int monster_index_named(const std::string& name) {
-  for (size_t i = 0; i < kMonsterTable.size(); ++i) {
-    if (kMonsterTable[i].name == name) return static_cast<int>(i);
-  }
-  return -1;
-}
+// (monster_index_named() itself is arena.hpp's shared by-name lookup.)
 
 // --- Phase 1: combat resolution ----------------------------------------------------
 
@@ -399,16 +394,11 @@ void test_on_actor_killed_no_xp_when_not_killed_by_player_side() {
 // test), so the STR/DEX/INT/teleport branches and try_actor_use_potion()'s own
 // decision logic were entirely untested.
 
-int potion_index_named(const std::string& name) {
-  for (size_t i = 0; i < kPotionTable.size(); ++i) {
-    if (kPotionTable[i].name == name) return static_cast<int>(i);
-  }
-  return -1;
-}
+// potion_index_named() is arena.hpp's shared by-name lookup (tests/arena.hpp).
 
 void test_apply_potion_strength_buff_refreshes_not_stacks() {
   GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
-  const Potion& str_potion = kPotionTable[static_cast<size_t>(potion_index_named("Potion of Strength"))];
+  const Potion& str_potion = named(kPotionTable, "Potion of Strength");
   int max_hp_before = gs.player.max_hp;
   apply_potion(gs, gs.player, str_potion);
   check(gs.player.temp_str_bonus == str_potion.buff_amount && gs.player.temp_str_turns == str_potion.buff_turns,
@@ -427,7 +417,7 @@ void test_apply_potion_strength_buff_refreshes_not_stacks() {
 
 void test_apply_potion_dexterity_buff() {
   GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
-  const Potion& dex_potion = kPotionTable[static_cast<size_t>(potion_index_named("Potion of Dexterity"))];
+  const Potion& dex_potion = named(kPotionTable, "Potion of Dexterity");
   int evasion_before = gs.player.evasion;
   apply_potion(gs, gs.player, dex_potion);
   check(gs.player.temp_dex_bonus == dex_potion.buff_amount && gs.player.temp_dex_turns == dex_potion.buff_turns,
@@ -438,7 +428,7 @@ void test_apply_potion_dexterity_buff() {
 
 void test_apply_potion_intelligence_buff() {
   GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
-  const Potion& int_potion = kPotionTable[static_cast<size_t>(potion_index_named("Potion of Intelligence"))];
+  const Potion& int_potion = named(kPotionTable, "Potion of Intelligence");
   int max_mana_before = gs.player.max_mana;
   int expected_delta = max_mana_for_intelligence(gs.player.intelligence + int_potion.buff_amount) -
                         max_mana_for_intelligence(gs.player.intelligence);
@@ -450,7 +440,7 @@ void test_apply_potion_intelligence_buff() {
 
 void test_apply_potion_teleport_moves_to_a_free_tile() {
   GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
-  const Potion& teleport_potion = kPotionTable[static_cast<size_t>(potion_index_named("Potion of Teleportation"))];
+  const Potion& teleport_potion = named(kPotionTable, "Potion of Teleportation");
   apply_potion(gs, gs.player, teleport_potion);
   check(gs.level().map.is_walkable(gs.player.x, gs.player.y), "teleporting lands on a walkable tile");
 }
@@ -459,7 +449,7 @@ void test_apply_potion_monster_drink_message_only_if_visible() {
   GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
   int id = arena::place_monster(gs, monster_index_named("Rat"), 2, 1);  // in the player's small, lit room
   Actor* rat = arena::find_actor(gs, id);
-  const Potion& heal_potion = kPotionTable[static_cast<size_t>(potion_index_named("Heal Potion"))];
+  const Potion& heal_potion = named(kPotionTable, "Heal Potion");
   size_t log_before = gs.message_log.size();
   apply_potion(gs, *rat, heal_potion);
   check(gs.message_log.size() > log_before, "a monster drinking in view logs a message about it");
@@ -469,7 +459,7 @@ void test_try_actor_use_potion_heals_when_badly_hurt() {
   GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
   int id = arena::place_monster(gs, monster_index_named("Rat"), 2, 1);
   Actor* rat = arena::find_actor(gs, id);
-  rat->potions.push_back(kPotionTable[static_cast<size_t>(potion_index_named("Heal Potion"))]);
+  rat->potions.push_back(named(kPotionTable, "Heal Potion"));
   rat->hp = 1;  // well below kAiDrinkHealBelowPercent of max_hp
   bool drank = try_actor_use_potion(gs, *rat, /*enemy_near=*/false);
   check(drank, "badly hurt with a heal potion carried: it drinks");
@@ -481,7 +471,7 @@ void test_try_actor_use_potion_buffs_when_enemy_near() {
   GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
   int id = arena::place_monster(gs, monster_index_named("Rat"), 2, 1);
   Actor* rat = arena::find_actor(gs, id);
-  rat->potions.push_back(kPotionTable[static_cast<size_t>(potion_index_named("Potion of Strength"))]);
+  rat->potions.push_back(named(kPotionTable, "Potion of Strength"));
   bool drank_far = try_actor_use_potion(gs, *rat, /*enemy_near=*/false);
   check(!drank_far, "a buff potion isn't wasted with nothing around to fight");
   check(!rat->potions.empty(), "the potion is still carried");
@@ -496,7 +486,7 @@ void test_try_actor_use_potion_false_when_nothing_wanted() {
   GameState gs = arena::make_gamestate(kSmallRoom, 1, 1);
   int id = arena::place_monster(gs, monster_index_named("Rat"), 2, 1);
   Actor* rat = arena::find_actor(gs, id);
-  rat->potions.push_back(kPotionTable[static_cast<size_t>(potion_index_named("Heal Potion"))]);
+  rat->potions.push_back(named(kPotionTable, "Heal Potion"));
   // Full HP, no enemy near: a carried heal potion is wanted only when badly hurt.
   bool drank = try_actor_use_potion(gs, *rat, /*enemy_near=*/false);
   check(!drank, "full HP and nothing pressing: the potion is left alone");

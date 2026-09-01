@@ -77,6 +77,18 @@ int auto_target_hostile(const std::vector<Actor>& monsters, const Actor& player,
 // what you know — swapping through a wall to leave a room was too strong an escape.
 int closest_own_minion(const std::vector<Actor>& monsters, const Actor& player, const Map& map, int range);
 
+// Indices of every living hostile pack-mate of `subject` (same_pack(), content.cpp)
+// within `radius` tiles (Chebyshev, distance_between()) — `subject` itself never
+// included. Used by pack alert (run_hostile_ai(), turn.cpp) to plant a last-seen-player
+// sighting in every ally close enough to be alerted by a shout.
+std::vector<int> pack_allies_within(const std::vector<Actor>& monsters, const Actor& subject, int radius);
+
+// Whether any living hostile pack-mate of `subject` (same_pack(), content.cpp, other
+// than `subject` itself) is currently adjacent to `target`. Used by caster escort
+// (run_hostile_ai(), turn.cpp) to decide whether a melee ally is already screening this
+// caster's target, so the caster can hold position instead of closing in on foot.
+bool pack_ally_engaged_with(const std::vector<Actor>& monsters, const Actor& subject, const Actor& target);
+
 // How many of the player's minions are currently alive on this floor (minions always
 // live on whichever floor the player is on — see move_minions_to_new_floor()).
 int count_minions(const std::vector<Actor>& monsters);

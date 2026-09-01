@@ -4,6 +4,11 @@
 #include "level.hpp"
 #include "rules.hpp"
 
+int monster_index_named(const std::string& name) { return index_named(kMonsterTable, name); }
+int spell_index_named(const std::string& name) { return index_named(kSpellTable, name); }
+int weapon_index_named(const std::string& name) { return index_named(kWeaponTable, name); }
+int potion_index_named(const std::string& name) { return index_named(kPotionTable, name); }
+
 namespace arena {
 
 GameState make_gamestate(const std::vector<std::string>& rows, int px, int py) {
@@ -42,6 +47,16 @@ GameState make_gamestate(const std::vector<std::string>& rows, int px, int py) {
 
   gs.level().map.update_fov(px, py, FOV_RADIUS);
   return gs;
+}
+
+int add_floor(GameState& gs, const std::vector<std::string>& rows, int entry_x, int entry_y, bool has_stairs_up) {
+  gs.levels.push_back(Level{Map(MAP_WIDTH, MAP_HEIGHT), {}, {}, {}, {}, {}, {}, {}});
+  int index = static_cast<int>(gs.levels.size()) - 1;
+  gs.levels[static_cast<size_t>(index)].map.paint_ascii(rows);
+  gs.levels[static_cast<size_t>(index)].has_stairs_up = has_stairs_up;
+  gs.levels[static_cast<size_t>(index)].entry_x = entry_x;
+  gs.levels[static_cast<size_t>(index)].entry_y = entry_y;
+  return index;
 }
 
 int place_monster(GameState& gs, int table_index, int x, int y) {

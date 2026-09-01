@@ -48,26 +48,8 @@ SDL_Event key_down(SDL_Keycode key, SDL_Keymod mod = SDL_KMOD_NONE) {
   return event;
 }
 
-int monster_index_named(const std::string& name) {
-  for (size_t i = 0; i < kMonsterTable.size(); ++i) {
-    if (kMonsterTable[i].name == name) return static_cast<int>(i);
-  }
-  return -1;
-}
-
-int spell_index_named(const std::string& name) {
-  for (size_t i = 0; i < kSpellTable.size(); ++i) {
-    if (kSpellTable[i].name == name) return static_cast<int>(i);
-  }
-  return -1;
-}
-
-int weapon_index_named(const std::string& name) {
-  for (size_t i = 0; i < kWeaponTable.size(); ++i) {
-    if (kWeaponTable[i].name == name) return static_cast<int>(i);
-  }
-  return -1;
-}
+// monster_index_named()/spell_index_named()/weapon_index_named() are arena.hpp's shared
+// by-name lookups (tests/arena.hpp).
 
 // Which letter key opens `spell_name` from the SpellMenu, given gs.player's current
 // intelligence/chosen_school — looked up through the real known_spell_indices() rather
@@ -408,7 +390,7 @@ void test_spell_menu_toggle_on_off_and_unaffordable() {
   gs.mode = Mode::SpellMenu;
   handle_event(gs, key_down(sandstorm_key));
   check(gs.active_toggle_spell == spell_index_named("Sandstorm"), "toggling on sets active_toggle_spell");
-  check(gs.player.mana == 100 - kSpellTable[static_cast<size_t>(spell_index_named("Sandstorm"))].mana_cost,
+  check(gs.player.mana == 100 - named(kSpellTable, "Sandstorm").mana_cost,
         "the flat activation cost is deducted");
   check(gs.mode == Mode::Playing, "an unaffordable toggle is still a free cancel");
   int mana_after_on = gs.player.mana;
@@ -487,7 +469,7 @@ void test_spell_menu_combat_mage_buffs() {
   SDL_Keycode fury_key = letter_for_known_spell(gs, "Battle Fury");
   gs.mode = Mode::SpellMenu;
   handle_event(gs, key_down(fury_key));
-  const Spell& fury = kSpellTable[static_cast<size_t>(spell_index_named("Battle Fury"))];
+  const Spell& fury = named(kSpellTable, "Battle Fury");
   // buff_turns - 1, not buff_turns: the cast sets the timer *before* end_turn(), and
   // end_turn()'s own upkeep phase ticks every temp buff timer down by one turn later in
   // that same call (see tick_upkeep() in turn.cpp) — Haste below is the one buff that
@@ -499,14 +481,14 @@ void test_spell_menu_combat_mage_buffs() {
   SDL_Keycode skin_key = letter_for_known_spell(gs, "Iron Skin");
   gs.mode = Mode::SpellMenu;
   handle_event(gs, key_down(skin_key));
-  const Spell& skin = kSpellTable[static_cast<size_t>(spell_index_named("Iron Skin"))];
+  const Spell& skin = named(kSpellTable, "Iron Skin");
   check(gs.player.temp_armor_bonus == skin.buff_amount && gs.player.temp_armor_turns == skin.buff_turns - 1,
         "Iron Skin applies its flat armor buff (buff_turns - 1, same same-turn-tick reasoning as Battle Fury above)");
 
   SDL_Keycode haste_key = letter_for_known_spell(gs, "Haste");
   gs.mode = Mode::SpellMenu;
   handle_event(gs, key_down(haste_key));
-  const Spell& haste = kSpellTable[static_cast<size_t>(spell_index_named("Haste"))];
+  const Spell& haste = named(kSpellTable, "Haste");
   check(gs.player.temp_extra_actions_bonus == haste.buff_amount && gs.player.temp_extra_actions_turns == haste.buff_turns,
         "Haste applies its extra-actions buff after end_turn()");
 
@@ -999,7 +981,7 @@ void test_targeting_debuff_branches() {
   Actor* rat = arena::find_actor(gs, rat_id);
   check(rat != nullptr, "test setup: the Rat survives this turn, far from the Demon");
   if (rat) check(rat->temp_melee_damage_bonus < 0, "the curse actually landed (a negative melee-damage delta)");
-  check(demon->mana == 100 - kSpellTable[static_cast<size_t>(spell_index_named("Wither Curse"))].mana_cost,
+  check(demon->mana == 100 - named(kSpellTable, "Wither Curse").mana_cost,
         "the caster (the Demon, not the player) pays the mana");
 
   GameState gs2 = arena::make_gamestate(kRoom, 1, 1);
@@ -1221,15 +1203,11 @@ void test_playing_stairs_down() {
 
 void test_playing_stairs_up() {
   GameState gs = arena::make_gamestate(kRoom, 2, 1);
-  // ascend() needs a floor above to return to — build a second Level the same way
-  // arena::make_gamestate() built the first (Level isn't copyable: it holds a TCODMap),
-  // land the player on floor 1 with real stairs up, then ascend back to floor 0.
-  gs.levels.push_back(Level{Map(MAP_WIDTH, MAP_HEIGHT), {}, {}, {}, {}, {}, {}, {}});
-  gs.levels[1].map.paint_ascii(kRoom);
-  gs.levels[1].has_stairs_up = true;
-  gs.levels[1].entry_x = 2;
-  gs.levels[1].entry_y = 1;
-  gs.current_level = 1;
+  // ascend() needs a floor above to return to — arena::add_floor() builds a second Level
+  // the same way arena::make_gamestate() built the first (Level isn't copyable: it holds
+  // a TCODMap). Land the player on floor 1 with real stairs up, then ascend to floor 0.
+  int upper_floor = arena::add_floor(gs, kRoom, /*entry_x=*/2, /*entry_y=*/1, /*has_stairs_up=*/true);
+  gs.current_level = upper_floor;
   gs.player.x = 2;
   gs.player.y = 1;
   handle_event(gs, key_down(SDLK_LESS));

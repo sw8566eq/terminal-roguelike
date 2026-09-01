@@ -77,12 +77,7 @@ constexpr Mode kAllModes[] = {
     Mode::Look,          Mode::RangedAttack,
 };
 
-int monster_index_named(const std::string& name) {
-  for (size_t i = 0; i < kMonsterTable.size(); ++i) {
-    if (kMonsterTable[i].name == name) return static_cast<int>(i);
-  }
-  return -1;
-}
+// monster_index_named() is arena.hpp's shared by-name lookup (tests/arena.hpp).
 
 // A single richly-populated GameState reused across every Mode — real inventory, a real
 // hostile, a real minion with an ability, spells known, a pending level-up — so each

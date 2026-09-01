@@ -32,12 +32,7 @@ void check(bool condition, const std::string& description) {
   }
 }
 
-int monster_index_named(const std::string& name) {
-  for (size_t i = 0; i < kMonsterTable.size(); ++i) {
-    if (kMonsterTable[i].name == name) return static_cast<int>(i);
-  }
-  return -1;
-}
+// monster_index_named() is arena.hpp's shared by-name lookup (tests/arena.hpp).
 
 // --- Hard stops: checked every step, the first included --------------------------------
 

@@ -241,11 +241,8 @@ void run_hostile_ai(GameState& gs) {
         // Deliberately no "already alerted" flag: this just runs every turn a pack
         // member has eyes on the player, which reads as the pack staying coordinated
         // for as long as any one of them can see you, rather than a one-shot alarm.
-        for (auto& ally : level.monsters) {
-          if (&ally == &monster) continue;
-          if (ally.allegiance != Allegiance::Hostile || !ally.is_alive()) continue;
-          if (!same_pack(ally.monster_template_index, monster.monster_template_index)) continue;
-          if (distance_between(monster, ally) > kPackAlertRadius) continue;
+        for (int ally_index : pack_allies_within(level.monsters, monster, kPackAlertRadius)) {
+          Actor& ally = level.monsters[static_cast<size_t>(ally_index)];
           ally.last_seen_player_x = gs.player.x;
           ally.last_seen_player_y = gs.player.y;
         }
@@ -397,18 +394,8 @@ void run_hostile_ai(GameState& gs) {
       // `continue`s above, never reaching here) — only ordinary monsters chasing an
       // ordinary distance are unaffected, since this whole block is gated on having
       // spells in the first place.
-      if (!monster.spell_indices.empty()) {
-        bool ally_engaged = false;
-        for (auto& ally : level.monsters) {
-          if (&ally == &monster) continue;
-          if (ally.allegiance != Allegiance::Hostile || !ally.is_alive()) continue;
-          if (!same_pack(ally.monster_template_index, monster.monster_template_index)) continue;
-          if (distance_between(ally, *target) <= 1) {
-            ally_engaged = true;
-            break;
-          }
-        }
-        if (ally_engaged) continue;  // hold position this turn; don't chase or wander
+      if (!monster.spell_indices.empty() && pack_ally_engaged_with(level.monsters, monster, *target)) {
+        continue;  // hold position this turn; don't chase or wander
       }
 
       // Out of range (or no line of sight): chase toward the chosen target if it's

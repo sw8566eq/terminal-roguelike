@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 
+#include "content.hpp"
 #include "rules.hpp"
 
 int distance_between(const Actor& a, const Actor& b) {
@@ -93,6 +94,32 @@ int closest_own_minion(const std::vector<Actor>& monsters, const Actor& player, 
     }
   }
   return best_id;
+}
+
+std::vector<int> pack_allies_within(const std::vector<Actor>& monsters, const Actor& subject, int radius) {
+  std::vector<int> result;
+  for (size_t i = 0; i < monsters.size(); ++i) {
+    const Actor& ally = monsters[i];
+    if (&ally == &subject) continue;
+    if (ally.allegiance != Allegiance::Hostile || !ally.is_alive()) continue;
+    // Cheap numeric filter first — most candidates on a floor are nowhere near
+    // `subject`, so reject those before paying for same_pack()'s string comparison.
+    if (distance_between(subject, ally) > radius) continue;
+    if (!same_pack(ally.monster_template_index, subject.monster_template_index)) continue;
+    result.push_back(static_cast<int>(i));
+  }
+  return result;
+}
+
+bool pack_ally_engaged_with(const std::vector<Actor>& monsters, const Actor& subject, const Actor& target) {
+  for (const auto& ally : monsters) {
+    if (&ally == &subject) continue;
+    if (ally.allegiance != Allegiance::Hostile || !ally.is_alive()) continue;
+    if (distance_between(ally, target) > 1) continue;
+    if (!same_pack(ally.monster_template_index, subject.monster_template_index)) continue;
+    return true;
+  }
+  return false;
 }
 
 int count_minions(const std::vector<Actor>& monsters) {
